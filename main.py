@@ -36,15 +36,17 @@ def root():
 @app.get("/ticker/primary")
 def ticker_primary():
     try:
+        FMP_KEY = os.getenv("FMP_API_KEY")
         url = (
             "https://financialmodelingprep.com/api/v3/quote/"
             "%5EGSPC,%5EDJI,%5EIXIC,AAPL,MSFT,NVDA,TSLA,AMZN,META"
-            f"?apikey={FINNHUB_KEY}"
+            f"?apikey={FMP_KEY}"
         )
         r = requests.get(url, timeout=5)
-        return {"data": r.json()}
+        return r.json()
     except Exception as e:
         return {"error": str(e)}
+
 
 # ----------------------------------------------------------
 # 2. Yahoo Fallback
@@ -53,16 +55,20 @@ def ticker_primary():
 def ticker_yahoo():
     try:
         symbols = "%5EGSPC,%5EDJI,%5EIXIC,AAPL,MSFT,NVDA,TSLA,AMZN,META"
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
+        url = f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X)",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://finance.yahoo.com",
         }
 
-        r = requests.get(url, headers=headers, timeout=5)
-        return {"data": r.json()}
+        resp = requests.get(url, headers=headers, timeout=5)
+        return resp.json()
     except Exception as e:
         return {"error": str(e)}
+
 
 # ----------------------------------------------------------
 # 3. Single Quote
