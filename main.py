@@ -1,17 +1,21 @@
-# main.py — BullSignalsAI Backend (Production)
+# main.py — BullSignalsAI Backend (Production, with BullBrain v1 Full Model)
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import requests
 import datetime
+import json
+import numpy as np
+import pandas as pd
+import xgboost as xgb
 
 app = FastAPI()
 
 # Allow Expo mobile app access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],       # You can restrict later to your app domain
+    allow_origins=["*"],  # You can restrict later to your app domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,52 +33,172 @@ MODEL = "grok-4-fast-reasoning"
 GROK_STOCK_CACHE_HOURS = 6
 WATCH_GROK_CACHE_HOURS = 24
 
+# ----------------------------------------------------------
+# 🔥 BullBrain v1 Full Model (XGBoost JSON)
+# ----------------------------------------------------------
+# Full model trained in Colab and saved as XGBoost JSON
+# Drive link: https://drive.google.com/file/d/1qF1SqDc_ekGCdmKuIg6OL4MhgCgOkRSR/view
+GOOGLE_DRIVE_FULLMODEL_FILE_ID = "1qF1SqDc_ekGCdmKuIg6OL4MhgCgOkRSR"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
+
+# Feature names from your model
+BULLBRAIN_FEATURES = [
+    "close",
+    "sma5",
+    "sma20",
+    "rsi14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "pct_change",
+    "vol_change",
+    "highlowrange_pct",
+]
+
+bullbrain_model = None  # will hold xgb.Booster instance
+
 # Simple in-memory cache for Grok and watchlist summaries
 cache = {}
 
 # ----------------------------------------------------------
+# 🌐 Utility: Safe JSON fetch
+# ----------------------------------------------------------
+def safe_json(url, timeout=10):
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+# ----------------------------------------------------------
+# 🌐 Download BullBrain model from Google Drive
+# ----------------------------------------------------------
+def download_bullbrain_model_from_drive():
+    """Downloads BullBrain v1 full XGBoost JSON model from Google Drive."""
+    try:
+        print("⬇️ Downloading BullBrain v1 full model from Google Drive...")
+        url = f"https://drive.google.com/uc?export=download&id={GOOGLE_DRIVE_FULLMODEL_FILE_ID}"
+        resp = requests.get(url, timeout=30)
+
+        if resp.status_code != 200:
+            print("❌ Failed to download BullBrain model:", resp.status_code, resp.text[:200])
+            raise RuntimeError(f"Download failed: {resp.status_code}")
+
+        os.makedirs(os.path.dirname(FULLMODEL_LOCAL_PATH), exist_ok=True)
+        with open(FULLMODEL_LOCAL_PATH, "wb") as f:
+            f.write(resp.content)
+
+        print(f"✅ BullBrain model saved to {FULLMODEL_LOCAL_PATH}")
+    except Exception as e:
+        print("❌ BullBrain model download failed:", e)
+        raise
+
+# ----------------------------------------------------------
+# 📦 Load BullBrain XGBoost booster from local file
+# ----------------------------------------------------------
+def load_bullbrain_model():
+    """Loads BullBrain v1 model from FULLMODEL_LOCAL_PATH into memory."""
+    if not os.path.exists(FULLMODEL_LOCAL_PATH):
+        raise FileNotFoundError(f"BullBrain model file not found at {FULLMODEL_LOCAL_PATH}")
+
+    booster = xgb.Booster()
+    booster.load_model(FULLMODEL_LOCAL_PATH)
+    print("✅ BullBrain v1 model loaded into memory.")
+    return booster
+
+# ----------------------------------------------------------
+# 🚀 Startup hook — download + load BullBrain
+# ----------------------------------------------------------
+@app.on_event("startup")
+def on_startup():
+    global bullbrain_model
+    print("🚀 Backend starting… fetching BullBrain v1 model")
+    try:
+        download_bullbrain_model_from_drive()
+        bullbrain_model = load_bullbrain_model()
+    except Exception as e:
+        print("⚠️ Failed to initialize BullBrain model on startup:", e)
+
+# ----------------------------------------------------------
 @app.get("/")
 def root():
-    return {"status": "BullSignalsAI Backend Running"}
+    return {
+        "status": "BullSignalsAI Backend Running",
+        "bullbrain_loaded": bullbrain_model is not None,
+        "features": BULLBRAIN_FEATURES,
+    }
 
 # ----------------------------------------------------------
 # Helper: backend quote fetch (Finnhub + Yahoo fallback)
 # ----------------------------------------------------------
 def backend_fetch_quote(symbol: str):
     symbol = symbol.upper()
+
     try:
         quote = None
         profile = {}
 
+        # 1️⃣ FINNHUB — Primary
         if FINNHUB_KEY:
-            # Finnhub quote
             q_url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
-            quote = requests.get(q_url, timeout=8).json()
+            quote = safe_json(q_url, timeout=8)
 
-            # Finnhub profile for name (non-critical)
-            try:
-                p_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={FINNHUB_KEY}"
-                profile = requests.get(p_url, timeout=8).json()
-            except Exception:
-                profile = {}
+            # Profile (non-critical)
+            p_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={FINNHUB_KEY}"
+            profile = safe_json(p_url, timeout=8) or {}
 
-        # If Finnhub failed or price bad → Yahoo fallback
+        # 2️⃣ FALLBACK — If Finnhub bad, try Yahoo
         if not quote or "c" not in quote or quote["c"] in [None, 0]:
-            y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d"
-            y = requests.get(y_url, timeout=8).json()
-            meta = (
-                y.get("chart", {})
-                .get("result", [{}])[0]
-                .get("meta", {})
+            y_url = (
+                f"https://query1.finance.yahoo.com/v8/finance/chart/"
+                f"{symbol}?range=1d&interval=1d"
             )
+            y = safe_json(y_url, timeout=8)
+            if not y:
+                return {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "current": None,
+                    "change": 0,
+                    "changePct": 0,
+                    "high": 0,
+                    "low": 0,
+                    "open": 0,
+                    "prevClose": 0,
+                    "timestamp": int(datetime.datetime.utcnow().timestamp()),
+                }
+
+            try:
+                meta = (
+                    y.get("chart", {})
+                    .get("result", [{}])[0]
+                    .get("meta", {})
+                )
+            except Exception:
+                meta = {}
+
             close = meta.get("regularMarketPrice")
-            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+
             if close is None:
-                return None
+                return {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "current": None,
+                    "change": 0,
+                    "changePct": 0,
+                    "high": 0,
+                    "low": 0,
+                    "open": 0,
+                    "prevClose": 0,
+                    "timestamp": int(datetime.datetime.utcnow().timestamp()),
+                }
 
             change = (close - prev) if prev else 0.0
             change_pct = ((close - prev) / prev * 100) if prev else 0.0
-            now_ts = int(datetime.datetime.utcnow().timestamp())
+
             return {
                 "symbol": symbol,
                 "name": profile.get("name") or symbol,
@@ -85,14 +209,17 @@ def backend_fetch_quote(symbol: str):
                 "low": float(close),
                 "open": float(prev) if prev else float(close),
                 "prevClose": float(prev) if prev else float(close),
-                "timestamp": now_ts,
+                "timestamp": int(datetime.datetime.utcnow().timestamp()),
             }
 
-        # Normal Finnhub case
+        # 3️⃣ NORMAL FINNHUB PATH
         price = float(quote["c"])
-        prev = float(quote.get("pc") or 0) or price
+        prev = float(quote.get("pc") or price)
+
         change = float(quote.get("d") or (price - prev))
-        change_pct = float(quote.get("dp") or ((price - prev) / prev * 100 if prev else 0))
+        change_pct = float(
+            quote.get("dp") or ((price - prev) / prev * 100 if prev else 0)
+        )
 
         return {
             "symbol": symbol,
@@ -104,12 +231,254 @@ def backend_fetch_quote(symbol: str):
             "low": float(quote.get("l") or price),
             "open": float(quote.get("o") or prev),
             "prevClose": float(prev),
-            "timestamp": int(quote.get("t") or datetime.datetime.utcnow().timestamp()),
+            "timestamp": int(
+                quote.get("t") or datetime.datetime.utcnow().timestamp()
+            ),
         }
 
     except Exception as e:
-        print("backend_fetch_quote error:", e)
+        print("backend_fetch_quote fatal error:", e)
+        return {
+            "symbol": symbol,
+            "name": symbol,
+            "current": None,
+            "change": 0,
+            "changePct": 0,
+            "high": 0,
+            "low": 0,
+            "open": 0,
+            "prevClose": 0,
+            "timestamp": int(datetime.datetime.utcnow().timestamp()),
+        }
+
+# ----------------------------------------------------------
+# 📈 Helper: Fetch OHLCV candles (Finnhub → Yahoo fallback)
+# ----------------------------------------------------------
+def fetch_daily_candles(symbol: str, min_points: int = 60):
+    symbol = symbol.upper()
+
+    # Try Finnhub candles first
+    if FINNHUB_KEY:
+        try:
+            now = int(datetime.datetime.utcnow().timestamp())
+            # ~400 days window
+            frm = now - 400 * 24 * 60 * 60
+            url = (
+                f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}"
+                f"&resolution=D&from={frm}&to={now}&token={FINNHUB_KEY}"
+            )
+            j = safe_json(url, timeout=10)
+            if j and j.get("s") == "ok" and len(j.get("c", [])) >= min_points:
+                closes = j["c"]
+                highs = j["h"]
+                lows = j["l"]
+                vols = j["v"]
+                return {
+                    "source": "finnhub",
+                    "close": closes,
+                    "high": highs,
+                    "low": lows,
+                    "volume": vols,
+                }
+        except Exception as e:
+            print("Finnhub candles error:", e)
+
+    # Fallback: Yahoo Finance
+    try:
+        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
+        y = safe_json(y_url, timeout=10)
+        if not y:
+            return None
+
+        result = y.get("chart", {}).get("result", [])
+        if not result:
+            return None
+
+        indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+        closes = indicators.get("close", [])
+        highs = indicators.get("high", [])
+        lows = indicators.get("low", [])
+        vols = indicators.get("volume", [])
+
+        if not closes or len(closes) < min_points:
+            return None
+
+        return {
+            "source": "yahoo",
+            "close": closes,
+            "high": highs,
+            "low": lows,
+            "volume": vols,
+        }
+    except Exception as e:
+        print("Yahoo candles error:", e)
         return None
+
+# ----------------------------------------------------------
+# 🧮 Helper: Compute features for BullBrain
+# ----------------------------------------------------------
+def compute_bullbrain_features(candles: dict):
+    """
+    Input: dict with close, high, low, volume lists
+    Output: (features_vector[1x10], feature_dict, last_close)
+    """
+    closes = candles["close"]
+    highs = candles["high"]
+    lows = candles["low"]
+    vols = candles["volume"]
+
+    df = pd.DataFrame({
+        "close": closes,
+        "high": highs,
+        "low": lows,
+        "volume": vols,
+    })
+
+    # SMAs
+    df["sma5"] = df["close"].rolling(window=5).mean()
+    df["sma20"] = df["close"].rolling(window=20).mean()
+
+    # RSI-14
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df["rsi14"] = 100 - (100 / (1 + rs))
+
+    # MACD(12,26,9)
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+
+    # % change in price
+    df["pct_change"] = df["close"].pct_change() * 100.0
+
+    # % change in volume
+    df["vol_change"] = df["volume"].pct_change() * 100.0
+
+    # High-low range as % of close
+    df["highlowrange_pct"] = (df["high"] - df["low"]) / df["close"] * 100.0
+
+    # Drop rows without full features
+    df_feat = df.dropna().copy()
+    if df_feat.empty:
+        raise RuntimeError("Not enough data to compute BullBrain features.")
+
+    row = df_feat.iloc[-1]
+
+    feature_dict = {
+        "close": float(row["close"]),
+        "sma5": float(row["sma5"]),
+        "sma20": float(row["sma20"]),
+        "rsi14": float(row["rsi14"]),
+        "macd": float(row["macd"]),
+        "macd_signal": float(row["macd_signal"]),
+        "macd_hist": float(row["macd_hist"]),
+        "pct_change": float(row["pct_change"]),
+        "vol_change": float(row["vol_change"]),
+        "highlowrange_pct": float(row["highlowrange_pct"]),
+    }
+
+    features_vector = np.array(
+        [feature_dict[name] for name in BULLBRAIN_FEATURES],
+        dtype=float,
+    ).reshape(1, -1)
+
+    last_close = float(row["close"])
+    return features_vector, feature_dict, last_close
+
+# ----------------------------------------------------------
+# 🔮 BullBrain v1 Inference
+# ----------------------------------------------------------
+def bullbrain_infer(features_vector: np.ndarray):
+    """
+    Run XGBoost booster on a 1x10 feature vector.
+    Assumes model outputs probability of price going up (0-1).
+    """
+    global bullbrain_model
+    if bullbrain_model is None:
+        raise RuntimeError("BullBrain model not loaded")
+
+    dmat = xgb.DMatrix(features_vector, feature_names=BULLBRAIN_FEATURES)
+    preds = bullbrain_model.predict(dmat)
+    if not len(preds):
+        raise RuntimeError("Model returned no prediction")
+
+    prob_up = float(preds[0])
+
+    if prob_up >= 0.55:
+        signal = "BUY"
+    elif prob_up <= 0.45:
+        signal = "SELL"
+    else:
+        signal = "HOLD"
+
+    confidence = round(max(prob_up, 1 - prob_up) * 100.0, 2)
+
+    return {
+        "signal": signal,
+        "confidence": confidence,
+        "probability_up": round(prob_up, 4),
+        "probability_down": round(1 - prob_up, 4),
+        "raw_output": prob_up,
+    }
+
+# ----------------------------------------------------------
+# 🔁 API: Refresh BullBrain model (Render Cron can call this)
+# ----------------------------------------------------------
+@app.get("/refresh-model")
+def refresh_model():
+    """
+    Force re-download + reload of BullBrain v1 model from Google Drive.
+    Hit this from Render Cron AFTER your daily training finishes.
+    """
+    global bullbrain_model
+    try:
+        download_bullbrain_model_from_drive()
+        bullbrain_model = load_bullbrain_model()
+        return {"status": "ok", "path": FULLMODEL_LOCAL_PATH}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+# ----------------------------------------------------------
+# 🔮 API: BullBrain prediction for a symbol (MAIN ENDPOINT)
+# ----------------------------------------------------------
+@app.get("/predict/{symbol}")
+def predict_symbol(symbol: str):
+    """
+    Full BullBrain v1 signal for a ticker:
+    - Fetch daily candles (Finnhub → Yahoo fallback)
+    - Compute 10 engineered features
+    - Run XGBoost full model
+    - Return BUY/SELL/HOLD + confidence and features
+    """
+    symbol = symbol.upper()
+    try:
+        if bullbrain_model is None:
+            return {"error": "BullBrain model not loaded yet."}
+
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return {"error": f"Could not fetch candles for {symbol}"}
+
+        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+        inference = bullbrain_infer(features_vec)
+
+        return {
+            "symbol": symbol,
+            "source": candles["source"],
+            "price": last_close,
+            "features": feature_dict,
+            "model": inference,
+        }
+
+    except Exception as e:
+        print("BullBrain /predict error:", e)
+        return {"error": str(e), "symbol": symbol}
 
 # ----------------------------------------------------------
 # 1. Quote (Primary Finnhub, fallback Yahoo)
@@ -476,7 +845,6 @@ def market_news():
 # ----------------------------------------------------------
 # 12. SEARCH + WATCHLIST endpoints (for WatchlistScreen)
 # ----------------------------------------------------------
-
 def compute_signal_and_conf(change_pct: float):
     try:
         cp = float(change_pct or 0.0)
@@ -492,7 +860,6 @@ def compute_signal_and_conf(change_pct: float):
 
     confidence = min(95, max(70, abs(cp) * 10 + 70))
     return signal, int(round(confidence))
-
 
 def build_watchlist_item(symbol: str):
     symbol = symbol.upper()
@@ -582,7 +949,6 @@ def build_watchlist_item(symbol: str):
         "sentimentSummary": summary,
     }
 
-
 @app.get("/search")
 def search(q: str, limit: int = 5):
     """Autocomplete for tickers (used by WatchlistScreen)."""
@@ -603,7 +969,6 @@ def search(q: str, limit: int = 5):
         print("SEARCH error:", e)
         return {"data": []}
 
-
 @app.get("/watchlist-item/{symbol}")
 def watchlist_item(symbol: str):
     """Single watchlist item data for a ticker."""
@@ -611,7 +976,6 @@ def watchlist_item(symbol: str):
         return build_watchlist_item(symbol)
     except Exception as e:
         return {"error": str(e)}
-
 
 @app.get("/watchlist-batch")
 def watchlist_batch(symbols: str = Query(..., description="Comma-separated tickers")):
