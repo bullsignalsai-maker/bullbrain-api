@@ -235,85 +235,50 @@ def backend_fetch_quote(symbol: str):
 # 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
 # ----------------------------------------------------------
 def fetch_daily_candles(symbol: str, min_points: int = 60):
-    symbol = symbol.upper()
+    """
+    Fetch 120 days of OHLCV candles using Polygon.io
+    """
+    symbol = symbol.upper().strip()
 
-    # 1️⃣ Polygon: 120-day lookback (to get ~60 trading days)
-    if POLYGON_KEY:
-        try:
-            end_date = datetime.date.today()
-            start_date = end_date - datetime.timedelta(days=120)
-            url = (
-                f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-                f"{start_date}/{end_date}"
-                f"?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
-            )
-            j = safe_json(url, timeout=10)
-            if j and isinstance(j.get("results"), list) and len(j["results"]) >= min_points:
-                closes, highs, lows, vols = [], [], [], []
-                for r in j["results"]:
-                    c = r.get("c")
-                    h = r.get("h")
-                    l = r.get("l")
-                    v = r.get("v")
-                    if c is None or h is None or l is None or v is None:
-                        continue
-                    closes.append(float(c))
-                    highs.append(float(h))
-                    lows.append(float(l))
-                    vols.append(float(v))
+    POLYGON_KEY = os.getenv("POLYGON_API_KEY")
+    if not POLYGON_KEY:
+        print("❌ Missing POLYGON_API_KEY")
+        return None
 
-                if len(closes) >= min_points:
-                    return {
-                        "source": "polygon",
-                        "close": closes,
-                        "high": highs,
-                        "low": lows,
-                        "volume": vols,
-                    }
-        except Exception as e:
-            print("Polygon candles error:", e)
-
-    # 2️⃣ Yahoo Finance fallback (6-month range)
     try:
-        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=6mo&interval=1d"
-        y = safe_json(y_url, timeout=10)
-        if not y:
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+            f"now-180d/now?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_API_KEY}"
+        )
+        r = requests.get(url, timeout=10)
+        j = r.json()
+
+        if "results" not in j or not isinstance(j["results"], list):
+            print("❌ Polygon returned no results:", j)
             return None
 
-        result = y.get("chart", {}).get("result", [])
-        if not result:
+        results = j["results"]
+        if len(results) < min_points:
+            print("❌ Not enough candles:", len(results))
             return None
 
-        indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
-        closes = indicators.get("close", [])
-        highs = indicators.get("high", [])
-        lows = indicators.get("low", [])
-        vols = indicators.get("volume", [])
-
-        if not closes or len(closes) < min_points:
-            return None
-
-        # Clean Nones
-        cleaned = [
-            (c, h, l, v)
-            for c, h, l, v in zip(closes, highs, lows, vols)
-            if c is not None and h is not None and l is not None and v is not None
-        ]
-        if len(cleaned) < min_points:
-            return None
-
-        closes, highs, lows, vols = zip(*cleaned)
+        closes = [x["c"] for x in results]
+        highs = [x["h"] for x in results]
+        lows = [x["l"] for x in results]
+        vols = [x["v"] for x in results]
 
         return {
-            "source": "yahoo",
-            "close": list(map(float, closes)),
-            "high": list(map(float, highs)),
-            "low": list(map(float, lows)),
-            "volume": list(map(float, vols)),
+            "source": "polygon",
+            "close": closes,
+            "high": highs,
+            "low": lows,
+            "volume": vols,
         }
+
     except Exception as e:
-        print("Yahoo candles error:", e)
+        print("Polygon error:", e)
         return None
+
 
 
 # ----------------------------------------------------------
