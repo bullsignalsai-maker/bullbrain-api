@@ -1,6 +1,9 @@
 fastapi
 uvicorn
-scikit-learn
-joblib
-pydantic
 requests
+pandas
+numpy
+xgboost
+python-dateutil
+feedparser
+scikit-learn
