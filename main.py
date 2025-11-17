@@ -252,67 +252,95 @@ def backend_fetch_quote(symbol: str):
         }
 
 # ----------------------------------------------------------
-# 📈 Helper: Fetch OHLCV candles (Finnhub → Yahoo fallback)
+# 📈 Helper: Fetch OHLCV # ----------------------------------------------------------
+# 📈 Helper: Fetch OHLCV candles (Polygon → Finnhub → Yahoo)
 # ----------------------------------------------------------
 def fetch_daily_candles(symbol: str, min_points: int = 60):
     symbol = symbol.upper()
 
-    # Try Finnhub candles first
+    # 1️⃣ POLYGON (Massive.com)
+    POLYGON_KEY = os.getenv("POLYGON_API_KEY")
+    if POLYGON_KEY:
+        try:
+            url = (
+                f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+                f"{(datetime.date.today() - datetime.timedelta(days=400)).isoformat()}/"
+                f"{datetime.date.today().isoformat()}?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
+            )
+
+            pj = safe_json(url, timeout=8)
+
+            if pj and pj.get("results"):
+                closes = [x["c"] for x in pj["results"]]
+                highs = [x["h"] for x in pj["results"]]
+                lows = [x["l"] for x in pj["results"]]
+                vols = [x["v"] for x in pj["results"]]
+
+                if len(closes) >= min_points:
+                    return {
+                        "source": "polygon",
+                        "close": closes,
+                        "high": highs,
+                        "low": lows,
+                        "volume": vols,
+                    }
+        except Exception as e:
+            print("Polygon error:", e)
+
+    # 2️⃣ FINNHUB
     if FINNHUB_KEY:
         try:
             now = int(datetime.datetime.utcnow().timestamp())
-            # ~400 days window
-            frm = now - 400 * 24 * 60 * 60
+            frm = now - 400 * 24 * 60 * 60  # ~1.1 years
+
             url = (
                 f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}"
                 f"&resolution=D&from={frm}&to={now}&token={FINNHUB_KEY}"
             )
-            j = safe_json(url, timeout=10)
+            j = safe_json(url, timeout=8)
+
             if j and j.get("s") == "ok" and len(j.get("c", [])) >= min_points:
-                closes = j["c"]
-                highs = j["h"]
-                lows = j["l"]
-                vols = j["v"]
                 return {
                     "source": "finnhub",
-                    "close": closes,
-                    "high": highs,
-                    "low": lows,
-                    "volume": vols,
+                    "close": j["c"],
+                    "high": j["h"],
+                    "low": j["l"],
+                    "volume": j["v"],
                 }
         except Exception as e:
-            print("Finnhub candles error:", e)
+            print("Finnhub error:", e)
 
-    # Fallback: Yahoo Finance
+    # 3️⃣ YAHOO FALLBACK (free & no key)
     try:
-        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
-        y = safe_json(y_url, timeout=10)
-        if not y:
-            return None
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{symbol}?range=1y&interval=1d"
+        )
+        y = safe_json(url, timeout=8)
 
-        result = y.get("chart", {}).get("result", [])
-        if not result:
-            return None
+        if y:
+            result = y.get("chart", {}).get("result", [])
+            if result:
+                q = result[0].get("indicators", {}).get("quote", [{}])[0]
 
-        indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
-        closes = indicators.get("close", [])
-        highs = indicators.get("high", [])
-        lows = indicators.get("low", [])
-        vols = indicators.get("volume", [])
+                closes = q.get("close", [])
+                highs = q.get("high", [])
+                lows = q.get("low", [])
+                vols = q.get("volume", [])
 
-        if not closes or len(closes) < min_points:
-            return None
-
-        return {
-            "source": "yahoo",
-            "close": closes,
-            "high": highs,
-            "low": lows,
-            "volume": vols,
-        }
+                if len(closes) >= min_points:
+                    return {
+                        "source": "yahoo",
+                        "close": closes,
+                        "high": highs,
+                        "low": lows,
+                        "volume": vols,
+                    }
     except Exception as e:
-        print("Yahoo candles error:", e)
-        return None
+        print("Yahoo error:", e)
+
+    # ❌ TOTAL FAILURE
+    return None
 
 # ----------------------------------------------------------
 # 🧮 Helper: Compute features for BullBrain
