@@ -14,11 +14,12 @@ app = FastAPI()
 
 # Allow Expo mobile app access
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # You can restrict later to your app domain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware(
+        allow_origins=["*"],  # you can restrict later
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 )
 
 # ----------------------------------------------------------
@@ -28,6 +29,7 @@ FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")  # 🔵 NEW
 
 MODEL = "grok-4-fast-reasoning"
 GROK_STOCK_CACHE_HOURS = 6
@@ -36,12 +38,11 @@ WATCH_GROK_CACHE_HOURS = 24
 # ----------------------------------------------------------
 # 🔥 BullBrain v1 Full Model (XGBoost JSON)
 # ----------------------------------------------------------
-# Full model trained in Colab and saved as XGBoost JSON
-# Drive link: https://drive.google.com/file/d/1qF1SqDc_ekGCdmKuIg6OL4MhgCgOkRSR/view
+# Drive file: bullbrain_v1_full.json (exported from Colab)
 GOOGLE_DRIVE_FULLMODEL_FILE_ID = "1qF1SqDc_ekGCdmKuIg6OL4MhgCgOkRSR"
 FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
 
-# Feature names from your model
+# Feature names from your model metadata
 BULLBRAIN_FEATURES = [
     "close",
     "sma5",
@@ -60,6 +61,7 @@ bullbrain_model = None  # will hold xgb.Booster instance
 # Simple in-memory cache for Grok and watchlist summaries
 cache = {}
 
+
 # ----------------------------------------------------------
 # 🌐 Utility: Safe JSON fetch
 # ----------------------------------------------------------
@@ -71,6 +73,7 @@ def safe_json(url, timeout=10):
         return r.json()
     except Exception:
         return None
+
 
 # ----------------------------------------------------------
 # 🌐 Download BullBrain model from Google Drive
@@ -95,6 +98,7 @@ def download_bullbrain_model_from_drive():
         print("❌ BullBrain model download failed:", e)
         raise
 
+
 # ----------------------------------------------------------
 # 📦 Load BullBrain XGBoost booster from local file
 # ----------------------------------------------------------
@@ -107,6 +111,7 @@ def load_bullbrain_model():
     booster.load_model(FULLMODEL_LOCAL_PATH)
     print("✅ BullBrain v1 model loaded into memory.")
     return booster
+
 
 # ----------------------------------------------------------
 # 🚀 Startup hook — download + load BullBrain
@@ -121,6 +126,7 @@ def on_startup():
     except Exception as e:
         print("⚠️ Failed to initialize BullBrain model on startup:", e)
 
+
 # ----------------------------------------------------------
 @app.get("/")
 def root():
@@ -129,6 +135,7 @@ def root():
         "bullbrain_loaded": bullbrain_model is not None,
         "features": BULLBRAIN_FEATURES,
     }
+
 
 # ----------------------------------------------------------
 # Helper: backend quote fetch (Finnhub + Yahoo fallback)
@@ -142,12 +149,21 @@ def backend_fetch_quote(symbol: str):
 
         # 1️⃣ FINNHUB — Primary
         if FINNHUB_KEY:
+            def _safe_json(url_):
+                try:
+                    r = requests.get(url_, timeout=8)
+                    if r.status_code != 200:
+                        return None
+                    return r.json()
+                except Exception:
+                    return None
+
             q_url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
-            quote = safe_json(q_url, timeout=8)
+            quote = _safe_json(q_url)
 
             # Profile (non-critical)
             p_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={FINNHUB_KEY}"
-            profile = safe_json(p_url, timeout=8) or {}
+            profile = _safe_json(p_url) or {}
 
         # 2️⃣ FALLBACK — If Finnhub bad, try Yahoo
         if not quote or "c" not in quote or quote["c"] in [None, 0]:
@@ -251,30 +267,46 @@ def backend_fetch_quote(symbol: str):
             "timestamp": int(datetime.datetime.utcnow().timestamp()),
         }
 
+
 # ----------------------------------------------------------
-# 📈 Helper: Fetch OHLCV # ----------------------------------------------------------
 # 📈 Helper: Fetch OHLCV candles (Polygon → Finnhub → Yahoo)
 # ----------------------------------------------------------
 def fetch_daily_candles(symbol: str, min_points: int = 60):
     symbol = symbol.upper()
 
-    # 1️⃣ POLYGON (Massive.com)
-    POLYGON_KEY = os.getenv("POLYGON_API_KEY")
-    if POLYGON_KEY:
+    # 1️⃣ Polygon first (best data)
+    if POLYGON_API_KEY:
         try:
+            today = datetime.date.today()
+            frm = today - datetime.timedelta(days=365 * 2)  # ~2 years
+            from_str = frm.strftime("%Y-%m-%d")
+            to_str = today.strftime("%Y-%m-%d")
+
             url = (
                 f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-                f"{(datetime.date.today() - datetime.timedelta(days=400)).isoformat()}/"
-                f"{datetime.date.today().isoformat()}?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_KEY}"
+                f"{from_str}/{to_str}"
+                f"?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_API_KEY}"
             )
 
-            pj = safe_json(url, timeout=8)
+            j = safe_json(url, timeout=10)
+            if j and j.get("status") == "OK" and j.get("results"):
+                results = j["results"]
+                closes = []
+                highs = []
+                lows = []
+                vols = []
 
-            if pj and pj.get("results"):
-                closes = [x["c"] for x in pj["results"]]
-                highs = [x["h"] for x in pj["results"]]
-                lows = [x["l"] for x in pj["results"]]
-                vols = [x["v"] for x in pj["results"]]
+                for b in results:
+                    c = b.get("c")
+                    h = b.get("h")
+                    l = b.get("l")
+                    v = b.get("v")
+                    if c is None or h is None or l is None or v is None:
+                        continue
+                    closes.append(float(c))
+                    highs.append(float(h))
+                    lows.append(float(l))
+                    vols.append(float(v))
 
                 if len(closes) >= min_points:
                     return {
@@ -285,65 +317,76 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
                         "volume": vols,
                     }
         except Exception as e:
-            print("Polygon error:", e)
+            print("Polygon candles error:", e)
 
-    # 2️⃣ FINNHUB
+    # 2️⃣ Finnhub candles (secondary)
     if FINNHUB_KEY:
         try:
-            now = int(datetime.datetime.utcnow().timestamp())
-            frm = now - 400 * 24 * 60 * 60  # ~1.1 years
-
+            now_ts = int(datetime.datetime.utcnow().timestamp())
+            frm_ts = now_ts - 400 * 24 * 60 * 60  # ~400 days
             url = (
                 f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}"
-                f"&resolution=D&from={frm}&to={now}&token={FINNHUB_KEY}"
+                f"&resolution=D&from={frm_ts}&to={now_ts}&token={FINNHUB_KEY}"
             )
-            j = safe_json(url, timeout=8)
-
+            j = safe_json(url, timeout=10)
             if j and j.get("s") == "ok" and len(j.get("c", [])) >= min_points:
+                closes = [float(x) for x in j["c"]]
+                highs = [float(x) for x in j["h"]]
+                lows = [float(x) for x in j["l"]]
+                vols = [float(x) for x in j["v"]]
                 return {
                     "source": "finnhub",
-                    "close": j["c"],
-                    "high": j["h"],
-                    "low": j["l"],
-                    "volume": j["v"],
+                    "close": closes,
+                    "high": highs,
+                    "low": lows,
+                    "volume": vols,
                 }
         except Exception as e:
-            print("Finnhub error:", e)
+            print("Finnhub candles error:", e)
 
-    # 3️⃣ YAHOO FALLBACK (free & no key)
+    # 3️⃣ Yahoo Finance (final fallback)
     try:
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{symbol}?range=1y&interval=1d"
-        )
-        y = safe_json(url, timeout=8)
+        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
+        y = safe_json(y_url, timeout=10)
+        if not y:
+            return None
 
-        if y:
-            result = y.get("chart", {}).get("result", [])
-            if result:
-                q = result[0].get("indicators", {}).get("quote", [{}])[0]
+        result = y.get("chart", {}).get("result", [])
+        if not result:
+            return None
 
-                closes = q.get("close", [])
-                highs = q.get("high", [])
-                lows = q.get("low", [])
-                vols = q.get("volume", [])
+        indicators = result[0].get("indicators", {}).get("quote", [{}])[0]
+        closes = indicators.get("close", []) or []
+        highs = indicators.get("high", []) or []
+        lows = indicators.get("low", []) or []
+        vols = indicators.get("volume", []) or []
 
-                if len(closes) >= min_points:
-                    return {
-                        "source": "yahoo",
-                        "close": closes,
-                        "high": highs,
-                        "low": lows,
-                        "volume": vols,
-                    }
+        if not closes or len(closes) < min_points:
+            return None
+
+        closes = [float(x) for x in closes if x is not None]
+        highs = [float(x) for x in highs[: len(closes)] if x is not None]
+        lows = [float(x) for x in lows[: len(closes)] if x is not None]
+        vols = [float((x or 0.0)) for x in vols[: len(closes)]]
+
+        n = min(len(closes), len(highs), len(lows), len(vols))
+        if n < min_points:
+            return None
+
+        return {
+            "source": "yahoo",
+            "close": closes[:n],
+            "high": highs[:n],
+            "low": lows[:n],
+            "volume": vols[:n],
+        }
     except Exception as e:
-        print("Yahoo error:", e)
+        print("Yahoo candles error:", e)
+        return None
 
-    # ❌ TOTAL FAILURE
-    return None
 
 # ----------------------------------------------------------
-# 🧮 Helper: Compute features for BullBrain
+# 🧮 Helper: Compute 10-engineered features for BullBrain
 # ----------------------------------------------------------
 def compute_bullbrain_features(candles: dict):
     """
@@ -355,12 +398,14 @@ def compute_bullbrain_features(candles: dict):
     lows = candles["low"]
     vols = candles["volume"]
 
-    df = pd.DataFrame({
-        "close": closes,
-        "high": highs,
-        "low": lows,
-        "volume": vols,
-    })
+    df = pd.DataFrame(
+        {
+            "close": closes,
+            "high": highs,
+            "low": lows,
+            "volume": vols,
+        }
+    )
 
     # SMAs
     df["sma5"] = df["close"].rolling(window=5).mean()
@@ -419,6 +464,7 @@ def compute_bullbrain_features(candles: dict):
     last_close = float(row["close"])
     return features_vector, feature_dict, last_close
 
+
 # ----------------------------------------------------------
 # 🔮 BullBrain v1 Inference
 # ----------------------------------------------------------
@@ -455,6 +501,7 @@ def bullbrain_infer(features_vector: np.ndarray):
         "raw_output": prob_up,
     }
 
+
 # ----------------------------------------------------------
 # 🔁 API: Refresh BullBrain model (Render Cron can call this)
 # ----------------------------------------------------------
@@ -472,6 +519,7 @@ def refresh_model():
     except Exception as e:
         return {"status": "failed", "error": str(e)}
 
+
 # ----------------------------------------------------------
 # 🔮 API: BullBrain prediction for a symbol (MAIN ENDPOINT)
 # ----------------------------------------------------------
@@ -479,7 +527,7 @@ def refresh_model():
 def predict_symbol(symbol: str):
     """
     Full BullBrain v1 signal for a ticker:
-    - Fetch daily candles (Finnhub → Yahoo fallback)
+    - Fetch daily candles (Polygon → Finnhub → Yahoo fallback)
     - Compute 10 engineered features
     - Run XGBoost full model
     - Return BUY/SELL/HOLD + confidence and features
@@ -508,6 +556,7 @@ def predict_symbol(symbol: str):
         print("BullBrain /predict error:", e)
         return {"error": str(e), "symbol": symbol}
 
+
 # ----------------------------------------------------------
 # 1. Quote (Primary Finnhub, fallback Yahoo)
 # ----------------------------------------------------------
@@ -532,6 +581,7 @@ def quote(symbol: str):
     except Exception as e:
         return {"error": str(e)}
 
+
 # ----------------------------------------------------------
 # 2. Analyst recommendations
 # ----------------------------------------------------------
@@ -545,6 +595,7 @@ def recommendations(symbol: str):
         return {"data": data}
     except Exception as e:
         return {"error": str(e)}
+
 
 # ----------------------------------------------------------
 # 3. Generic Grok/XAI summary (kept if used elsewhere)
@@ -562,6 +613,7 @@ def grok_summary(payload: dict):
     except Exception as e:
         return {"error": str(e)}
 
+
 # ----------------------------------------------------------
 # 4. Full ticker data (combines /quote + /recommendations)
 # ----------------------------------------------------------
@@ -577,6 +629,7 @@ def ticker_full(symbol: str):
         }
     except Exception as e:
         return {"error": str(e)}
+
 
 # ----------------------------------------------------------
 # 5. Multiple quotes
@@ -594,6 +647,7 @@ def quotes(symbols: str):
         return out
     except Exception as e:
         return {"error": str(e)}
+
 
 # ----------------------------------------------------------
 # 6. Macro Watch (FMP)
@@ -613,6 +667,7 @@ def macro_watch():
     except Exception as e:
         return {"data": [], "error": str(e)}
 
+
 # ----------------------------------------------------------
 # 7. Earnings
 # ----------------------------------------------------------
@@ -630,6 +685,7 @@ def earnings():
         return {"data": data[:20] if isinstance(data, list) else []}
     except Exception as e:
         return {"data": [], "error": str(e)}
+
 
 # ----------------------------------------------------------
 # 8. Live stats (fear & greed + VIX + S&P)
@@ -678,6 +734,7 @@ def live_stats():
             "error": str(e),
         }
 
+
 # ----------------------------------------------------------
 # 9. Market Mood (Fear & Greed + VIX) — for MoodService
 # ----------------------------------------------------------
@@ -721,6 +778,7 @@ def market_mood():
             },
             "error": str(e),
         }
+
 
 # ----------------------------------------------------------
 # 10. Grok Stock Analysis (for StockDetailScreen)
@@ -804,6 +862,7 @@ Keep each section concise but meaningful. Include NFA disclaimer at end.
         print("GROK STOCK ERROR:", e)
         return {"text": "⚠️ AI analysis unavailable.", "updatedAt": None}
 
+
 # ----------------------------------------------------------
 # 11. Market News (for AIPulse / NewsFeedService)
 # ----------------------------------------------------------
@@ -870,6 +929,7 @@ def market_news():
 
     return {"data": uniq[:50]}
 
+
 # ----------------------------------------------------------
 # 12. SEARCH + WATCHLIST endpoints (for WatchlistScreen)
 # ----------------------------------------------------------
@@ -888,6 +948,7 @@ def compute_signal_and_conf(change_pct: float):
 
     confidence = min(95, max(70, abs(cp) * 10 + 70))
     return signal, int(round(confidence))
+
 
 def build_watchlist_item(symbol: str):
     symbol = symbol.upper()
@@ -977,6 +1038,7 @@ def build_watchlist_item(symbol: str):
         "sentimentSummary": summary,
     }
 
+
 @app.get("/search")
 def search(q: str, limit: int = 5):
     """Autocomplete for tickers (used by WatchlistScreen)."""
@@ -997,6 +1059,7 @@ def search(q: str, limit: int = 5):
         print("SEARCH error:", e)
         return {"data": []}
 
+
 @app.get("/watchlist-item/{symbol}")
 def watchlist_item(symbol: str):
     """Single watchlist item data for a ticker."""
@@ -1004,6 +1067,7 @@ def watchlist_item(symbol: str):
         return build_watchlist_item(symbol)
     except Exception as e:
         return {"error": str(e)}
+
 
 @app.get("/watchlist-batch")
 def watchlist_batch(symbols: str = Query(..., description="Comma-separated tickers")):
