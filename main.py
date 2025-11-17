@@ -11,16 +11,14 @@ import pandas as pd
 import xgboost as xgb
 
 app = FastAPI()
-
-# Allow Expo mobile app access
 app.add_middleware(
-    CORSMiddleware(
-        allow_origins=["*"],  # you can restrict later
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
 
 # ----------------------------------------------------------
 # Load keys from environment (Render dashboard)
