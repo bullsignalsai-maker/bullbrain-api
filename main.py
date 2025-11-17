@@ -234,52 +234,54 @@ def backend_fetch_quote(symbol: str):
 # ----------------------------------------------------------
 # 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
 # ----------------------------------------------------------
-def fetch_daily_candles(symbol: str, min_points: int = 60):
-    """
-    Fetch 120 days of OHLCV candles using Polygon.io
-    """
-    symbol = symbol.upper().strip()
-
-    POLYGON_KEY = os.getenv("POLYGON_API_KEY")
-    if not POLYGON_KEY:
-        print("❌ Missing POLYGON_API_KEY")
-        return None
+# ----------------------------------------------------------
+# 📈 Fetch candles from Polygon (180 days)
+# ----------------------------------------------------------
+def fetch_daily_candles(symbol: str, lookback_days: int = 180):
+    symbol = symbol.upper()
 
     try:
+        # Compute date range in UNIX timestamps
+        now = datetime.datetime.utcnow()
+        start = now - datetime.timedelta(days=lookback_days)
+
+        start_ts = int(start.timestamp())
+        end_ts = int(now.timestamp())
+
+        POLY_API = os.getenv("POLYGON_API_KEY")
+        if not POLY_API:
+            print("❌ Missing POLYGON_API_KEY")
+            return None
+
         url = (
             f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-            f"now-180d/now?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_API_KEY}"
+            f"{start_ts}/{end_ts}"
+            f"?adjusted=true&sort=asc&limit=5000&apiKey={POLY_API}"
         )
-        r = requests.get(url, timeout=10)
-        j = r.json()
 
-        if "results" not in j or not isinstance(j["results"], list):
-            print("❌ Polygon returned no results:", j)
+        resp = requests.get(url, timeout=10).json()
+
+        # Validation
+        if not resp or "results" not in resp or len(resp["results"]) < 60:
+            print("❌ Polygon returned no candles:", resp)
             return None
 
-        results = j["results"]
-        if len(results) < min_points:
-            print("❌ Not enough candles:", len(results))
-            return None
-
-        closes = [x["c"] for x in results]
-        highs = [x["h"] for x in results]
-        lows = [x["l"] for x in results]
-        vols = [x["v"] for x in results]
+        closes = [x["c"] for x in resp["results"]]
+        highs = [x["h"] for x in resp["results"]]
+        lows = [x["l"] for x in resp["results"]]
+        volumes = [x["v"] for x in resp["results"]]
 
         return {
             "source": "polygon",
             "close": closes,
             "high": highs,
             "low": lows,
-            "volume": vols,
+            "volume": volumes
         }
 
     except Exception as e:
-        print("Polygon error:", e)
+        print("Polygon candles error:", e)
         return None
-
-
 
 # ----------------------------------------------------------
 # 🧮 Helper: Compute 10-engineered features for BullBrain
