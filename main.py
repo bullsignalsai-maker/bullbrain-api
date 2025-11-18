@@ -28,7 +28,7 @@ FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 XAI_API_KEY = os.getenv("XAI_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-POLYGON_KEY = os.getenv("POLYGON_KEY")  # <— NEW
+POLYGON_KEY = os.getenv("POLYGON_API_KEY")  # <— NEW
 
 MODEL = "grok-4-fast-reasoning"
 GROK_STOCK_CACHE_HOURS = 6
@@ -233,55 +233,36 @@ def backend_fetch_quote(symbol: str):
 
 # ----------------------------------------------------------
 # 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
-# ----------------------------------------------------------
-# ----------------------------------------------------------
-# 📈 Fetch candles from Polygon (180 days)
-# ----------------------------------------------------------
-def fetch_daily_candles(symbol: str, lookback_days: int = 180):
+def fetch_daily_candles(symbol: str, min_points: int = 60):
     symbol = symbol.upper()
-
     try:
-        # Compute date range in UNIX timestamps
         now = datetime.datetime.utcnow()
-        start = now - datetime.timedelta(days=lookback_days)
+        end = int(now.timestamp())
+        start = int((now - datetime.timedelta(days=365)).timestamp())
 
-        start_ts = int(start.timestamp())
-        end_ts = int(now.timestamp())
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
+        j = safe_json(url)
+        if j and "results" in j:
 
-        POLY_API = os.getenv("POLYGON_API_KEY")
-        if not POLY_API:
-            print("❌ Missing POLYGON_API_KEY")
-            return None
+            closes = [r["c"] for r in j["results"]]
+            highs  = [r["h"] for r in j["results"]]
+            lows   = [r["l"] for r in j["results"]]
+            vols   = [r["v"] for r in j["results"]]
 
-        url = (
-            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-            f"{start_ts}/{end_ts}"
-            f"?adjusted=true&sort=asc&limit=5000&apiKey={POLY_API}"
-        )
-
-        resp = requests.get(url, timeout=10).json()
-
-        # Validation
-        if not resp or "results" not in resp or len(resp["results"]) < 60:
-            print("❌ Polygon returned no candles:", resp)
-            return None
-
-        closes = [x["c"] for x in resp["results"]]
-        highs = [x["h"] for x in resp["results"]]
-        lows = [x["l"] for x in resp["results"]]
-        volumes = [x["v"] for x in resp["results"]]
-
-        return {
-            "source": "polygon",
-            "close": closes,
-            "high": highs,
-            "low": lows,
-            "volume": volumes
-        }
+            if len(closes) >= min_points:
+                return {
+                    "source": "polygon",
+                    "close": closes,
+                    "high": highs,
+                    "low": lows,
+                    "volume": vols,
+                }
 
     except Exception as e:
-        print("Polygon candles error:", e)
-        return None
+        print("Polygon error:", e)
+
+    return None
+
 
 # ----------------------------------------------------------
 # 🧮 Helper: Compute 10-engineered features for BullBrain
