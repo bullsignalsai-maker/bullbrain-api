@@ -7,3 +7,4 @@ xgboost
 python-dateutil
 feedparser
 scikit-learn
+gdown

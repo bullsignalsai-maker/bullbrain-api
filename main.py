@@ -9,6 +9,8 @@ import json
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+import gdown  # <-- ADDED
+
 
 app = FastAPI()
 
@@ -37,7 +39,9 @@ WATCH_GROK_CACHE_HOURS = 24
 # ----------------------------------------------------------
 # 🔥 BullBrain v1 Full Model (XGBoost JSON)
 # ----------------------------------------------------------
-# If you ALSO want to refresh from Drive later, we can wire it back.
+# Google Drive model (REPLACE FILE_ID BELOW)
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
+
 FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
 
 BULLBRAIN_FEATURES = [
@@ -73,16 +77,31 @@ def safe_json(url, timeout=10):
 
 
 # ----------------------------------------------------------
-# 📦 Load BullBrain XGBoost booster from local file
+# 📦 NEW: Load BullBrain model from Google Drive
 # ----------------------------------------------------------
 def load_bullbrain_model():
-    """Loads BullBrain v1 model from FULLMODEL_LOCAL_PATH into memory."""
+    """Download newest BullBrain model from Google Drive and load it."""
+    os.makedirs("models", exist_ok=True)
+
+    print("🔥 Downloading BullBrain model from Google Drive...")
+
+    try:
+        gdown.download(MODEL_DRIVE_URL, FULLMODEL_LOCAL_PATH, quiet=False)
+        print("🔥 Model downloaded successfully.")
+    except Exception as e:
+        print("⚠️ Failed to download model. Using local file if available.")
+        print("Drive error:", e)
+
     if not os.path.exists(FULLMODEL_LOCAL_PATH):
-        raise FileNotFoundError(f"BullBrain model file not found at {FULLMODEL_LOCAL_PATH}")
+        raise FileNotFoundError(f"❌ Model missing at {FULLMODEL_LOCAL_PATH}")
 
     booster = xgb.Booster()
     booster.load_model(FULLMODEL_LOCAL_PATH)
-    print("✅ BullBrain v1 model loaded into memory.")
+
+    # DEBUG logs — extremely important
+    print("\n🔥 REAL MODEL FEATURE COUNT:", booster.num_features())
+    print("🔥 REAL MODEL FEATURES:", booster.feature_names, "\n")
+
     return booster
 
 
@@ -92,7 +111,7 @@ def load_bullbrain_model():
 @app.on_event("startup")
 def on_startup():
     global bullbrain_model
-    print("🚀 Backend starting… loading BullBrain v1 full model from disk")
+    print("🚀 Backend starting… loading BullBrain v1 model")
     try:
         bullbrain_model = load_bullbrain_model()
     except Exception as e:
