@@ -1,4 +1,4 @@
-# main.py — BullSignalsAI Backend (Production, with BullBrain v1 Full Model)
+# main.py — BullSignalsAI Backend (Production, with BullBrain v2 Full Model)
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,25 +37,34 @@ GROK_STOCK_CACHE_HOURS = 6
 WATCH_GROK_CACHE_HOURS = 24
 
 # ----------------------------------------------------------
-# 🔥 BullBrain v1 Full Model (XGBoost JSON)
+# 🔥 BullBrain v2 Full Model (XGBoost JSON)
 # ----------------------------------------------------------
-# Google Drive model (REPLACE FILE_ID BELOW)
-MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
 
-FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
+# 🔥 BullBrain v2 (40 features)
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1WfP6pksgsQGQiXH_M_6Kb9Hw2n84Onxv"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v2_40f.json"
 
+# 47-feature BullBrain v2
 BULLBRAIN_FEATURES = [
-    "close",
-    "sma5",
-    "sma20",
-    "rsi14",
-    "macd",
-    "macd_signal",
-    "macd_hist",
-    "pct_change",
-    "vol_change",
-    "highlowrange_pct",
+    "close","open","high","low","volume",
+    "sma5","sma10","sma20","sma50",
+    "ema5","ema12","ema26","ema50",
+    "vwap",
+    "rsi14","rsi7",
+    "macd","macd_signal","macd_hist",
+    "stoch_k","stoch_d",
+    "boll_mid","boll_upper","boll_lower","kelt_upper","kelt_lower",
+    "atr14","true_range",
+    "momentum10","roc10",
+    "pct_change","pct_change5","pct_change10",
+    "vol_change","vol_change5","vol_change10",
+    "highlowrange_pct","range5","range10",
+    "obv","mfi14",
+    "slope_close","slope_volume",
+    "zscore_close","zscore_volume",
+    "day_of_week",
 ]
+
 
 bullbrain_model = None  # will hold xgb.Booster instance
 
@@ -79,30 +88,43 @@ def safe_json(url, timeout=10):
 # ----------------------------------------------------------
 # 📦 NEW: Load BullBrain model from Google Drive
 # ----------------------------------------------------------
+
+# Google Drive model link (your file)
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
+
 def load_bullbrain_model():
-    """Download newest BullBrain model from Google Drive and load it."""
+    """Download latest BullBrain model from Google Drive and load it."""
+    print("🔥 BullBrain: Preparing model directory")
     os.makedirs("models", exist_ok=True)
 
-    print("🔥 Downloading BullBrain model from Google Drive...")
-
     try:
-        gdown.download(MODEL_DRIVE_URL, FULLMODEL_LOCAL_PATH, quiet=False)
-        print("🔥 Model downloaded successfully.")
+        print("🔥 Downloading latest model from Google Drive...")
+        gdown.download(
+            MODEL_DRIVE_URL,
+            FULLMODEL_LOCAL_PATH,
+            quiet=False,
+            fuzzy=True
+        )
+        print("🔥 Model download completed.")
     except Exception as e:
-        print("⚠️ Failed to download model. Using local file if available.")
+        print("⚠️ Download failed — attempting to load existing local model.")
         print("Drive error:", e)
 
     if not os.path.exists(FULLMODEL_LOCAL_PATH):
-        raise FileNotFoundError(f"❌ Model missing at {FULLMODEL_LOCAL_PATH}")
+        raise FileNotFoundError(
+            f"❌ No model found locally or on Drive: {FULLMODEL_LOCAL_PATH}"
+        )
 
     booster = xgb.Booster()
     booster.load_model(FULLMODEL_LOCAL_PATH)
 
-    # DEBUG logs — extremely important
-    print("\n🔥 REAL MODEL FEATURE COUNT:", booster.num_features())
-    print("🔥 REAL MODEL FEATURES:", booster.feature_names, "\n")
+    print("🔥 BullBrain model LOADED from:", FULLMODEL_LOCAL_PATH)
+    print("🔥 Booster num_features:", booster.num_features())
+    print("🔥 Booster feature_names:", booster.feature_names)
 
     return booster
+
 
 
 # ----------------------------------------------------------
@@ -284,17 +306,21 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
 
 
 # ----------------------------------------------------------
-# 🧮 Helper: Compute 10-engineered features for BullBrain
+# 🧮 Helper: Compute 47-engineered features for BullBrain
 # ----------------------------------------------------------
-def compute_bullbrain_features(candles: dict):
+def def compute_bullbrain_features(candles: dict):
     """
-    Input: dict with close, high, low, volume lists
-    Output: (features_vector[1x10], feature_dict, last_close)
+    Build all 47 engineered features for BullBrain v2.
+    Input: candles dict (close, high, low, volume)
+    Output:
+       features_vector → numpy 1x47
+       feature_dict    → for API response
+       last_close      → float
     """
     closes = candles["close"]
     highs = candles["high"]
-    lows = candles["low"]
-    vols = candles["volume"]
+    lows  = candles["low"]
+    vols  = candles["volume"]
 
     df = pd.DataFrame({
         "close": closes,
@@ -303,62 +329,137 @@ def compute_bullbrain_features(candles: dict):
         "volume": vols,
     })
 
-    # SMAs
-    df["sma5"] = df["close"].rolling(window=5).mean()
-    df["sma20"] = df["close"].rolling(window=20).mean()
+    # ---------------------------
+    # 1) Basic OHLCV
+    # ---------------------------
+    df["open"] = df["close"].shift(1)
+    df["open"].fillna(df["close"], inplace=True)
 
-    # RSI-14
+    # ---------------------------
+    # 2) Moving averages
+    # ---------------------------
+    df["sma5"]  = df["close"].rolling(5).mean()
+    df["sma10"] = df["close"].rolling(10).mean()
+    df["sma20"] = df["close"].rolling(20).mean()
+    df["sma50"] = df["close"].rolling(50).mean()
+
+    df["ema5"]  = df["close"].ewm(span=5, adjust=False).mean()
+    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
+    df["ema26"] = df["close"].ewm(span=26, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+
+    # ---------------------------
+    # 3) VWAP (approx daily)
+    # ---------------------------
+    df["vwap"] = (df["high"] + df["low"] + df["close"]) / 3
+
+    # ---------------------------
+    # 4) RSI
+    # ---------------------------
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df["rsi14"] = 100 - (100 / (1 + rs))
 
-    # MACD(12,26,9)
+    df["rsi14"] = 100 - 100 / (1 + gain.rolling(14).mean() / loss.rolling(14).mean())
+    df["rsi7"]  = 100 - 100 / (1 + gain.rolling(7).mean() / loss.rolling(7).mean())
+
+    # ---------------------------
+    # 5) MACD
+    # ---------------------------
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-    # % change in price
-    df["pct_change"] = df["close"].pct_change() * 100.0
+    # ---------------------------
+    # 6) Stoch
+    # ---------------------------
+    low14 = df["low"].rolling(14).min()
+    high14 = df["high"].rolling(14).max()
+    df["stoch_k"] = 100 * (df["close"] - low14) / (high14 - low14)
+    df["stoch_d"] = df["stoch_k"].rolling(3).mean()
 
-    # % change in volume
-    df["vol_change"] = df["volume"].pct_change() * 100.0
+    # ---------------------------
+    # 7) Bollinger Bands
+    # ---------------------------
+    mid = df["close"].rolling(20).mean()
+    std = df["close"].rolling(20).std()
+    df["boll_mid"] = mid
+    df["boll_upper"] = mid + 2 * std
+    df["boll_lower"] = mid - 2 * std
 
-    # High-low range as % of close
-    df["highlowrange_pct"] = (df["high"] - df["low"]) / df["close"] * 100.0
+    # ---------------------------
+    # 8) Keltner Channels (approx)
+    # ---------------------------
+    tr = (df["high"] - df["low"]).abs()
+    atr14 = tr.rolling(14).mean()
+    df["atr14"] = atr14
+    df["true_range"] = tr
 
-    # Drop rows without full features
-    df_feat = df.dropna().copy()
-    if df_feat.empty:
-        raise RuntimeError("Not enough data to compute BullBrain features.")
+    df["kelt_upper"] = mid + 1.5 * atr14
+    df["kelt_lower"] = mid - 1.5 * atr14
 
-    row = df_feat.iloc[-1]
+    # ---------------------------
+    # 9) Price & volume % changes
+    # ---------------------------
+    df["pct_change"]   = df["close"].pct_change() * 100
+    df["pct_change5"]  = df["close"].pct_change(5) * 100
+    df["pct_change10"] = df["close"].pct_change(10) * 100
 
-    feature_dict = {
-        "close": float(row["close"]),
-        "sma5": float(row["sma5"]),
-        "sma20": float(row["sma20"]),
-        "rsi14": float(row["rsi14"]),
-        "macd": float(row["macd"]),
-        "macd_signal": float(row["macd_signal"]),
-        "macd_hist": float(row["macd_hist"]),
-        "pct_change": float(row["pct_change"]),
-        "vol_change": float(row["vol_change"]),
-        "highlowrange_pct": float(row["highlowrange_pct"]),
-    }
+    df["vol_change"]   = df["volume"].pct_change() * 100
+    df["vol_change5"]  = df["volume"].pct_change(5) * 100
+    df["vol_change10"] = df["volume"].pct_change(10) * 100
+
+    # ---------------------------
+    # 10) Intraday ranges
+    # ---------------------------
+    df["highlowrange_pct"] = (df["high"] - df["low"]) / df["close"] * 100
+    df["range5"] = df["close"].rolling(5).apply(lambda x: (x.max() - x.min()))
+    df["range10"] = df["close"].rolling(10).apply(lambda x: (x.max() - x.min()))
+
+    # ---------------------------
+    # 11) OBV
+    # ---------------------------
+    df["obv"] = (np.sign(df["close"].diff()) * df["volume"]).fillna(0).cumsum()
+
+    # ---------------------------
+    # 12) MFI
+    # ---------------------------
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    money_flow = typical * df["volume"]
+    pos_flow = money_flow.where(typical.diff() > 0, 0)
+    neg_flow = money_flow.where(typical.diff() < 0, 0)
+    mfi_ratio = pos_flow.rolling(14).sum() / neg_flow.rolling(14).sum()
+    df["mfi14"] = 100 - (100 / (1 + mfi_ratio))
+
+    # ---------------------------
+    # 13) Slopes
+    # ---------------------------
+    df["slope_close"]  = df["close"].rolling(5).apply(lambda x: np.polyfit(range(5), x, 1)[0])
+    df["slope_volume"] = df["volume"].rolling(5).apply(lambda x: np.polyfit(range(5), x, 1)[0])
+
+    # ---------------------------
+    # 14) Z-scores
+    # ---------------------------
+    df["zscore_close"]  = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
+    df["zscore_volume"] = (df["volume"] - df["volume"].rolling(20).mean()) / df["volume"].rolling(20).std()
+
+    # ---------------------------
+    # 15) Day-of-week (0–6)
+    # ---------------------------
+    df["day_of_week"] = datetime.datetime.utcnow().weekday()
+
+    df_feat = df.dropna().iloc[-1]
+
+    feature_dict = {f: float(df_feat[f]) for f in BULLBRAIN_FEATURES}
 
     features_vector = np.array(
-        [feature_dict[name] for name in BULLBRAIN_FEATURES],
-        dtype=float,
+        [feature_dict[f] for f in BULLBRAIN_FEATURES],
+        dtype=float
     ).reshape(1, -1)
 
-    last_close = float(row["close"])
-    return features_vector, feature_dict, last_close
+    return features_vector, feature_dict, float(df_feat["close"])
 
 
 # ----------------------------------------------------------
@@ -383,12 +484,13 @@ def bullbrain_infer(features_vector: np.ndarray):
 
     prob_up = float(arr[0])
 
-    if prob_up >= 0.55:
-        signal = "BUY"
-    elif prob_up <= 0.45:
-        signal = "SELL"
-    else:
-        signal = "HOLD"
+            if prob_up >= 0.53:
+            signal = "BUY"
+        elif prob_up <= 0.47:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
+
 
     confidence = round(max(prob_up, 1 - prob_up) * 100.0, 2)
 
