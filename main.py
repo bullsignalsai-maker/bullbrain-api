@@ -101,23 +101,27 @@ def call_grok(system_prompt: str, user_prompt: str):
 bullbrain_model = None
 
 # v2 feature names (47 total)
-BULLBRAIN_FEATURES = [
-    "close", "open", "high", "low", "volume",
-    "sma5", "sma10", "sma20", "sma50",
-    "ema5", "ema12", "ema26", "ema50",
-    "vwap",
-    "rsi14", "rsi7",
-    "macd", "macd_signal", "macd_hist",
-    "stoch_k", "stoch_d",
-    "boll_mid", "boll_upper", "boll_lower", "kelt_upper", "kelt_lower",
-    "atr14", "true_range",
-    "momentum10", "roc10",
-    "pct_change", "pct_change5", "pct_change10",
-    "vol_change", "vol_change5", "vol_change10",
-    "highlowrange_pct", "range5", "range10",
-    "obv", "mfi14", "day_of_week",
-    "slope_close", "slope_volume", "zscore_close", "zscore_volume", "trend_strength",
+BULLBRAIN_FEATURES = ['close','open','high','low','volume',
+ 'sma5','sma10','sma20','sma50',
+ 'ema5','ema12','ema26','ema50',
+ 'vwap',
+ 'rsi14','rsi7',
+ 'macd','macd_signal','macd_hist',
+ 'stoch_k','stoch_d',
+ 'boll_mid','boll_upper','boll_lower',
+ 'kelt_upper','kelt_lower',
+ 'atr14','true_range',
+ 'momentum10','roc10',
+ 'pct_change','pct_change5','pct_change10',
+ 'vol_change','vol_change5','vol_change10',
+ 'highlowrange_pct',
+ 'range5','range10',
+ 'obv','mfi14',
+ 'day_of_week',
+ 'slope_close','slope_volume',
+ 'zscore_close','zscore_volume'
 ]
+
 
 def load_bullbrain_model():
     global bullbrain_model
