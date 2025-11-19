@@ -225,207 +225,120 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
 # BullBrain v2 Feature Engineering from candles
 # ----------------------------------------------------------
 def compute_bullbrain_features(candles: dict):
-    """
-    BullBrain v2 (40+ features) inference feature builder.
+    closes = candles["close"]
+    highs  = candles["high"]
+    lows   = candles["low"]
+    vols   = candles["volume"]
 
-    Input:  candles dict with at least:
-            - "c": closes
-            - "h": highs
-            - "l": lows
-            - "v": volumes
-            - optionally "o": opens (if missing, we approximate with close)
+    # Build DF
+    df = pd.DataFrame({
+        "close": closes,
+        "high": highs,
+        "low": lows,
+        "volume": vols,
+    })
+    df["open"] = df["close"].shift(1)
 
-    Output:
-        features_vector: list[float] in the exact order of BULLBRAIN_FEATURES (len == 47)
-        feature_dict:    dict[str, float] same keys as BULLBRAIN_FEATURES
-        last_close:      float, latest close used for price
-    """
-    try:
-        closes = candles.get("c") or []
-        highs = candles.get("h") or []
-        lows = candles.get("l") or []
-        vols = candles.get("v") or []
-        opens = candles.get("o") or closes
+    # ========== BASIC MOVING AVERAGES ==========
+    df["sma5"]  = df["close"].rolling(5).mean()
+    df["sma10"] = df["close"].rolling(10).mean()
+    df["sma20"] = df["close"].rolling(20).mean()
+    df["sma50"] = df["close"].rolling(50).mean()
 
-        if not (closes and highs and lows and vols):
-            raise ValueError("compute_bullbrain_features: missing candle arrays")
+    df["ema5"]  = df["close"].ewm(span=5).mean()
+    df["ema12"] = df["close"].ewm(span=12).mean()
+    df["ema26"] = df["close"].ewm(span=26).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
 
-        # Use last N points for stability
-        N = min(len(closes), 120)
-        c = np.array(closes[-N:], dtype=float)
-        h = np.array(highs[-N:], dtype=float)
-        l = np.array(lows[-N:], dtype=float)
-        v = np.array(vols[-N:], dtype=float)
-        if opens:
-            o = np.array(opens[-N:], dtype=float)
-        else:
-            o = c.copy()
+    # ========== VWAP ==========
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    df["vwap"] = (typical * df["volume"]).cumsum() / df["volume"].cumsum()
 
-        # Build DataFrame for convenience
-        df = pd.DataFrame(
-            {
-                "close": c,
-                "open": o,
-                "high": h,
-                "low": l,
-                "volume": v,
-            }
-        )
+    # ========== RSI ==========
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    df["rsi14"] = 100 - (100 / (1 + gain.rolling(14).mean() / loss.rolling(14).mean()))
+    df["rsi7"]  = 100 - (100 / (1 + gain.rolling(7).mean()  / loss.rolling(7).mean()))
 
-        # ---------- Helpers ----------
-        def rolling_slope(series, window=10):
-            if len(series) < window:
-                return np.nan
-            y = series[-window:]
-            x = np.arange(window, dtype=float)
-            A = np.vstack([x, np.ones_like(x)]).T
-            m, _ = np.linalg.lstsq(A, y, rcond=None)[0]
-            return float(m)
+    # ========== MACD ==========
+    ema12 = df["close"].ewm(span=12).mean()
+    ema26 = df["close"].ewm(span=26).mean()
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-        # ---------- Moving averages ----------
-        df["sma5"] = df["close"].rolling(5).mean()
-        df["sma10"] = df["close"].rolling(10).mean()
-        df["sma20"] = df["close"].rolling(20).mean()
-        df["sma50"] = df["close"].rolling(50).mean()
+    # ========== STOCH ==========
+    low14 = df["low"].rolling(14).min()
+    high14 = df["high"].rolling(14).max()
+    df["stoch_k"] = (df["close"] - low14) / (high14 - low14) * 100
+    df["stoch_d"] = df["stoch_k"].rolling(3).mean()
 
-        df["ema5"] = df["close"].ewm(span=5, adjust=False).mean()
-        df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
-        df["ema26"] = df["close"].ewm(span=26, adjust=False).mean()
-        df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    # ========== BOLLINGER ==========
+    mid = df["close"].rolling(20).mean()
+    std = df["close"].rolling(20).std()
+    df["boll_mid"]   = mid
+    df["boll_upper"] = mid + 2 * std
+    df["boll_lower"] = mid - 2 * std
 
-        # VWAP
-        cum_vol = df["volume"].cumsum()
-        cum_pv = (df["close"] * df["volume"]).cumsum()
-        df["vwap"] = cum_pv / cum_vol.replace(0, np.nan)
+    # ========== KELTNER ==========
+    typical_range = (df["high"] - df["low"]).rolling(20).mean()
+    df["kelt_upper"] = mid + 1.5 * typical_range
+    df["kelt_lower"] = mid - 1.5 * typical_range
 
-        # ---------- RSI ----------
-        def compute_rsi(close_series, window=14):
-            delta = close_series.diff()
-            gain = delta.clip(lower=0)
-            loss = -delta.clip(upper=0)
-            avg_gain = gain.ewm(alpha=1 / window, min_periods=window).mean()
-            avg_loss = loss.ewm(alpha=1 / window, min_periods=window).mean()
-            rs = avg_gain / avg_loss.replace(0, np.nan)
-            rsi = 100 - (100 / (1 + rs))
-            return rsi
+    # ========== ATR ==========
+    tr = pd.concat([
+        (df["high"] - df["low"]),
+        (df["high"] - df["close"].shift()).abs(),
+        (df["low"] - df["close"].shift()).abs()
+    ], axis=1).max(axis=1)
+    df["true_range"] = tr
+    df["atr14"] = tr.rolling(14).mean()
 
-        df["rsi14"] = compute_rsi(df["close"], 14)
-        df["rsi7"] = compute_rsi(df["close"], 7)
+    # ========== MOMENTUM ==========
+    df["momentum10"] = df["close"] - df["close"].shift(10)
+    df["roc10"] = df["close"].pct_change(10) * 100
 
-        # ---------- MACD ----------
-        ema12 = df["close"].ewm(span=12, adjust=False).mean()
-        ema26 = df["close"].ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        df["macd"] = macd
-        df["macd_signal"] = signal
-        df["macd_hist"] = macd - signal
+    # ========== pct changes ==========
+    df["pct_change"]  = df["close"].pct_change() * 100
+    df["pct_change5"] = df["close"].pct_change(5) * 100
+    df["pct_change10"] = df["close"].pct_change(10) * 100
 
-        # ---------- Stochastic ----------
-        low_min = df["low"].rolling(14).min()
-        high_max = df["high"].rolling(14).max()
-        df["stoch_k"] = 100 * (df["close"] - low_min) / (high_max - low_min).replace(
-            0, np.nan
-        )
-        df["stoch_d"] = df["stoch_k"].rolling(3).mean()
+    df["vol_change"]  = df["volume"].pct_change() * 100
+    df["vol_change5"] = df["volume"].pct_change(5) * 100
+    df["vol_change10"] = df["volume"].pct_change(10) * 100
 
-        # ---------- Bollinger & Keltner ----------
-        mid = df["close"].rolling(20).mean()
-        std = df["close"].rolling(20).std()
-        df["boll_mid"] = mid
-        df["boll_upper"] = mid + 2 * std
-        df["boll_lower"] = mid - 2 * std
+    # ========== ranges ==========
+    df["highlowrange_pct"] = (df["high"] - df["low"]) / df["close"] * 100
+    df["range5"]  = df["close"].rolling(5).apply(lambda x: x.max() - x.min())
+    df["range10"] = df["close"].rolling(10).apply(lambda x: x.max() - x.min())
 
-        # ATR for Keltner
-        tr1 = df["high"] - df["low"]
-        tr2 = (df["high"] - df["close"].shift()).abs()
-        tr3 = (df["low"] - df["close"].shift()).abs()
-        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        df["true_range"] = true_range
-        df["atr14"] = true_range.rolling(14).mean()
+    # ========== OBV ==========
+    df["obv"] = (np.sign(df["close"].diff()) * df["volume"]).fillna(0).cumsum()
 
-        ema20 = df["close"].ewm(span=20, adjust=False).mean()
-        df["kelt_upper"] = ema20 + 2 * df["atr14"]
-        df["kelt_lower"] = ema20 - 2 * df["atr14"]
+    # ========== MFI ==========
+    money_flow = typical * df["volume"]
+    pos = money_flow.where(typical.diff() > 0, 0).rolling(14).sum()
+    neg = money_flow.where(typical.diff() < 0, 0).rolling(14).sum()
+    df["mfi14"] = 100 - (100 / (1 + pos / neg))
 
-        # ---------- Momentum ----------
-        df["momentum10"] = df["close"] - df["close"].shift(10)
-        df["roc10"] = (df["close"] / df["close"].shift(10) - 1) * 100
+    # ========== slopes ==========
+    df["slope_close"]  = df["close"].rolling(5).apply(lambda x: np.polyfit(range(5), x, 1)[0])
+    df["slope_volume"] = df["volume"].rolling(5).apply(lambda x: np.polyfit(range(5), x, 1)[0])
 
-        df["pct_change"] = df["close"].pct_change() * 100
-        df["pct_change5"] = df["close"].pct_change(5) * 100
-        df["pct_change10"] = df["close"].pct_change(10) * 100
+    # ========== z-scores ==========
+    df["zscore_close"]  = (df["close"] - df["close"].rolling(20).mean()) / df["close"].rolling(20).std()
+    df["zscore_volume"] = (df["volume"] - df["volume"].rolling(20).mean()) / df["volume"].rolling(20).std()
 
-        df["vol_change"] = df["volume"].pct_change() * 100
-        df["vol_change5"] = df["volume"].pct_change(5) * 100
-        df["vol_change10"] = df["volume"].pct_change(10) * 100
+    df["day_of_week"] = datetime.datetime.utcnow().weekday()
 
-        df["highlowrange_pct"] = (
-            (df["high"] - df["low"]) / df["close"].replace(0, np.nan) * 100
-        )
-        df["range5"] = (
-            df["close"].rolling(5).max() - df["close"].rolling(5).min()
-        ) / df["close"].rolling(5).mean().replace(0, np.nan) * 100
-        df["range10"] = (
-            df["close"].rolling(10).max() - df["close"].rolling(10).min()
-        ) / df["close"].rolling(10).mean().replace(0, np.nan) * 100
+    # ========= FINAL ROW ===========
+    df_feat = df.dropna().iloc[-1]
+    feature_dict = {f: float(df_feat[f]) for f in BULLBRAIN_FEATURES}
 
-        # ---------- OBV ----------
-        direction = np.sign(df["close"].diff().fillna(0))
-        df["obv"] = (direction * df["volume"]).cumsum()
+    features_vector = np.array([feature_dict[f] for f in BULLBRAIN_FEATURES]).reshape(1, -1)
+    return features_vector, feature_dict, float(df_feat["close"])
 
-        # ---------- MFI ----------
-        typical_price = (df["high"] + df["low"] + df["close"]) / 3
-        raw_money_flow = typical_price * df["volume"]
-        pos_mf = raw_money_flow.where(typical_price > typical_price.shift(), 0.0)
-        neg_mf = raw_money_flow.where(typical_price < typical_price.shift(), 0.0)
-        pos_mf_sum = pos_mf.rolling(14).sum()
-        neg_mf_sum = neg_mf.rolling(14).sum()
-        mfr = pos_mf_sum / neg_mf_sum.replace(0, np.nan)
-        df["mfi14"] = 100 - (100 / (1 + mfr))
-
-        # ---------- Slopes & z-scores ----------
-        df["slope_close"] = df["close"].rolling(10).apply(rolling_slope, raw=False)
-        df["slope_volume"] = df["volume"].rolling(10).apply(rolling_slope, raw=False)
-
-        df["zscore_close"] = df["close"].rolling(20).apply(
-            lambda s: (s.iloc[-1] - s.mean()) / (s.std() if s.std() != 0 else 1),
-            raw=False,
-        )
-        df["zscore_volume"] = df["volume"].rolling(20).apply(
-            lambda s: (s.iloc[-1] - s.mean()) / (s.std() if s.std() != 0 else 1),
-            raw=False,
-        )
-
-        # Day-of-week (approx; last bar only, 0–4) – here set 0 as generic weekday
-        df["day_of_week"] = 0
-
-        # Trend strength (synthetic index)
-        df["trend_strength"] = (
-            (df["slope_close"].fillna(0)
-             / df["highlowrange_pct"].replace(0, np.nan).fillna(1))
-            * 10
-        )
-
-        # Take last row
-        last = df.iloc[-1].copy()
-
-        # Fallback: replace NaNs / inf
-        last = last.replace([np.inf, -np.inf], np.nan)
-        last = last.fillna(0.0)
-
-        feature_dict = {}
-        for name in BULLBRAIN_FEATURES:
-            feature_dict[name] = float(last.get(name, 0.0))
-
-        features_vector = [feature_dict[name] for name in BULLBRAIN_FEATURES]
-        last_close = float(last["close"])
-
-        return features_vector, feature_dict, last_close
-
-    except Exception as e:
-        print(f"🔥 compute_bullbrain_features ERROR: {e}")
-        return None, None, None
 
 # ----------------------------------------------------------
 # 🔮 BullBrain v2 Inference
