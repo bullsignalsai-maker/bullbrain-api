@@ -90,8 +90,8 @@ def safe_json(url, timeout=10):
 # ----------------------------------------------------------
 
 # Google Drive model link (your file)
-MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
-FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1WfP6pksgsQGQiXH_M_6Kb9Hw2n84Onxv"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v2_40f.json"
 
 def load_bullbrain_model():
     """Download latest BullBrain model from Google Drive and load it."""
@@ -308,7 +308,7 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
 # ----------------------------------------------------------
 # 🧮 Helper: Compute 47-engineered features for BullBrain
 # ----------------------------------------------------------
-def def compute_bullbrain_features(candles: dict):
+def compute_bullbrain_features(candles: dict):
     """
     Build all 47 engineered features for BullBrain v2.
     Input: candles dict (close, high, low, volume)
