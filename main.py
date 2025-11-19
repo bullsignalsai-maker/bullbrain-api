@@ -130,7 +130,7 @@ def load_bullbrain_model():
     os.makedirs(os.path.dirname(FULLMODEL_LOCAL_PATH), exist_ok=True)
 
     # 2) Download from Google Drive (same file ID you used in Colab)
-    file_id = "1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
+    file_id = "1ATNs7bsuXpVQWXMog-b7ILkKK14rOo30"
     gdrive_url = f"https://drive.google.com/uc?id={file_id}"
 
     try:
