@@ -195,31 +195,46 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
     try:
         now = datetime.datetime.utcnow()
         end = int(now.timestamp())
-        start = int((now - datetime.timedelta(days=365)).timestamp())
+        start = int((now - datetime.timedelta(days=400)).timestamp())
 
         url = (
             f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
             f"{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
         )
-        j = safe_json(url)
-        if j and "results" in j:
-            closes = [r.get("c") for r in j["results"]]
-            highs = [r.get("h") for r in j["results"]]
-            lows = [r.get("l") for r in j["results"]]
-            opens = [r.get("o", r.get("c")) for r in j["results"]]
-            vols = [r.get("v") for r in j["results"]]
 
-            if len(closes) >= min_points:
-                return {
-                    "c": closes,
-                    "h": highs,
-                    "l": lows,
-                    "o": opens,
-                    "v": vols,
-                }
+        j = safe_json(url)
+
+        # ❌ INVALID or FAILED RESPONSE
+        if not j or "results" not in j:
+            print("⚠️ Polygon returned no results for:", symbol)
+            return None
+
+        results = j["results"]
+        if len(results) < min_points:
+            print("⚠️ Polygon data too short:", symbol)
+            return None
+
+        closes = [r.get("c") for r in results]
+        highs  = [r.get("h") for r in results]
+        lows   = [r.get("l") for r in results]
+        vols   = [r.get("v") for r in results]
+
+        # Validate numeric
+        if any(x is None for x in closes):
+            print("⚠️ Missing close values for:", symbol)
+            return None
+
+        return {
+            "close": closes,
+            "high": highs,
+            "low": lows,
+            "volume": vols,
+            "source": "polygon"
+        }
+
     except Exception as e:
-        print(f"fetch_daily_candles error for {symbol}: {e}")
-    return None
+        print("Polygon error:", e)
+        return None
 
 # ----------------------------------------------------------
 # BullBrain v2 Feature Engineering from candles
