@@ -12,11 +12,7 @@ import pandas as pd
 import xgboost as xgb
 import gdown  # <-- ADDED
 
-
-
-
 app = FastAPI()
-
 
 # Allow Expo mobile app access
 app.add_middleware(
@@ -27,7 +23,6 @@ app.add_middleware(
    allow_headers=["*"],
 )
 
-
 # ----------------------------------------------------------
 # Load keys from environment (Render dashboard)
 # ----------------------------------------------------------
@@ -37,44 +32,56 @@ FMP_API_KEY = os.getenv("FMP_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")  # <— NEW
 
-
 MODEL = "grok-4-fast-reasoning"
-GROK_STOCK_CACHE_HOURS = 6
-WATCH_GROK_CACHE_HOURS = 24
+GROK_STOCK_CACHE_HOURS = 1
+WATCH_GROK_CACHE_HOURS = 1
+BULLBRAIN_VERSION = "v2-48f"
 
 
 # ----------------------------------------------------------
 # 🔥 BullBrain v1 Full Model (XGBoost JSON)
 # ----------------------------------------------------------
 # Google Drive model (REPLACE FILE_ID BELOW)
-MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
-
-
-FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
-
+# Google Drive model (REPLACE FILE_ID BELOW)
+# 🔥 BullBrain v2 model (XGBoost JSON)
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1TeutMa8jQ5l4Lw-ZaN1gP1iGfDp5spAJ"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v2_48f.json"
 
 BULLBRAIN_FEATURES = [
-   "close",
-   "sma5",
-   "sma20",
-   "rsi14",
-   "macd",
-   "macd_signal",
-   "macd_hist",
-   "pct_change",
-   "vol_change",
-   "highlowrange_pct",
+    # 1–6: raw price & volume
+    "adj_close", "close", "high", "low", "open", "volume",
+    # 7–9: returns
+    "return_1d", "return_5d", "return_10d",
+    # 10–12: realized volatility
+    "volatility_5d", "volatility_20d", "volatility_60d",
+    # 13–17: SMAs
+    "sma5", "sma10", "sma20", "sma50", "sma200",
+    # 18–20: SMA / price relationships
+    "sma5_sma20_pct", "sma20_sma50_pct", "price_vs_sma20_pct",
+    # 21–24: RSI + MACD
+    "rsi14", "macd", "macd_signal", "macd_hist",
+    # 25–26: stochastic oscillator
+    "stoch_k", "stoch_d",
+    # 27–29: EMAs
+    "ema9", "ema21", "ema50",
+    # 30–33: Bollinger Bands
+    "bb_upper", "bb_middle", "bb_lower", "bb_width_pct",
+    # 34–36: volatility/volume extras
+    "atr14", "volume_sma20", "volume_zscore",
+    # 37–40: candlestick anatomy
+    "gap_pct", "body_pct", "upper_shadow_pct", "lower_shadow_pct",
+    # 41–43: calendar features
+    "day_of_week", "month_sin", "month_cos",
+    # 44–47: trend strength
+    "trend_20d", "trend_60d", "rolling_max_20d_pct", "rolling_min_20d_pct",
+    # 48: volatility regime flag
+    "volatility_regime",
 ]
-
 
 bullbrain_model = None  # will hold xgb.Booster instance
 
-
 # Simple in-memory cache for Grok and watchlist summaries
 cache = {}
-
-
-
 
 # ----------------------------------------------------------
 # 🌐 Utility: Safe JSON fetch
@@ -88,18 +95,13 @@ def safe_json(url, timeout=10):
    except Exception:
        return None
 
-
-
-
 # ----------------------------------------------------------
 # 📦 NEW: Load BullBrain model from Google Drive
 # ----------------------------------------------------------
 
-
 # Google Drive model link (your file)
-MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1qDZ0NvErxV6AWft4fkt3EVZW4S9fEAo2"
-FULLMODEL_LOCAL_PATH = "models/bullbrain_v1_full.json"
-
+MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1TeutMa8jQ5l4Lw-ZaN1gP1iGfDp5spAJ"
+FULLMODEL_LOCAL_PATH = "models/bullbrain_v2_48f.json"
 
 def load_bullbrain_model():
    """Download latest BullBrain model from Google Drive and load it."""
@@ -134,14 +136,7 @@ def load_bullbrain_model():
    print("🔥 BullBrain model LOADED from:", FULLMODEL_LOCAL_PATH)
    print("🔥 Booster num_features:", booster.num_features())
    print("🔥 Booster feature_names:", booster.feature_names)
-
-
    return booster
-
-
-
-
-
 
 # ----------------------------------------------------------
 # 🚀 Startup hook — load BullBrain model
@@ -154,10 +149,6 @@ def on_startup():
        bullbrain_model = load_bullbrain_model()
    except Exception as e:
        print("⚠️ Failed to load BullBrain model on startup:", e)
-
-
-
-
 # ----------------------------------------------------------
 @app.get("/")
 def root():
@@ -167,31 +158,68 @@ def root():
        "features": BULLBRAIN_FEATURES,
    }
 
+def _class_probs_from_prob_up(prob_up: float) -> dict:
+    """
+    Convert a single 'probability_up' from the model into a
+    3-way distribution over SELL / HOLD / BUY.
 
+    NOTE: Model is binary under the hood; this mapping is a
+    heuristic for UI / visualization, not a separate training.
+    """
+    p = float(prob_up)
+    if p < 0:
+        p = 0.0
+    if p > 1:
+        p = 1.0
 
+    # Three bands:
+    # - Strong bearish (p <= 0.4)
+    # - Neutral (0.4 < p < 0.6)
+    # - Strong bullish (p >= 0.6)
 
+    if p >= 0.6:
+        # Mostly BUY, small share to HOLD
+        buy = p
+        hold = 1.0 - p
+        sell = 0.0
+    elif p <= 0.4:
+        # Mostly SELL, small share to HOLD
+        sell = 1.0 - p
+        hold = p
+        buy = 0.0
+    else:
+        # Neutral band – mix BUY/SELL around HOLD
+        # Map p in [0.4, 0.6] → balanced distribution
+        center_offset = p - 0.5  # -0.1 to +0.1
+        hold = 0.6  # dominant in neutral band
+        buy = max(0.0, 0.2 + center_offset * 2.0)   # 0.0..0.4
+        sell = max(0.0, 0.2 - center_offset * 2.0)  # 0.0..0.4
+
+    total = buy + hold + sell
+    if total <= 0:
+        return {"SELL": 0.33, "HOLD": 0.34, "BUY": 0.33}
+
+    return {
+        "SELL": sell / total,
+        "HOLD": hold / total,
+        "BUY": buy / total,
+    }
 # ----------------------------------------------------------
 # Helper: backend quote fetch (Finnhub + Yahoo fallback)
 # ----------------------------------------------------------
 def backend_fetch_quote(symbol: str):
    symbol = symbol.upper()
 
-
    try:
        quote = None
        profile = {}
-
-
        # 1️⃣ FINNHUB — Primary
        if FINNHUB_KEY:
            q_url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
            quote = safe_json(q_url, timeout=8)
-
-
            # Profile (non-critical)
            p_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={FINNHUB_KEY}"
            profile = safe_json(p_url, timeout=8) or {}
-
 
        # 2️⃣ FALLBACK — If Finnhub bad, try Yahoo
        if not quote or "c" not in quote or quote["c"] in [None, 0]:
@@ -304,140 +332,292 @@ def backend_fetch_quote(symbol: str):
            "timestamp": int(datetime.datetime.utcnow().timestamp()),
        }
 
-
-
-
 # ----------------------------------------------------------
 # 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
+# ----------------------------------------------------------
+# 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
+# ----------------------------------------------------------
 def fetch_daily_candles(symbol: str, min_points: int = 60):
-   symbol = symbol.upper()
-   try:
-       now = datetime.datetime.utcnow()
-       end = int(now.timestamp())
-       start = int((now - datetime.timedelta(days=365)).timestamp())
+    symbol = symbol.upper()
+    try:
+        now = datetime.datetime.utcnow()
+        end = int(now.timestamp())
+        start = int((now - datetime.timedelta(days=365)).timestamp())
 
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+            f"{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
+        )
+        j = safe_json(url)
+        if j and "results" in j:
+            closes = [r["c"] for r in j["results"]]
+            highs = [r["h"] for r in j["results"]]
+            lows = [r["l"] for r in j["results"]]
+            vols = [r["v"] for r in j["results"]]
+            opens = [r.get("o", r["c"]) for r in j["results"]]  # fallback to close if missing
 
-       url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
-       j = safe_json(url)
-       if j and "results" in j:
+            if len(closes) >= min_points:
+                return {
+                    "source": "polygon",
+                    "close": closes,
+                    "high": highs,
+                    "low": lows,
+                    "open": opens,
+                    "volume": vols,
+                }
 
+    except Exception as e:
+        print("Polygon error:", e)
 
-           closes = [r["c"] for r in j["results"]]
-           highs  = [r["h"] for r in j["results"]]
-           lows   = [r["l"] for r in j["results"]]
-           vols   = [r["v"] for r in j["results"]]
-
-
-           if len(closes) >= min_points:
-               return {
-                   "source": "polygon",
-                   "close": closes,
-                   "high": highs,
-                   "low": lows,
-                   "volume": vols,
-               }
-
-
-   except Exception as e:
-       print("Polygon error:", e)
-
-
-   return None
-
-
+    return None
 
 
 # ----------------------------------------------------------
 # 🧮 Helper: Compute 10-engineered features for BullBrain
 # ----------------------------------------------------------
+# ----------------------------------------------------------
+# 🧮 Helper: Compute 48 engineered features for BullBrain v2
+# ----------------------------------------------------------
+def _rsi(series, period=14):
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    gain_rolling = pd.Series(gain, index=series.index).rolling(period).mean()
+    loss_rolling = pd.Series(loss, index=series.index).rolling(period).mean()
+    rs = gain_rolling / (loss_rolling + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def _macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    macd_hist = macd - macd_signal
+    return macd, macd_signal, macd_hist
+
+
+def _stoch_kd(df, period=14, smooth_k=3, smooth_d=3):
+    lowest_low = df["low"].rolling(period).min()
+    highest_high = df["high"].rolling(period).max()
+    k = 100 * (df["close"] - lowest_low) / (highest_high - lowest_low + 1e-9)
+    k_smooth = k.rolling(smooth_k).mean()
+    d = k_smooth.rolling(smooth_d).mean()
+    return k_smooth, d
+
+
+def _atr(df, period=14):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+    return atr
+
+
 def compute_bullbrain_features(candles: dict):
-   """
-   Input: dict with close, high, low, volume lists
-   Output: (features_vector[1x10], feature_dict, last_close)
-   """
-   closes = candles["close"]
-   highs = candles["high"]
-   lows = candles["low"]
-   vols = candles["volume"]
+    """
+    Input: dict with lists: close, high, low, open, volume
+    Output: (features_vector[1x48], feature_dict, last_close)
+    """
+    closes = candles["close"]
+    highs = candles["high"]
+    lows = candles["low"]
+    vols = candles["volume"]
+    opens = candles.get("open") or closes  # safety fallback
 
+    df = pd.DataFrame(
+        {
+            "close": closes,
+            "high": highs,
+            "low": lows,
+            "open": opens,
+            "volume": vols,
+        }
+    )
 
-   df = pd.DataFrame({
-       "close": closes,
-       "high": highs,
-       "low": lows,
-       "volume": vols,
-   })
+    # make sure it's in time order
+    df = df.reset_index(drop=True)
 
+    # adj_close = close for now (can wire real adjusted data later)
+    df["adj_close"] = df["close"]
 
-   # SMAs
-   df["sma5"] = df["close"].rolling(window=5).mean()
-   df["sma20"] = df["close"].rolling(window=20).mean()
+    # --- returns & volatility ---
+    df["return_1d"] = df["close"].pct_change(1)
+    df["return_5d"] = df["close"].pct_change(5)
+    df["return_10d"] = df["close"].pct_change(10)
 
+    df["volatility_5d"] = df["return_1d"].rolling(5).std()
+    df["volatility_20d"] = df["return_1d"].rolling(20).std()
+    df["volatility_60d"] = df["return_1d"].rolling(60).std()
 
-   # RSI-14
-   delta = df["close"].diff()
-   gain = delta.clip(lower=0)
-   loss = -delta.clip(upper=0)
-   avg_gain = gain.rolling(window=14).mean()
-   avg_loss = loss.rolling(window=14).mean()
-   rs = avg_gain / avg_loss
-   df["rsi14"] = 100 - (100 / (1 + rs))
+    # --- SMAs & EMAs ---
+    df["sma5"] = df["close"].rolling(5).mean()
+    df["sma10"] = df["close"].rolling(10).mean()
+    df["sma20"] = df["close"].rolling(20).mean()
+    df["sma50"] = df["close"].rolling(50).mean()
+    df["sma200"] = df["close"].rolling(200).mean()
 
+    df["ema9"] = df["close"].ewm(span=9, adjust=False).mean()
+    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
 
-   # MACD(12,26,9)
-   ema12 = df["close"].ewm(span=12, adjust=False).mean()
-   ema26 = df["close"].ewm(span=26, adjust=False).mean()
-   df["macd"] = ema12 - ema26
-   df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-   df["macd_hist"] = df["macd"] - df["macd_signal"]
+    # --- SMA/price relationships ---
+    df["sma5_sma20_pct"] = (df["sma5"] / (df["sma20"] + 1e-9) - 1.0) * 100.0
+    df["sma20_sma50_pct"] = (df["sma20"] / (df["sma50"] + 1e-9) - 1.0) * 100.0
+    df["price_vs_sma20_pct"] = (df["close"] / (df["sma20"] + 1e-9) - 1.0) * 100.0
 
+    # --- RSI & MACD ---
+    df["rsi14"] = _rsi(df["close"], period=14)
+    df["macd"], df["macd_signal"], df["macd_hist"] = _macd(df["close"])
 
-   # % change in price
-   df["pct_change"] = df["close"].pct_change() * 100.0
+    # --- Stochastic oscillator ---
+    df["stoch_k"], df["stoch_d"] = _stoch_kd(df)
 
+    # --- Bollinger Bands (20, 2 std) ---
+    bb_mid = df["close"].rolling(20).mean()
+    bb_std = df["close"].rolling(20).std()
+    df["bb_middle"] = bb_mid
+    df["bb_upper"] = bb_mid + 2 * bb_std
+    df["bb_lower"] = bb_mid - 2 * bb_std
+    df["bb_width_pct"] = (
+        (df["bb_upper"] - df["bb_lower"]) / (df["bb_middle"] + 1e-9) * 100.0
+    )
 
-   # % change in volume
-   df["vol_change"] = df["volume"].pct_change() * 100.0
+    # --- ATR & volume stats ---
+    df["atr14"] = _atr(df)
+    df["volume_sma20"] = df["volume"].rolling(20).mean()
+    df["volume_zscore"] = (
+        df["volume"] - df["volume_sma20"]
+    ) / (df["volume"].rolling(60).std() + 1e-9)
 
+    # --- candlestick anatomy ---
+    df["gap_pct"] = (
+        (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-9) * 100.0
+    )
+    body = (df["close"] - df["open"]).abs()
+    full_range = (df["high"] - df["low"]).replace(0, np.nan)
+    df["body_pct"] = (body / full_range) * 100.0
+    df["upper_shadow_pct"] = (
+        (df["high"] - df[["open", "close"]].max(axis=1)) / full_range * 100.0
+    )
+    df["lower_shadow_pct"] = (
+        (df[["open", "close"]].min(axis=1) - df["low"]) / full_range * 100.0
+    )
 
-   # High-low range as % of close
-   df["highlowrange_pct"] = (df["high"] - df["low"]) / df["close"] * 100.0
+    # --- calendar features ---
+    # fake a date index if none (we just need day/month pattern)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        start_date = datetime.date.today() - datetime.timedelta(days=len(df))
+        df.index = pd.date_range(start=start_date, periods=len(df), freq="D")
 
+    df["day_of_week"] = df.index.dayofweek
+    month = df.index.month
+    df["month_sin"] = np.sin(2 * np.pi * month / 12.0)
+    df["month_cos"] = np.cos(2 * np.pi * month / 12.0)
 
-   # Drop rows without full features
-   df_feat = df.dropna().copy()
-   if df_feat.empty:
-       raise RuntimeError("Not enough data to compute BullBrain features.")
+    # --- trend strength ---
+    df["rolling_max_20d"] = df["close"].rolling(20).max()
+    df["rolling_min_20d"] = df["close"].rolling(20).min()
+    df["trend_20d"] = (
+        df["close"] / (df["close"].shift(20) + 1e-9) - 1.0
+    ) * 100.0
+    df["trend_60d"] = (
+        df["close"] / (df["close"].shift(60) + 1e-9) - 1.0
+    ) * 100.0
+    df["rolling_max_20d_pct"] = (
+        df["close"] / (df["rolling_max_20d"] + 1e-9) - 1.0
+    ) * 100.0
+    df["rolling_min_20d_pct"] = (
+        df["close"] / (df["rolling_min_20d"] + 1e-9) - 1.0
+    ) * 100.0
 
+    # --- volatility regime flag ---
+    vol20 = df["volatility_20d"]
+    regime_threshold = vol20.median(skipna=True)
+    if np.isnan(regime_threshold):
+        regime_threshold = vol20.fillna(0).median()
+    df["volatility_regime"] = (vol20 > regime_threshold).astype(float)
 
-   row = df_feat.iloc[-1]
+    # Drop rows without full features
+    df_feat = df.dropna().copy()
+    if df_feat.empty:
+        raise RuntimeError("Not enough data to compute BullBrain v2 features.")
 
+    row = df_feat.iloc[-1]
+    last_close = float(row["close"])
 
-   feature_dict = {
-       "close": float(row["close"]),
-       "sma5": float(row["sma5"]),
-       "sma20": float(row["sma20"]),
-       "rsi14": float(row["rsi14"]),
-       "macd": float(row["macd"]),
-       "macd_signal": float(row["macd_signal"]),
-       "macd_hist": float(row["macd_hist"]),
-       "pct_change": float(row["pct_change"]),
-       "vol_change": float(row["vol_change"]),
-       "highlowrange_pct": float(row["highlowrange_pct"]),
-   }
+    feature_dict = {}
+    for name in BULLBRAIN_FEATURES:
+        val = row.get(name, np.nan)
+        if pd.isna(val):
+            val = 0.0
+        feature_dict[name] = float(val)
 
+    features_vector = np.array(
+        [feature_dict[name] for name in BULLBRAIN_FEATURES],
+        dtype=float,
+    ).reshape(1, -1)
 
-   features_vector = np.array(
-       [feature_dict[name] for name in BULLBRAIN_FEATURES],
-       dtype=float,
-   ).reshape(1, -1)
+    return features_vector, feature_dict, last_close
 
+def _run_bullbrain_for_symbol(symbol: str):
+    """
+    Core BullBrain pipeline:
+    - Fetch candles
+    - Compute 48 features
+    - Run model
+    - Build structured result used by multiple endpoints
+    """
+    symbol = symbol.upper()
 
-   last_close = float(row["close"])
-   return features_vector, feature_dict, last_close
+    if bullbrain_model is None:
+        return None, {"error": "BullBrain model not loaded yet."}
 
+    candles = fetch_daily_candles(symbol)
+    if not candles:
+        return None, {"error": f"Could not fetch candles for {symbol}"}
 
+    # Features + inference
+    features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+    inference = bullbrain_infer(features_vec)
 
+    # Extract raw probability_up
+    prob_up = inference.get("probability_up")
+    if prob_up is None:
+        prob_up = float(inference.get("raw_output", 0.5))
+    prob_down = 1.0 - float(prob_up)
+
+    class_probs = _class_probs_from_prob_up(prob_up)
+
+    as_of = datetime.datetime.utcnow().isoformat()
+
+    core = {
+        "symbol": symbol,
+        "asOf": as_of,
+        "source": candles.get("source", "polygon"),
+        "price": last_close,
+        "features": feature_dict,
+        "bullbrain": {
+            "version": BULLBRAIN_VERSION,
+            "signal": inference.get("signal"),
+            "confidence": inference.get("confidence"),
+            "probabilities": class_probs,
+            "raw": {
+                "prob_up": float(prob_up),
+                "prob_down": float(prob_down),
+            },
+        },
+        # Legacy model field for backward compatibility with existing app code
+        "model": inference,
+    }
+
+    return core, None
 
 # ----------------------------------------------------------
 # 🔮 BullBrain v1 Inference
@@ -483,52 +663,25 @@ def bullbrain_infer(features_vector: np.ndarray):
        "probability_down": round(1 - prob_up, 4),
        "raw_output": prob_up,
    }
-
-
-
-
 # ----------------------------------------------------------
-# 🔮 API: BullBrain prediction for a symbol (MAIN ENDPOINT)
+# 🔮 1. Main BullBrain Prediction (v2, structured)
 # ----------------------------------------------------------
 @app.get("/predict/{symbol}")
 def predict_symbol(symbol: str):
-   """
-   Full BullBrain v1 signal for a ticker:
-   - Fetch daily candles (Polygon → Yahoo fallback)
-   - Compute 10 engineered features
-   - Run XGBoost full model
-   - Return BUY/SELL/HOLD + confidence and features
-   """
-   symbol = symbol.upper()
-   try:
-       if bullbrain_model is None:
-           return {"error": "BullBrain model not loaded yet."}
+    """
+    Full BullBrain v2 signal for a ticker:
+    - Fetch daily candles
+    - Compute 48 engineered features
+    - Run XGBoost model
+    - Return structured result (B-style) + legacy keys
+    """
+    core, err = _run_bullbrain_for_symbol(symbol)
+    if err is not None:
+        return {"symbol": symbol.upper(), **err}
 
-
-       candles = fetch_daily_candles(symbol)
-       if not candles:
-           return {"error": f"Could not fetch candles for {symbol}"}
-
-
-       features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-       inference = bullbrain_infer(features_vec)
-
-
-       return {
-           "symbol": symbol,
-           "source": candles["source"],
-           "price": last_close,
-           "features": feature_dict,
-           "model": inference,
-       }
-
-
-   except Exception as e:
-       print("BullBrain /predict error:", e)
-       return {"error": str(e), "symbol": symbol}
-
-
-
+    # core already contains:
+    # symbol, asOf, source, price, features, bullbrain, model(legacy)
+    return core
 
 # ----------------------------------------------------------
 # 1. Quote (Primary Finnhub, fallback Yahoo)
@@ -556,8 +709,81 @@ def quote(symbol: str):
    except Exception as e:
        return {"error": str(e)}
 
+# ----------------------------------------------------------
+# 🔮 2. Class probabilities endpoint
+# ----------------------------------------------------------
+@app.get("/predict-prob/{symbol}")
+def predict_prob(symbol: str):
+    """
+    Returns only the class probability distribution for a symbol:
+    {
+      "symbol": "NVDA",
+      "asOf": "...",
+      "probabilities": {
+        "SELL": 0.23,
+        "HOLD": 0.17,
+        "BUY": 0.60
+      },
+      "raw": {
+        "prob_up": ...,
+        "prob_down": ...
+      }
+    }
+    """
+    core, err = _run_bullbrain_for_symbol(symbol)
+    if err is not None:
+        return {"symbol": symbol.upper(), **err}
 
+    bb = core["bullbrain"]
+    return {
+        "symbol": core["symbol"],
+        "asOf": core["asOf"],
+        "probabilities": bb["probabilities"],
+        "raw": bb["raw"],
+        "version": bb.get("version", BULLBRAIN_VERSION),
+    }
 
+# ----------------------------------------------------------
+# 🔮 3. Batch prediction for multiple tickers
+# ----------------------------------------------------------
+@app.get("/predict-multi")
+def predict_multi(tickers: str = Query(..., description="Comma-separated tickers")):
+    """
+    Batch BullBrain predictions for multiple symbols in one request.
+
+    Example:
+      /predict-multi?tickers=AAPL,TSLA,NVDA
+
+    Returns:
+    {
+      "data": [
+        { ... /predict response for AAPL ... },
+        { ... /predict response for TSLA ... },
+        ...
+      ],
+      "errors": [
+        { "symbol": "XYZ", "error": "Could not fetch candles" }
+      ]
+    }
+    """
+    if not tickers:
+        return {"data": [], "errors": []}
+
+    symbols = [s.strip().upper() for s in tickers.split(",") if s.strip()]
+    results = []
+    errors = []
+
+    for sym in symbols:
+        core, err = _run_bullbrain_for_symbol(sym)
+        if err is not None:
+            errors.append({"symbol": sym, "error": err.get("error", "Unknown error")})
+        else:
+            results.append(core)
+
+    return {
+        "data": results,
+        "errors": errors,
+    }
 
 # ----------------------------------------------------------
 # 2. Analyst recommendations
@@ -572,8 +798,6 @@ def recommendations(symbol: str):
        return {"data": data}
    except Exception as e:
        return {"error": str(e)}
-
-
 
 
 # ----------------------------------------------------------
@@ -592,9 +816,6 @@ def grok_summary(payload: dict):
    except Exception as e:
        return {"error": str(e)}
 
-
-
-
 # ----------------------------------------------------------
 # 4. Full ticker data (combines /quote + /recommendations)
 # ----------------------------------------------------------
@@ -610,9 +831,6 @@ def ticker_full(symbol: str):
        }
    except Exception as e:
        return {"error": str(e)}
-
-
-
 
 # ----------------------------------------------------------
 # 5. Multiple quotes
@@ -630,9 +848,6 @@ def quotes(symbols: str):
        return out
    except Exception as e:
        return {"error": str(e)}
-
-
-
 
 # ----------------------------------------------------------
 # 6. Macro Watch (FMP)
@@ -653,9 +868,6 @@ def macro_watch():
    except Exception as e:
        return {"data": [], "error": str(e)}
 
-
-
-
 # ----------------------------------------------------------
 # 7. Earnings
 # ----------------------------------------------------------
@@ -674,9 +886,6 @@ def earnings():
        return {"data": data[:20] if isinstance(data, list) else []}
    except Exception as e:
        return {"data": [], "error": str(e)}
-
-
-
 
 # ----------------------------------------------------------
 # 8. Live stats (fear & greed + VIX + S&P)
@@ -728,9 +937,6 @@ def live_stats():
            "error": str(e),
        }
 
-
-
-
 # ----------------------------------------------------------
 # 9. Market Mood (Fear & Greed + VIX) — for MoodService
 # ----------------------------------------------------------
@@ -779,9 +985,6 @@ def market_mood():
            },
            "error": str(e),
        }
-
-
-
 
 # ----------------------------------------------------------
 # 10. Grok Stock Analysis (for StockDetailScreen)
@@ -955,8 +1158,6 @@ def market_news():
    return {"data": uniq[:50]}
 
 
-
-
 # ----------------------------------------------------------
 # 12. SEARCH + WATCHLIST endpoints (for WatchlistScreen)
 # ----------------------------------------------------------
@@ -977,8 +1178,6 @@ def compute_signal_and_conf(change_pct: float):
 
    confidence = min(95, max(70, abs(cp) * 10 + 70))
    return signal, int(round(confidence))
-
-
 
 
 def build_watchlist_item(symbol: str):
