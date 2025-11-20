@@ -352,8 +352,7 @@ def backend_fetch_quote(symbol: str):
            "timestamp": int(datetime.datetime.utcnow().timestamp()),
        }
 
-# ----------------------------------------------------------
-# 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
+
 # ----------------------------------------------------------
 # 📈 Helper: Fetch OHLCV candles (Polygon → Yahoo fallback)
 # ----------------------------------------------------------
@@ -374,7 +373,8 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
             highs = [r["h"] for r in j["results"]]
             lows = [r["l"] for r in j["results"]]
             vols = [r["v"] for r in j["results"]]
-            opens = [r.get("o", r["c"]) for r in j["results"]]  # fallback to close if missing
+            opens = [r.get("o", r["c"]) for r in j["results"]]
+            timestamps = [r.get("t") for r in j["results"]]  # ms since epoch
 
             if len(closes) >= min_points:
                 return {
@@ -384,6 +384,7 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
                     "low": lows,
                     "open": opens,
                     "volume": vols,
+                    "timestamp": timestamps,
                 }
 
     except Exception as e:
@@ -392,9 +393,6 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
     return None
 
 
-# ----------------------------------------------------------
-# 🧮 Helper: Compute 10-engineered features for BullBrain
-# ----------------------------------------------------------
 # ----------------------------------------------------------
 # 🧮 Helper: Compute 48 engineered features for BullBrain v2
 # ----------------------------------------------------------
@@ -842,6 +840,317 @@ def predict_multi(tickers: str = Query(..., description="Comma-separated tickers
         "data": results,
         "errors": errors,
     }
+
+# ----------------------------------------------------------
+# 4️⃣ Raw 48 engineered features for a symbol
+# ----------------------------------------------------------
+@app.get("/features/{symbol}")
+def get_features(symbol: str):
+    """
+    Returns only the engineered BullBrain v2 features (no prediction).
+    Useful for charts, debugging, and frontend AI insights.
+    """
+    symbol = symbol.upper()
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
+
+        _, feature_dict, last_close = compute_bullbrain_features(candles)
+        as_of = datetime.datetime.utcnow().isoformat()
+
+        return {
+            "symbol": symbol,
+            "asOf": as_of,
+            "source": candles.get("source", "polygon"),
+            "price": last_close,
+            "features": feature_dict,
+        }
+    except Exception as e:
+        print("get_features error:", e)
+        return {"symbol": symbol, "error": str(e)}
+# ----------------------------------------------------------
+# 5️⃣ Clean OHLCV history for charts
+# ----------------------------------------------------------
+@app.get("/candles/{symbol}")
+def get_candles(
+    symbol: str,
+    limit: int = 252,  # ~1 year of trading days
+):
+    """
+    Returns normalized OHLCV candle history for a symbol.
+
+    Example:
+      /candles/NVDA?limit=60
+
+    Response:
+    {
+      "symbol": "NVDA",
+      "source": "polygon",
+      "candles": [
+        {
+          "t": "2025-10-01T00:00:00Z",
+          "open": 180.12,
+          "high": 185.5,
+          "low": 178.9,
+          "close": 184.3,
+          "volume": 123456789
+        },
+        ...
+      ]
+    }
+    """
+    import math
+
+    symbol = symbol.upper()
+    try:
+        candles = fetch_daily_candles(symbol, min_points=min(limit, 60))
+        if not candles:
+            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
+
+        closes = candles["close"]
+        highs = candles["high"]
+        lows = candles["low"]
+        opens = candles["open"]
+        vols = candles["volume"]
+        ts_list = candles.get("timestamp") or []
+
+        n = len(closes)
+        if n == 0:
+            return {"symbol": symbol, "error": "No candle data"}
+
+        use_n = min(limit, n)
+        start_idx = n - use_n
+
+        items = []
+        for i in range(start_idx, n):
+            t_raw = ts_list[i] if i < len(ts_list) and ts_list[i] else None
+            if t_raw:
+                # Polygon timestamps are ms since epoch
+                dt = datetime.datetime.utcfromtimestamp(t_raw / 1000.0).replace(
+                    microsecond=0
+                )
+                t_iso = dt.isoformat() + "Z"
+            else:
+                # Fallback: synthetic date
+                dt = datetime.datetime.utcnow() - datetime.timedelta(
+                    days=(n - 1 - i)
+                )
+                t_iso = dt.replace(microsecond=0).isoformat() + "Z"
+
+            items.append(
+                {
+                    "t": t_iso,
+                    "open": float(opens[i]),
+                    "high": float(highs[i]),
+                    "low": float(lows[i]),
+                    "close": float(closes[i]),
+                    "volume": float(vols[i]),
+                }
+            )
+
+        return {
+            "symbol": symbol,
+            "source": candles.get("source", "polygon"),
+            "candles": items,
+        }
+    except Exception as e:
+        print("get_candles error:", e)
+        return {"symbol": symbol, "error": str(e)}
+
+def _interpret_rsi(rsi: float | None) -> str:
+    if rsi is None:
+        return "Unknown"
+    if rsi < 30:
+        return "Oversold (RSI < 30)"
+    if rsi < 40:
+        return "Bearish momentum (RSI < 40)"
+    if rsi <= 60:
+        return "Neutral momentum (RSI 40–60)"
+    if rsi <= 70:
+        return "Bullish momentum (RSI 60–70)"
+    return "Overbought (RSI > 70)"
+
+
+def _interpret_macd(macd_hist: float | None) -> str:
+    if macd_hist is None:
+        return "Unknown"
+    if macd_hist > 1.0:
+        return "Strong bullish MACD momentum"
+    if macd_hist > 0.0:
+        return "Mild bullish MACD momentum"
+    if macd_hist < -1.0:
+        return "Strong bearish MACD momentum"
+    if macd_hist < 0.0:
+        return "Mild bearish MACD momentum"
+    return "Flat MACD momentum"
+
+
+def _interpret_volume(volume_z: float | None, vs_ma20: float | None) -> str:
+    if volume_z is None and vs_ma20 is None:
+        return "Unknown"
+    if volume_z is not None:
+        if volume_z > 2.0:
+            return "High volume spike (Z > 2)"
+        if volume_z > 1.0:
+            return "Elevated volume (Z 1–2)"
+        if volume_z < -1.0:
+            return "Unusually low volume"
+    if vs_ma20 is not None:
+        if vs_ma20 > 20:
+            return "Volume well above 20-day average"
+        if vs_ma20 < -20:
+            return "Volume well below 20-day average"
+    return "Normal volume"
+
+
+def _interpret_trend(
+    trend_strength_20: float | None,
+    dist_high: float | None,
+    dist_low: float | None,
+) -> str:
+    if trend_strength_20 is None:
+        return "Unknown trend"
+    if trend_strength_20 > 0.5:
+        return "Strong uptrend"
+    if trend_strength_20 > 0.1:
+        return "Mild uptrend"
+    if trend_strength_20 < -0.5:
+        return "Strong downtrend"
+    if trend_strength_20 < -0.1:
+        return "Mild downtrend"
+    return "Sideways / range-bound"
+
+
+def _interpret_volatility(vol20: float | None) -> str:
+    if vol20 is None:
+        return "Unknown"
+    if vol20 < 1.0:
+        return "Low volatility"
+    if vol20 < 2.5:
+        return "Normal volatility"
+    if vol20 < 4.0:
+        return "Elevated volatility"
+    return "High volatility regime"
+
+# ----------------------------------------------------------
+# 6️⃣ Technical indicators + short interpretations
+# ----------------------------------------------------------
+@app.get("/technical/{symbol}")
+def get_technical(symbol: str):
+    """
+    Returns a structured technical snapshot:
+    - Numeric indicators (trend, momentum, volume, volatility, candle)
+    - Short interpretation strings for each block
+    """
+    symbol = symbol.upper()
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
+
+        _, feat, last_close = compute_bullbrain_features(candles)
+        as_of = datetime.datetime.utcnow().isoformat()
+
+        # Short-hand getter
+        def fv(name):
+            v = feat.get(name)
+            return None if v is None else float(v)
+
+        rsi = fv("rsi14")
+        macd_val = fv("macd")
+        macd_signal = fv("macd_signal")
+        macd_hist = fv("macd_hist")
+        stoch_k = fv("stoch_k_14")
+        stoch_d = fv("stoch_d_3")
+        willr = fv("williams_r_14")
+
+        vol5 = fv("volatility_5d")
+        vol20 = fv("volatility_20d")
+        vol60 = fv("volatility_60d")
+
+        vol_change_1d = fv("volume_change_1d")
+        vol_vs_ma5 = fv("volume_vs_ma5_pct")
+        vol_vs_ma20 = fv("volume_vs_ma20_pct")
+        vol_z = fv("volume_zscore_20")
+        obv = fv("obv")
+        obv_slope_10 = fv("obv_slope_10")
+
+        price_vs_sma20 = fv("price_vs_sma20_pct")
+        sma5_sma20_pct = fv("sma5_sma20_pct")
+        sma20_sma50_pct = fv("sma20_sma50_pct")
+        dist_high = fv("distance_from_20d_high")
+        dist_low = fv("distance_from_20d_low")
+        trend_strength_20 = fv("trend_strength_20")
+
+        intraday_range_pct = fv("intraday_range_pct")
+        body_pct = fv("body_pct")
+        upper_shadow_pct = fv("upper_shadow_pct")
+        lower_shadow_pct = fv("lower_shadow_pct")
+        gap_pct = fv("gap_pct")
+        atr14 = fv("atr14")
+        true_range = fv("true_range")
+
+        trend_summary = _interpret_trend(
+            trend_strength_20, dist_high, dist_low
+        )
+        momentum_summary = _interpret_rsi(rsi)
+        macd_summary = _interpret_macd(macd_hist)
+        volume_summary = _interpret_volume(vol_z, vol_vs_ma20)
+        vol_regime_summary = _interpret_volatility(vol20)
+
+        return {
+            "symbol": symbol,
+            "asOf": as_of,
+            "price": last_close,
+            "trend": {
+                "trend_strength_20": trend_strength_20,
+                "price_vs_sma20_pct": price_vs_sma20,
+                "sma5_sma20_pct": sma5_sma20_pct,
+                "sma20_sma50_pct": sma20_sma50_pct,
+                "distance_from_20d_high": dist_high,
+                "distance_from_20d_low": dist_low,
+                "summary": trend_summary,
+            },
+            "momentum": {
+                "rsi14": rsi,
+                "macd": macd_val,
+                "macd_signal": macd_signal,
+                "macd_hist": macd_hist,
+                "stoch_k_14": stoch_k,
+                "stoch_d_3": stoch_d,
+                "williams_r_14": willr,
+                "summary_rsi": momentum_summary,
+                "summary_macd": macd_summary,
+            },
+            "volume": {
+                "volume_change_1d": vol_change_1d,
+                "volume_vs_ma5_pct": vol_vs_ma5,
+                "volume_vs_ma20_pct": vol_vs_ma20,
+                "volume_zscore_20": vol_z,
+                "obv": obv,
+                "obv_slope_10": obv_slope_10,
+                "summary": volume_summary,
+            },
+            "volatility": {
+                "volatility_5d": vol5,
+                "volatility_20d": vol20,
+                "volatility_60d": vol60,
+                "atr14": atr14,
+                "true_range": true_range,
+                "summary": vol_regime_summary,
+            },
+            "candle": {
+                "intraday_range_pct": intraday_range_pct,
+                "body_pct": body_pct,
+                "upper_shadow_pct": upper_shadow_pct,
+                "lower_shadow_pct": lower_shadow_pct,
+                "gap_pct": gap_pct,
+            },
+        }
+    except Exception as e:
+        print("get_technical error:", e)
+        return {"symbol": symbol, "error": str(e)}
 
 # ----------------------------------------------------------
 # 2. Analyst recommendations
