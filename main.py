@@ -48,34 +48,54 @@ MODEL_DRIVE_URL = "https://drive.google.com/uc?id=1TeutMa8jQ5l4Lw-ZaN1gP1iGfDp5s
 FULLMODEL_LOCAL_PATH = "models/bullbrain_v2_48f.json"
 
 BULLBRAIN_FEATURES = [
-    # 1–6: raw price & volume
-    "adj_close", "close", "high", "low", "open", "volume",
-    # 7–9: returns
-    "return_1d", "return_5d", "return_10d",
-    # 10–12: realized volatility
-    "volatility_5d", "volatility_20d", "volatility_60d",
-    # 13–17: SMAs
-    "sma5", "sma10", "sma20", "sma50", "sma200",
-    # 18–20: SMA / price relationships
-    "sma5_sma20_pct", "sma20_sma50_pct", "price_vs_sma20_pct",
-    # 21–24: RSI + MACD
-    "rsi14", "macd", "macd_signal", "macd_hist",
-    # 25–26: stochastic oscillator
-    "stoch_k", "stoch_d",
-    # 27–29: EMAs
-    "ema9", "ema21", "ema50",
-    # 30–33: Bollinger Bands
-    "bb_upper", "bb_middle", "bb_lower", "bb_width_pct",
-    # 34–36: volatility/volume extras
-    "atr14", "volume_sma20", "volume_zscore",
-    # 37–40: candlestick anatomy
-    "gap_pct", "body_pct", "upper_shadow_pct", "lower_shadow_pct",
-    # 41–43: calendar features
-    "day_of_week", "month_sin", "month_cos",
-    # 44–47: trend strength
-    "trend_20d", "trend_60d", "rolling_max_20d_pct", "rolling_min_20d_pct",
-    # 48: volatility regime flag
-    "volatility_regime",
+    "adj_close",
+    "close",
+    "high",
+    "low",
+    "open",
+    "volume",
+    "return_1d",
+    "return_5d",
+    "return_10d",
+    "volatility_5d",
+    "volatility_20d",
+    "volatility_60d",
+    "sma5",
+    "sma10",
+    "sma20",
+    "sma50",
+    "sma200",
+    "sma5_sma20_pct",
+    "sma20_sma50_pct",
+    "price_vs_sma20_pct",
+    "rsi14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "ema12",
+    "ema26",
+    "ema_ratio",
+    "williams_r_14",
+    "stoch_k_14",
+    "stoch_d_3",
+    "volume_change_1d",
+    "volume_ma5",
+    "volume_ma20",
+    "volume_vs_ma5_pct",
+    "volume_vs_ma20_pct",
+    "obv",
+    "obv_slope_10",
+    "intraday_range_pct",
+    "true_range",
+    "atr14",
+    "upper_shadow_pct",
+    "lower_shadow_pct",
+    "body_pct",
+    "gap_pct",
+    "distance_from_20d_high",
+    "distance_from_20d_low",
+    "volume_zscore_20",
+    "trend_strength_20",
 ]
 
 bullbrain_model = None  # will hold xgb.Booster instance
@@ -422,14 +442,21 @@ def _atr(df, period=14):
 
 def compute_bullbrain_features(candles: dict):
     """
-    Input: dict with lists: close, high, low, open, volume
-    Output: (features_vector[1x48], feature_dict, last_close)
+    Reproduces the Colab engineer_features() logic for a single symbol.
+
+    Input candles dict must have:
+      - close, high, low, open, volume  (lists of floats)
+
+    Returns:
+      features_vector: np.array shape (1, 48) in correct order
+      feature_dict: {feature_name: value or None}
+      last_close: float
     """
     closes = candles["close"]
     highs = candles["high"]
     lows = candles["low"]
     vols = candles["volume"]
-    opens = candles.get("open") or closes  # safety fallback
+    opens = candles.get("open") or closes
 
     df = pd.DataFrame(
         {
@@ -439,132 +466,163 @@ def compute_bullbrain_features(candles: dict):
             "open": opens,
             "volume": vols,
         }
-    )
+    ).reset_index(drop=True)
 
-    # make sure it's in time order
-    df = df.reset_index(drop=True)
-
-    # adj_close = close for now (can wire real adjusted data later)
+    # adj_close ≈ close at inference time
     df["adj_close"] = df["close"]
 
-    # --- returns & volatility ---
-    df["return_1d"] = df["close"].pct_change(1)
-    df["return_5d"] = df["close"].pct_change(5)
-    df["return_10d"] = df["close"].pct_change(10)
+    # ---------------------------
+    # 1. Returns
+    # ---------------------------
+    df["return_1d"] = df["close"].pct_change() * 100.0
+    df["return_5d"] = df["close"].pct_change(5) * 100.0
+    df["return_10d"] = df["close"].pct_change(10) * 100.0
 
-    df["volatility_5d"] = df["return_1d"].rolling(5).std()
-    df["volatility_20d"] = df["return_1d"].rolling(20).std()
-    df["volatility_60d"] = df["return_1d"].rolling(60).std()
+    # ---------------------------
+    # 2. Volatility (rolling std of returns)
+    # ---------------------------
+    daily_ret = df["close"].pct_change()
+    df["volatility_5d"] = daily_ret.rolling(5).std() * 100.0
+    df["volatility_20d"] = daily_ret.rolling(20).std() * 100.0
+    df["volatility_60d"] = daily_ret.rolling(60).std() * 100.0
 
-    # --- SMAs & EMAs ---
+    # ---------------------------
+    # 3. Moving Averages
+    # ---------------------------
     df["sma5"] = df["close"].rolling(5).mean()
     df["sma10"] = df["close"].rolling(10).mean()
     df["sma20"] = df["close"].rolling(20).mean()
     df["sma50"] = df["close"].rolling(50).mean()
     df["sma200"] = df["close"].rolling(200).mean()
 
-    df["ema9"] = df["close"].ewm(span=9, adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    # Relative positions
+    df["sma5_sma20_pct"] = (df["sma5"] / df["sma20"] - 1.0) * 100.0
+    df["sma20_sma50_pct"] = (df["sma20"] / df["sma50"] - 1.0) * 100.0
+    df["price_vs_sma20_pct"] = (df["close"] / df["sma20"] - 1.0) * 100.0
 
-    # --- SMA/price relationships ---
-    df["sma5_sma20_pct"] = (df["sma5"] / (df["sma20"] + 1e-9) - 1.0) * 100.0
-    df["sma20_sma50_pct"] = (df["sma20"] / (df["sma50"] + 1e-9) - 1.0) * 100.0
-    df["price_vs_sma20_pct"] = (df["close"] / (df["sma20"] + 1e-9) - 1.0) * 100.0
+    # ---------------------------
+    # 4. RSI 14
+    # ---------------------------
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
+    df["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
-    # --- RSI & MACD ---
-    df["rsi14"] = _rsi(df["close"], period=14)
-    df["macd"], df["macd_signal"], df["macd_hist"] = _macd(df["close"])
+    # ---------------------------
+    # 5. MACD + EMA12/26 + ratio
+    # ---------------------------
+    ema12 = df["close"].ewm(span=12).mean()
+    ema26 = df["close"].ewm(span=26).mean()
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = df["macd"].ewm(span=9).mean()
+    df["macd_hist"] = df["macd"] - df["macd_signal"]
+    df["ema12"] = ema12
+    df["ema26"] = ema26
+    df["ema_ratio"] = ema12 / ema26
 
-    # --- Stochastic oscillator ---
-    df["stoch_k"], df["stoch_d"] = _stoch_kd(df)
+    # ---------------------------
+    # 6. Williams %R and Stoch K/D
+    # ---------------------------
+    hh14 = df["high"].rolling(14).max()
+    ll14 = df["low"].rolling(14).min()
+    df["williams_r_14"] = (df["close"] - hh14) / (hh14 - ll14) * 100.0
 
-    # --- Bollinger Bands (20, 2 std) ---
-    bb_mid = df["close"].rolling(20).mean()
-    bb_std = df["close"].rolling(20).std()
-    df["bb_middle"] = bb_mid
-    df["bb_upper"] = bb_mid + 2 * bb_std
-    df["bb_lower"] = bb_mid - 2 * bb_std
-    df["bb_width_pct"] = (
-        (df["bb_upper"] - df["bb_lower"]) / (df["bb_middle"] + 1e-9) * 100.0
-    )
+    df["stoch_k_14"] = (df["close"] - ll14) / (hh14 - ll14) * 100.0
+    df["stoch_d_3"] = df["stoch_k_14"].rolling(3).mean()
 
-    # --- ATR & volume stats ---
-    df["atr14"] = _atr(df)
-    df["volume_sma20"] = df["volume"].rolling(20).mean()
-    df["volume_zscore"] = (
-        df["volume"] - df["volume_sma20"]
-    ) / (df["volume"].rolling(60).std() + 1e-9)
+    # ---------------------------
+    # 7. Volume features
+    # ---------------------------
+    df["volume_change_1d"] = df["volume"].pct_change() * 100.0
+    df["volume_ma5"] = df["volume"].rolling(5).mean()
+    df["volume_ma20"] = df["volume"].rolling(20).mean()
+    df["volume_vs_ma5_pct"] = (df["volume"] / df["volume_ma5"] - 1.0) * 100.0
+    df["volume_vs_ma20_pct"] = (df["volume"] / df["volume_ma20"] - 1.0) * 100.0
 
-    # --- candlestick anatomy ---
-    df["gap_pct"] = (
-        (df["open"] - df["close"].shift(1)) / (df["close"].shift(1) + 1e-9) * 100.0
-    )
-    body = (df["close"] - df["open"]).abs()
-    full_range = (df["high"] - df["low"]).replace(0, np.nan)
-    df["body_pct"] = (body / full_range) * 100.0
-    df["upper_shadow_pct"] = (
-        (df["high"] - df[["open", "close"]].max(axis=1)) / full_range * 100.0
-    )
-    df["lower_shadow_pct"] = (
-        (df[["open", "close"]].min(axis=1) - df["low"]) / full_range * 100.0
-    )
+    # ---------------------------
+    # 8. OBV + OBV slope (10)
+    # ---------------------------
+    df["obv"] = (np.sign(df["close"].diff()) * df["volume"]).fillna(0).cumsum()
 
-    # --- calendar features ---
-    # fake a date index if none (we just need day/month pattern)
-    if not isinstance(df.index, pd.DatetimeIndex):
-        start_date = datetime.date.today() - datetime.timedelta(days=len(df))
-        df.index = pd.date_range(start=start_date, periods=len(df), freq="D")
+    def _slope_10(x):
+        # x is a length-10 window
+        return np.polyfit(range(10), x, 1)[0]
 
-    df["day_of_week"] = df.index.dayofweek
-    month = df.index.month
-    df["month_sin"] = np.sin(2 * np.pi * month / 12.0)
-    df["month_cos"] = np.cos(2 * np.pi * month / 12.0)
+    df["obv_slope_10"] = df["obv"].rolling(10).apply(_slope_10, raw=False)
 
-    # --- trend strength ---
-    df["rolling_max_20d"] = df["close"].rolling(20).max()
-    df["rolling_min_20d"] = df["close"].rolling(20).min()
-    df["trend_20d"] = (
-        df["close"] / (df["close"].shift(20) + 1e-9) - 1.0
-    ) * 100.0
-    df["trend_60d"] = (
-        df["close"] / (df["close"].shift(60) + 1e-9) - 1.0
-    ) * 100.0
-    df["rolling_max_20d_pct"] = (
-        df["close"] / (df["rolling_max_20d"] + 1e-9) - 1.0
-    ) * 100.0
-    df["rolling_min_20d_pct"] = (
-        df["close"] / (df["rolling_min_20d"] + 1e-9) - 1.0
-    ) * 100.0
+    # ---------------------------
+    # 9. Price range features
+    # ---------------------------
+    df["intraday_range_pct"] = (df["high"] - df["low"]) / df["close"] * 100.0
 
-    # --- volatility regime flag ---
-    vol20 = df["volatility_20d"]
-    regime_threshold = vol20.median(skipna=True)
-    if np.isnan(regime_threshold):
-        regime_threshold = vol20.fillna(0).median()
-    df["volatility_regime"] = (vol20 > regime_threshold).astype(float)
+    # True range & ATR14 (same as Colab)
+    tr = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift()).abs(),
+            (df["low"] - df["close"].shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df["true_range"] = tr
+    df["atr14"] = tr.rolling(14).mean()
 
-    # Drop rows without full features
-    df_feat = df.dropna().copy()
-    if df_feat.empty:
-        raise RuntimeError("Not enough data to compute BullBrain v2 features.")
+    # ---------------------------
+    # 10. Candle anatomy
+    # ---------------------------
+    df["upper_shadow_pct"] = (df["high"] - df["close"]) / df["close"] * 100.0
+    df["lower_shadow_pct"] = (df["close"] - df["low"]) / df["close"] * 100.0
+    df["body_pct"] = (df["close"] - df["open"]) / df["open"] * 100.0
 
-    row = df_feat.iloc[-1]
+    # Gap vs previous close
+    df["gap_pct"] = (df["open"] - df["close"].shift()) / df["close"].shift() * 100.0
+
+    # ---------------------------
+    # 11. Distance from 20-day extremes
+    # ---------------------------
+    rolling_high_20 = df["high"].rolling(20).max()
+    rolling_low_20 = df["low"].rolling(20).min()
+    df["distance_from_20d_high"] = (df["close"] / rolling_high_20 - 1.0) * 100.0
+    df["distance_from_20d_low"] = (df["close"] / rolling_low_20 - 1.0) * 100.0
+
+    # ---------------------------
+    # 12. Volume Z-score (20)
+    # ---------------------------
+    vol_ma20 = df["volume_ma20"]
+    vol_std20 = vol_ma20.rolling(20).std()
+    df["volume_zscore_20"] = (df["volume"] - vol_ma20) / vol_std20
+
+    # ---------------------------
+    # 13. Trend strength (20) via slope
+    # ---------------------------
+    def _slope_20(x):
+        return np.polyfit(range(20), x, 1)[0]
+
+    df["trend_strength_20"] = df["close"].rolling(20).apply(_slope_20, raw=False)
+
+    # ---------------------------
+    # Pick the latest row for inference
+    # ---------------------------
+    row = df.iloc[-1]
     last_close = float(row["close"])
 
+    # Build feature vector in exact training order
+    values_for_model = []
     feature_dict = {}
-    for name in BULLBRAIN_FEATURES:
-        val = row.get(name, np.nan)
-        if pd.isna(val):
-            val = 0.0
-        feature_dict[name] = float(val)
 
-    features_vector = np.array(
-        [feature_dict[name] for name in BULLBRAIN_FEATURES],
-        dtype=float,
-    ).reshape(1, -1)
+    for name in BULLBRAIN_FEATURES:
+        raw = row.get(name, np.nan)
+        # For model we keep NaN as NaN (XGBoost can handle)
+        values_for_model.append(float(raw) if pd.notna(raw) else np.nan)
+        # For JSON, convert NaN to None
+        feature_dict[name] = None if pd.isna(raw) else float(raw)
+
+    features_vector = np.array([values_for_model], dtype=float)
 
     return features_vector, feature_dict, last_close
+
+
 
 def _run_bullbrain_for_symbol(symbol: str):
     """
