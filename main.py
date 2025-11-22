@@ -1,8 +1,5 @@
 # main.py — BullSignalsAI Backend (Production, with BullBrain v1 Full Model)
 
-
-
-
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -14,9 +11,7 @@ import pandas as pd
 import xgboost as xgb
 import gdown  # <-- ADDED
 
-
 app = FastAPI()
-
 
 # Allow Expo mobile app access
 app.add_middleware(
@@ -115,6 +110,11 @@ cache = {}
 BULLBRAIN_WEIGHT = 0.7
 GROK_WEIGHT = 0.3
 
+# ----------------------------------------------------------
+# Logging helper
+# ----------------------------------------------------------
+def log(msg):
+    print(f"[BullSignals Log] {msg}")
 
 def grok_prob_up(symbol: str):
     """
@@ -301,6 +301,35 @@ def on_startup():
   except Exception as e:
       print("⚠️ Failed to load BullBrain model on startup:", e)
 # ----------------------------------------------------------
+# ----------------------------------------------------------
+# Warm-up common tickers (optional but recommended)
+# ----------------------------------------------------------
+WARMUP_TICKERS = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+
+def warmup_grok():
+    log("🔥 Warm-up started…")
+    for sym in WARMUP_TICKERS:
+        try:
+            # Trigger stock-level Grok (fills cache)
+            _ = grok_stock(sym, force=True)
+            log(f"✓ Warmed Grok for {sym}")
+        except Exception as e:
+            log(f"⚠ Warm-up failed for {sym}: {e}")
+    log("🔥 Warm-up finished.")
+
+
+@app.on_event("startup")
+def on_startup():
+    global bullbrain_model
+    log("🚀 Backend starting… loading BullBrain model")
+    try:
+        bullbrain_model = load_bullbrain_model()
+    except Exception as e:
+        log(f"⚠ Failed to load BullBrain model: {e}")
+
+    # OPTIONAL warm-up (uncomment to activate)
+    warmup_grok()
+
 @app.get("/")
 def root():
   return {
@@ -819,11 +848,7 @@ def compute_bullbrain_features(candles: dict):
 
    features_vector = np.array([values_for_model], dtype=float)
 
-
    return features_vector, feature_dict, last_close
-
-
-
 
 # ----------------------------------------------------------
 # Grok Probability Engine (0–100 probability of going UP)
@@ -981,9 +1006,6 @@ def _run_bullbrain_for_symbol(symbol: str):
     }
 
     return core, None
-
-
-
 # ----------------------------------------------------------
 # 🔮 BullBrain v1 Inference
 # ----------------------------------------------------------
@@ -995,44 +1017,20 @@ def bullbrain_infer(features_vector: np.ndarray):
   global bullbrain_model
   if bullbrain_model is None:
       raise RuntimeError("BullBrain model not loaded")
-
-
-
-
   dmat = xgb.DMatrix(features_vector, feature_names=BULLBRAIN_FEATURES)
   preds = bullbrain_model.predict(dmat)
-
-
-
-
   # Handle shapes like (1,) or (1,1) safely
   arr = np.array(preds).ravel()
   if arr.size == 0:
       raise RuntimeError("Model returned no prediction")
-
-
-
-
   prob_up = float(arr[0])
-
-
-
-
   if prob_up >= 0.55:
       signal = "BUY"
   elif prob_up <= 0.45:
       signal = "SELL"
   else:
       signal = "HOLD"
-
-
-
-
   confidence = round(max(prob_up, 1 - prob_up) * 100.0, 2)
-
-
-
-
   return {
       "signal": signal,
       "confidence": confidence,
@@ -1061,7 +1059,6 @@ def predict_symbol(symbol: str):
    # symbol, asOf, source, price, features, bullbrain, model(legacy)
    return core
 
-
 # ----------------------------------------------------------
 # 1. Quote (Primary Finnhub, fallback Yahoo)
 # ----------------------------------------------------------
@@ -1086,13 +1083,8 @@ def quote(symbol: str):
           "timestamp": q["timestamp"],
       }
 
-
-
-
   except Exception as e:
       return {"error": str(e)}
-
-
 # ----------------------------------------------------------
 # 🔮 2. Class probabilities endpoint
 # ----------------------------------------------------------
@@ -1319,9 +1311,6 @@ def _interpret_rsi(rsi: float | None) -> str:
        return "Bullish momentum (RSI 60–70)"
    return "Overbought (RSI > 70)"
 
-
-
-
 def _interpret_macd(macd_hist: float | None) -> str:
    if macd_hist is None:
        return "Unknown"
@@ -1334,9 +1323,6 @@ def _interpret_macd(macd_hist: float | None) -> str:
    if macd_hist < 0.0:
        return "Mild bearish MACD momentum"
    return "Flat MACD momentum"
-
-
-
 
 def _interpret_volume(volume_z: float | None, vs_ma20: float | None) -> str:
    if volume_z is None and vs_ma20 is None:
@@ -1355,9 +1341,6 @@ def _interpret_volume(volume_z: float | None, vs_ma20: float | None) -> str:
            return "Volume well below 20-day average"
    return "Normal volume"
 
-
-
-
 def _interpret_trend(
    trend_strength_20: float | None,
    dist_high: float | None,
@@ -1375,9 +1358,6 @@ def _interpret_trend(
        return "Mild downtrend"
    return "Sideways / range-bound"
 
-
-
-
 def _interpret_volatility(vol20: float | None) -> str:
    if vol20 is None:
        return "Unknown"
@@ -1388,7 +1368,6 @@ def _interpret_volatility(vol20: float | None) -> str:
    if vol20 < 4.0:
        return "Elevated volatility"
    return "High volatility regime"
-
 
 # ----------------------------------------------------------
 # 6️⃣ Technical indicators + short interpretations
@@ -1517,8 +1496,6 @@ def get_technical(symbol: str):
    except Exception as e:
        print("get_technical error:", e)
        return {"symbol": symbol, "error": str(e)}
-
-
 # ----------------------------------------------------------
 # 2. Analyst recommendations
 # ----------------------------------------------------------
@@ -1532,10 +1509,6 @@ def recommendations(symbol: str):
       return {"data": data}
   except Exception as e:
       return {"error": str(e)}
-
-
-
-
 # ----------------------------------------------------------
 # 3. Generic Grok/XAI summary (kept if used elsewhere)
 # ----------------------------------------------------------
@@ -1551,8 +1524,6 @@ def grok_summary(payload: dict):
       return resp.json()
   except Exception as e:
       return {"error": str(e)}
-
-
 # ----------------------------------------------------------
 # 4. Full ticker data (combines /quote + /recommendations)
 # ----------------------------------------------------------
@@ -1568,8 +1539,6 @@ def ticker_full(symbol: str):
       }
   except Exception as e:
       return {"error": str(e)}
-
-
 # ----------------------------------------------------------
 # 5. Multiple quotes
 # ----------------------------------------------------------
@@ -1586,8 +1555,6 @@ def quotes(symbols: str):
       return out
   except Exception as e:
       return {"error": str(e)}
-
-
 # ----------------------------------------------------------
 # 6. Macro Watch (FMP)
 # ----------------------------------------------------------
@@ -1596,10 +1563,6 @@ def macro_watch():
   try:
       today = datetime.date.today()
       to_date = today + datetime.timedelta(days=10)
-
-
-
-
       url = (
           "https://financialmodelingprep.com/api/v3/economic_calendar"
           f"?from={today}&to={to_date}&apikey={FMP_API_KEY}"
@@ -1608,8 +1571,6 @@ def macro_watch():
       return {"data": data[:20] if isinstance(data, list) else []}
   except Exception as e:
       return {"data": [], "error": str(e)}
-
-
 # ----------------------------------------------------------
 # 7. Earnings
 # ----------------------------------------------------------
@@ -1618,10 +1579,6 @@ def earnings():
   try:
       today = datetime.date.today()
       next_week = today + datetime.timedelta(days=7)
-
-
-
-
       url = (
           "https://financialmodelingprep.com/api/v3/earning_calendar"
           f"?from={today}&to={next_week}&apikey={FMP_API_KEY}"
@@ -1630,8 +1587,6 @@ def earnings():
       return {"data": data[:20] if isinstance(data, list) else []}
   except Exception as e:
       return {"data": [], "error": str(e)}
-
-
 # ----------------------------------------------------------
 # 8. Live stats (fear & greed + VIX + S&P)
 # ----------------------------------------------------------
@@ -1640,10 +1595,6 @@ def live_stats():
   try:
       # Fear & Greed Index (placeholder – can wire RapidAPI later)
       fearGreed = {"value": 50, "label": "Neutral"}
-
-
-
-
       # VIX
       vix_url = "https://query1.finance.yahoo.com/v8/finance/chart/^VIX"
       vix_data = requests.get(vix_url, timeout=10).json()
@@ -1653,10 +1604,6 @@ def live_stats():
           .get("meta", {})
           .get("regularMarketPrice", 15)
       )
-
-
-
-
       # S&P Change %
       sp_url = "https://query1.finance.yahoo.com/v8/finance/chart/^GSPC"
       sp_data = requests.get(sp_url, timeout=10).json()
@@ -1671,10 +1618,6 @@ def live_stats():
           if prev
           else 0
       )
-
-
-
-
       return {
           "fearGreed": fearGreed,
           "vix": round(vix, 2),
@@ -1687,8 +1630,6 @@ def live_stats():
           "sp500_change": 0.2,
           "error": str(e),
       }
-
-
 # ----------------------------------------------------------
 # 9. Market Mood (Fear & Greed + VIX) — for MoodService
 # ----------------------------------------------------------
@@ -1700,45 +1641,25 @@ def market_mood():
           "https://api.alternative.me/fng/?limit=1&format=json",
           timeout=5,
       ).json()
-
-
-
-
       fear_value = int(fng.get("data", [{}])[0].get("value", 50))
       fear_label = fng.get("data", [{}])[0].get("value_classification", "Neutral")
-
-
-
-
       # VIX Index
       vix_json = requests.get(
           "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX",
           timeout=5,
       ).json()
-
-
-
-
       vix_price = (
           vix_json.get("chart", {})
           .get("result", [{}])[0]
           .get("meta", {})
           .get("regularMarketPrice", 15.0)
       )
-
-
-
-
       return {
           "data": {
               "fearGreed": {"value": fear_value, "label": fear_label},
               "vix": round(float(vix_price), 2),
           }
       }
-
-
-
-
   except Exception as e:
       return {
           "data": {
@@ -1747,8 +1668,6 @@ def market_mood():
           },
           "error": str(e),
       }
-
-
 # ----------------------------------------------------------
 # 10. Grok Stock Analysis (for StockDetailScreen)
 # ----------------------------------------------------------
@@ -1757,10 +1676,6 @@ def grok_stock(symbol: str, force: bool = False):
   """Full structured Grok analysis for StockDetailScreen."""
   now = datetime.datetime.utcnow()
   key = f"grok_stock_{symbol.upper()}"
-
-
-
-
   # Cache
   if not force:
       item = cache.get(key)
@@ -1769,14 +1684,7 @@ def grok_stock(symbol: str, force: bool = False):
           if age_hours < GROK_STOCK_CACHE_HOURS:
               return {"text": item["text"], "updatedAt": item["time"].isoformat()}
 
-
-
-
   quote = backend_fetch_quote(symbol)
-
-
-
-
   price_context = (
       f"Current Price: {quote['current']}\n"
       f"Change: {quote['change']} ({quote['changePct']:.2f}%)\n"
@@ -1787,16 +1695,8 @@ def grok_stock(symbol: str, force: bool = False):
       if quote
       else f"Symbol: {symbol.upper()}"
   )
-
-
-
-
   prompt = f"""
 Analyze {symbol.upper()} using this structure:
-
-
-
-
 AI Signal
 Predictions
 Executive Summary
@@ -1806,29 +1706,13 @@ News & Market Sentiment
 Risks & Opportunities
 Trade Idea
 Recommendation
-
-
-
-
 Market Context:
 {price_context}
-
-
-
-
 Keep each section concise but meaningful. Include NFA disclaimer at end.
 """
-
-
-
-
   try:
       if not XAI_API_KEY:
           raise RuntimeError("Missing XAI_API_KEY")
-
-
-
-
       res = requests.post(
           "https://api.x.ai/v1/chat/completions",
           headers={"Authorization": f"Bearer {XAI_API_KEY}"},
@@ -1847,43 +1731,41 @@ Keep each section concise but meaningful. Include NFA disclaimer at end.
           .get("content", "")
           .strip()
       )
-
-
-
-
       if not text:
           text = "⚠️ AI analysis unavailable."
-
-
-
-
       cache[key] = {"text": text, "time": now}
       return {"text": text, "updatedAt": now.isoformat()}
-
-
-
-
   except Exception as e:
       print("GROK STOCK ERROR:", e)
       return {"text": "⚠️ AI analysis unavailable.", "updatedAt": None}
+# ----------------------------------------------------------
+# 🔄 Force Refresh Grok Cache (for testing)
+# ----------------------------------------------------------
+@app.get("/force-refresh-grok/{symbol}")
+def force_refresh_grok(symbol: str):
+    """Force-delete Grok cache for a specific ticker so next call fetches fresh sentiment."""
+    key_stock = f"grok_stock_{symbol.upper()}"
+    key_watch = f"watch_grok_{symbol.upper()}"
 
+    removed = []
+    if key_stock in cache:
+        del cache[key_stock]
+        removed.append(key_stock)
+    if key_watch in cache:
+        del cache[key_watch]
+        removed.append(key_watch)
 
-
-
-
-
-
-
+    return {
+        "symbol": symbol.upper(),
+        "removedKeys": removed,
+        "message": "Grok cache cleared — next request will fetch fresh data."
+    }
 # ----------------------------------------------------------
 # 11. Market News (for AIPulse / NewsFeedService)
 # ----------------------------------------------------------
 @app.get("/market-news")
 def market_news():
   import feedparser
-
-
-
-
   FEEDS = [
       "https://www.benzinga.com/rss/stock-news.xml",
       "https://seekingalpha.com/api/sa/combined/global_news.rss",
@@ -1892,25 +1774,13 @@ def market_news():
       "https://www.zacks.com/rss/news.xml",
       "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL,TSLA,MSFT,NVDA,META,AMZN,GOOGL,AMD,INTC,JPM,BAC,GS&region=US&lang=en-US",
   ]
-
-
-
-
   KEYWORDS = [
       "dow", "nasdaq", "s&p", "fed", "inflation", "cpi", "ppi",
       "earnings", "guidance", "profit", "loss", "upgrade", "downgrade",
       "ipo", "merger", "acquisition", "forecast", "ai", "chip",
       "market", "stock", "recession", "treasury", "jobs", "rate", "futures",
   ]
-
-
-
-
   news = []
-
-
-
-
   for url in FEEDS:
       try:
           feed = feedparser.parse(url)
@@ -1919,10 +1789,6 @@ def market_news():
               summary = getattr(e, "summary", "")
               link = getattr(e, "link", "")
               pub_date = getattr(e, "published", datetime.datetime.utcnow().isoformat())
-
-
-
-
               text = (title + summary).lower()
               if any(k in text for k in KEYWORDS):
                   news.append({
@@ -1935,9 +1801,6 @@ def market_news():
       except Exception as ex:
           print("RSS error:", ex)
 
-
-
-
   # Deduplicate by first 40 chars
   seen = set()
   uniq = []
@@ -1947,9 +1810,6 @@ def market_news():
           seen.add(key)
           uniq.append(n)
 
-
-
-
   # Sort by pubDate where possible
   try:
       uniq.sort(
@@ -1958,15 +1818,7 @@ def market_news():
       )
   except Exception:
       pass
-
-
-
-
   return {"data": uniq[:50]}
-
-
-
-
 # ----------------------------------------------------------
 # 12. SEARCH + WATCHLIST endpoints (for WatchlistScreen)
 # ----------------------------------------------------------
@@ -1975,10 +1827,6 @@ def compute_signal_and_conf(change_pct: float):
       cp = float(change_pct or 0.0)
   except Exception:
       cp = 0.0
-
-
-
-
   if cp > 0.8:
       signal = "BUY"
   elif cp < -0.8:
@@ -1986,14 +1834,8 @@ def compute_signal_and_conf(change_pct: float):
   else:
       signal = "HOLD"
 
-
-
-
   confidence = min(95, max(70, abs(cp) * 10 + 70))
   return signal, int(round(confidence))
-
-
-
 
 def build_watchlist_item(symbol: str):
   symbol = symbol.upper()
@@ -2023,9 +1865,6 @@ def build_watchlist_item(symbol: str):
       age_hours = (now - item["time"]).total_seconds() / 3600
       if age_hours < WATCH_GROK_CACHE_HOURS:
           summary = item["text"]
-
-
-
 
   # If no cached summary and Grok key is present, call Grok
   if not summary and XAI_API_KEY:
@@ -2058,9 +1897,6 @@ def build_watchlist_item(symbol: str):
       except Exception as e:
           print("Watchlist Grok error:", e)
 
-
-
-
   # Fallback summaries if Grok not available / empty
   if not summary:
       if signal == "BUY":
@@ -2069,25 +1905,14 @@ def build_watchlist_item(symbol: str):
           summary = "Bearish pressure observed."
       else:
           summary = "Market appears neutral."
-
-
-
-
   try:
       price_val = float(price)
   except Exception:
       price_val = 0.0
-
-
-
-
   try:
       cp_val = float(change_pct)
   except Exception:
       cp_val = 0.0
-
-
-
 
   return {
       "symbol": symbol,
@@ -2097,8 +1922,6 @@ def build_watchlist_item(symbol: str):
       "confidence": confidence,
       "sentimentSummary": summary,
   }
-
-
 
 # ----------------------------------------------------------
 # 🧠 Grok helper for Watchlist (JSON + prob_up)
@@ -2235,11 +2058,6 @@ Rules:
         "time": now,
     }
     return {"summary": one_liner, "prob_up": prob_up}
-
-
-
-
-
 @app.get("/search")
 def search(q: str, limit: int = 5):
   """Autocomplete for tickers (used by WatchlistScreen)."""
