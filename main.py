@@ -27,7 +27,6 @@ app.add_middleware(
   allow_headers=["*"],
 )
 
-
 # ----------------------------------------------------------
 # Load keys from environment (Render dashboard)
 # ----------------------------------------------------------
@@ -37,14 +36,10 @@ FMP_API_KEY = os.getenv("FMP_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")  # <— NEW
 
-
 MODEL = "grok-4-fast-reasoning"
-GROK_STOCK_CACHE_HOURS = 1
-WATCH_GROK_CACHE_HOURS = 1
+GROK_STOCK_CACHE_HOURS = 3
+WATCH_GROK_CACHE_HOURS = 3
 BULLBRAIN_VERSION = "v2-48f"
-
-
-
 
 # ----------------------------------------------------------
 # 🔥 BullBrain v1 Full Model (XGBoost JSON)
@@ -2013,23 +2008,14 @@ def build_watchlist_item(symbol: str):
           "sentimentSummary": "Live data temporarily unavailable; showing neutral placeholder.",
       }
 
-
-
-
   price = q.get("current") or q.get("price") or 0.0
   change_pct = q.get("changePct") or 0.0
   signal, confidence = compute_signal_and_conf(change_pct)
-
-
-
 
   # Grok-style short sentiment line with backend cache
   now = datetime.datetime.utcnow()
   cache_key = f"watch_grok_{symbol}"
   summary = None
-
-
-
 
   # Try cache
   item = cache.get(cache_key)
@@ -2052,7 +2038,7 @@ def build_watchlist_item(symbol: str):
               "https://api.x.ai/v1/chat/completions",
               headers={"Authorization": f"Bearer {XAI_API_KEY}"},
               json={
-                  "model": "grok-beta",
+                  "model": "MODEL",
                   "messages": [{"role": "user", "content": prompt}],
                   "max_tokens": 40,
                   "temperature": 0.6,
@@ -2114,6 +2100,141 @@ def build_watchlist_item(symbol: str):
 
 
 
+# ----------------------------------------------------------
+# 🧠 Grok helper for Watchlist (JSON + prob_up)
+# ----------------------------------------------------------
+def grok_watchlist_sentiment(symbol: str, change_pct: float):
+    """
+    Returns a dict:
+    {
+      "summary": <one line>,
+      "prob_up": <0..1>
+    }
+    Uses cache to avoid re-calling Grok too often.
+    """
+    symbol = symbol.upper()
+    now = datetime.datetime.utcnow()
+    cache_key = f"watch_grok_v2_{symbol}"
+
+    # 1) Cache check
+    item = cache.get(cache_key)
+    if item:
+        age_hours = (now - item["time"]).total_seconds() / 3600
+        if age_hours < WATCH_GROK_CACHE_HOURS:
+            return {
+                "summary": item["summary"],
+                "prob_up": item["prob_up"],
+            }
+
+    # 2) If no XAI key → fallback
+    if not XAI_API_KEY:
+        # Simple fallback: prob_up from daily move
+        try:
+            cp = float(change_pct or 0.0)
+        except Exception:
+            cp = 0.0
+        # map -5%..+5% → 0.1..0.9
+        x = max(-5.0, min(5.0, cp)) / 5.0
+        prob_up = 0.5 + 0.4 * x
+        summary = (
+            f"Daily move {cp:.2f}% with no AI sentiment available; "
+            "reading based only on price action."
+        )
+        cache[cache_key] = {
+            "summary": summary,
+            "prob_up": prob_up,
+            "time": now,
+        }
+        return {"summary": summary, "prob_up": prob_up}
+
+    # 3) Call Grok with strict JSON instruction
+    prompt = f"""
+You are an expert stock analyst.
+
+Given:
+Symbol: {symbol}
+Daily Change (%): {change_pct:.2f}
+
+Return a STRICT JSON object with exactly these keys:
+
+  "one_liner": a concise, plain-English summary of current sentiment and price action (max 18 words),
+  "prob_up": a probability between 0 and 1 that this stock's price will be HIGHER 10–20 trading days from now.
+
+Rules:
+- Respond ONLY with valid JSON.
+- Do NOT include explanations or commentary, only the JSON object.
+"""
+
+    one_liner = None
+    prob_up = None
+
+    try:
+        res = requests.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {XAI_API_KEY}"},
+            json={
+                "model": MODEL,  # "grok-4-fast-reasoning"
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                "max_tokens": 180,
+            },
+            timeout=16,
+        )
+        j = res.json()
+        text = (
+            j.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+
+        try:
+            parsed = json.loads(text)
+            one_liner = parsed.get("one_liner") or parsed.get("summary") or ""
+            prob_up_raw = parsed.get("prob_up", 0.5)
+            prob_up = float(prob_up_raw)
+        except Exception:
+            # If parsing fails, treat full text as the line
+            one_liner = text or ""
+            prob_up = 0.5
+
+    except Exception as e:
+        print("grok_watchlist_sentiment error:", e)
+        one_liner = None
+        prob_up = None
+
+    # 4) Fallbacks if Grok output was bad
+    try:
+        cp = float(change_pct or 0.0)
+    except Exception:
+        cp = 0.0
+
+    if not one_liner:
+        if cp > 0:
+            one_liner = f"Daily move {cp:.2f}% with mildly bullish tone."
+        elif cp < 0:
+            one_liner = f"Daily move {cp:.2f}% with cautious / bearish tone."
+        else:
+            one_liner = "Flat day with neutral sentiment."
+
+    if prob_up is None:
+        # simple mapping from price action
+        x = max(-5.0, min(5.0, cp)) / 5.0
+        prob_up = 0.5 + 0.4 * x
+
+    # clamp
+    if prob_up < 0.0:
+        prob_up = 0.0
+    if prob_up > 1.0:
+        prob_up = 1.0
+
+    # cache + return
+    cache[cache_key] = {
+        "summary": one_liner,
+        "prob_up": prob_up,
+        "time": now,
+    }
+    return {"summary": one_liner, "prob_up": prob_up}
 
 
 
@@ -2143,12 +2264,6 @@ def search(q: str, limit: int = 5):
       return {"data": []}
 
 
-
-
-
-
-
-
 @app.get("/watchlist-item/{symbol}")
 def watchlist_item(symbol: str):
   """Single watchlist item data for a ticker."""
@@ -2157,22 +2272,179 @@ def watchlist_item(symbol: str):
   except Exception as e:
       return {"error": str(e)}
 
+# ----------------------------------------------------------
+# 🧊 Hybrid Watchlist Batch (quotes + BullBrain + Grok)
+# ----------------------------------------------------------
+def _hybrid_from_probs(bull_prob_up: float | None, grok_prob_up: float | None):
+    """
+    Combine BullBrain + Grok into a single hybrid probability_up.
+    Weights: 70% BullBrain, 30% Grok.
+    """
+    # defaults if missing
+    if bull_prob_up is None and grok_prob_up is None:
+        p = 0.5
+    elif bull_prob_up is None:
+        p = float(grok_prob_up)
+    elif grok_prob_up is None:
+        p = float(bull_prob_up)
+    else:
+        p = 0.7 * float(bull_prob_up) + 0.3 * float(grok_prob_up)
 
+    # clamp
+    if p < 0.0:
+        p = 0.0
+    if p > 1.0:
+        p = 1.0
 
+    # map to signal + confidence
+    if p >= 0.55:
+        signal = "BUY"
+    elif p <= 0.45:
+        signal = "SELL"
+    else:
+        signal = "HOLD"
 
-
-
+    confidence = round(max(p, 1 - p) * 100.0, 2)
+    return p, signal, confidence
 
 
 @app.get("/watchlist-batch")
-def watchlist_batch(symbols: str = Query(..., description="Comma-separated tickers")):
-  """Optional batch endpoint if needed later."""
-  try:
-      sym_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-      data = [build_watchlist_item(s) for s in sym_list]
-      return {"data": data}
-  except Exception as e:
-      return {"error": str(e)}
+def watchlist_batch(
+    symbols: str = Query(..., description="Comma-separated tickers in Firebase order")
+):
+    """
+    Batch endpoint for WatchlistScreen.
+
+    Input:  symbols=AAPL,TSLA,NVDA,MSFT
+
+    For EACH symbol (in the SAME order):
+
+    - Fetch live quote (Finnhub → Yahoo fallback)
+    - Call Grok for:
+        - grokSummary (one-liner)
+        - grokProbUp (0..1)
+    - For ALL symbols, we TRY BullBrain (v2-48f):
+        - /internal _run_bullbrain_for_symbol
+        - gives bullbrain.signal, confidence, raw.prob_up, probabilities
+
+    Hybrid:
+      - BUY/SELL/HOLD & confidence from:
+          70% BullBrain + 30% Grok
+
+    NOTE:
+      - Frontend still decides:
+        - SP500 ➜ show Grok + BullBrain line
+        - Non-SP500 ➜ show Grok only
+    """
+    try:
+        # 1) Normalize symbols & preserve order
+        raw_syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        seen = set()
+        sym_list = []
+        for s in raw_syms:
+            if s not in seen:
+                sym_list.append(s)
+                seen.add(s)
+
+        if not sym_list:
+            return {"data": []}
+
+        # 2) Quotes for ALL
+        quotes: dict[str, dict] = {}
+        for s in sym_list:
+            q = backend_fetch_quote(s)
+            quotes[s] = q or {}
+
+        # 3) BullBrain for ALL (best effort; if it fails we fall back to Grok-only)
+        bull_map: dict[str, dict] = {}
+        if bullbrain_model is not None:
+            for s in sym_list:
+                try:
+                    core, err = _run_bullbrain_for_symbol(s)
+                    if not err and core and core.get("bullbrain"):
+                        bull_map[s] = core
+                except Exception as e:
+                    print(f"BullBrain error for {s}:", e)
+
+        # 4) Grok sentiment for ALL
+        grok_map: dict[str, dict] = {}
+        for s in sym_list:
+            q = quotes.get(s, {})
+            change_pct = q.get("changePct", 0.0)
+            try:
+                g = grok_watchlist_sentiment(s, change_pct)
+            except Exception as e:
+                print(f"grok_watchlist_sentiment error for {s}:", e)
+                g = {"summary": "Sentiment unavailable.", "prob_up": 0.5}
+            grok_map[s] = g
+
+        # 5) Build final items in SAME order
+        items = []
+        for s in sym_list:
+            q = quotes.get(s, {})
+            price = q.get("current") or q.get("price") or 0.0
+            change_pct = q.get("changePct") or 0.0
+
+            # Grok side
+            g = grok_map.get(s, {})
+            grok_summary = g.get("summary")
+            grok_prob_up = g.get("prob_up")
+
+            # BullBrain side (if available)
+            core = bull_map.get(s)
+            bull_signal = None
+            bull_confidence = None
+            bull_prob_up = None
+            bull_probabilities = None
+            bull_features = None
+            bullbrain_block = None
+
+            if core:
+                bb = core.get("bullbrain") or {}
+                bull_signal = bb.get("signal")
+                bull_confidence = bb.get("confidence")
+                raw = bb.get("raw") or {}
+                bull_prob_up = raw.get("prob_up")
+                bull_probabilities = bb.get("probabilities")
+                bull_features = core.get("features")
+                bullbrain_block = bb
+
+            # HYBRID combination (BullBrain + Grok)
+            hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
+                bull_prob_up, grok_prob_up
+            )
+
+            # Final row object
+            item = {
+                "symbol": s,
+                "price": round(float(price or 0.0), 2),
+                "changePct": round(float(change_pct or 0.0), 2),
+
+                # 🔮 HYBRID (what WatchlistScreen should show as main)
+                "hybridSignal": hybrid_signal,
+                "hybridScore": hybrid_conf,  # % for confidence bar
+                "hybridProbUp": hybrid_p,
+
+                # 🧠 Grok AI (Primary one-liner)
+                "grokSummary": grok_summary,
+                "grokProbUp": grok_prob_up,
+
+                # 🧮 BullBrain (for SP500; frontend can ignore for non-SP500)
+                "bullSignal": bull_signal,
+                "bullConfidence": bull_confidence,
+                "bullProbabilities": bull_probabilities,
+                "features": bull_features,
+                "bullbrain": bullbrain_block,
+            }
+
+            items.append(item)
+
+        return {"data": items}
+
+    except Exception as e:
+        print("watchlist_batch fatal error:", e)
+        return {"error": str(e)}
+
 
 
 
