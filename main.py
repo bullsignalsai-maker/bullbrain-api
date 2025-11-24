@@ -1369,133 +1369,293 @@ def _interpret_volatility(vol20: float | None) -> str:
        return "Elevated volatility"
    return "High volatility regime"
 
+def build_technical_snapshot(symbol: str, feat: dict, last_close: float):
+    """
+    Build the same technical snapshot as /technical,
+    but from an already-computed feature dict.
+    """
+    symbol = symbol.upper()
+    as_of = datetime.datetime.utcnow().isoformat()
+
+    def fv(name):
+        v = feat.get(name)
+        return None if v is None else float(v)
+
+    rsi = fv("rsi14")
+    macd_val = fv("macd")
+    macd_signal = fv("macd_signal")
+    macd_hist = fv("macd_hist")
+    stoch_k = fv("stoch_k_14")
+    stoch_d = fv("stoch_d_3")
+    willr = fv("williams_r_14")
+
+    vol5 = fv("volatility_5d")
+    vol20 = fv("volatility_20d")
+    vol60 = fv("volatility_60d")
+
+    vol_change_1d = fv("volume_change_1d")
+    vol_vs_ma5 = fv("volume_vs_ma5_pct")
+    vol_vs_ma20 = fv("volume_vs_ma20_pct")
+    vol_z = fv("volume_zscore_20")
+    obv = fv("obv")
+    obv_slope_10 = fv("obv_slope_10")
+
+    price_vs_sma20 = fv("price_vs_sma20_pct")
+    sma5_sma20_pct = fv("sma5_sma20_pct")
+    sma20_sma50_pct = fv("sma20_sma50_pct")
+    dist_high = fv("distance_from_20d_high")
+    dist_low = fv("distance_from_20d_low")
+    trend_strength_20 = fv("trend_strength_20")
+
+    intraday_range_pct = fv("intraday_range_pct")
+    body_pct = fv("body_pct")
+    upper_shadow_pct = fv("upper_shadow_pct")
+    lower_shadow_pct = fv("lower_shadow_pct")
+    gap_pct = fv("gap_pct")
+    atr14 = fv("atr14")
+    true_range = fv("true_range")
+
+    trend_summary = _interpret_trend(
+        trend_strength_20, dist_high, dist_low
+    )
+    momentum_summary = _interpret_rsi(rsi)
+    macd_summary = _interpret_macd(macd_hist)
+    volume_summary = _interpret_volume(vol_z, vol_vs_ma20)
+    vol_regime_summary = _interpret_volatility(vol20)
+
+    return {
+        "symbol": symbol,
+        "asOf": as_of,
+        "price": last_close,
+        "trend": {
+            "trend_strength_20": trend_strength_20,
+            "price_vs_sma20_pct": price_vs_sma20,
+            "sma5_sma20_pct": sma5_sma20_pct,
+            "sma20_sma50_pct": sma20_sma50_pct,
+            "distance_from_20d_high": dist_high,
+            "distance_from_20d_low": dist_low,
+            "summary": trend_summary,
+        },
+        "momentum": {
+            "rsi14": rsi,
+            "macd": macd_val,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
+            "stoch_k_14": stoch_k,
+            "stoch_d_3": stoch_d,
+            "williams_r_14": willr,
+            "summary_rsi": momentum_summary,
+            "summary_macd": macd_summary,
+        },
+        "volume": {
+            "volume_change_1d": vol_change_1d,
+            "volume_vs_ma5_pct": vol_vs_ma5,
+            "volume_vs_ma20_pct": vol_vs_ma20,
+            "volume_zscore_20": vol_z,
+            "obv": obv,
+            "obv_slope_10": obv_slope_10,
+            "summary": volume_summary,
+        },
+        "volatility": {
+            "volatility_5d": vol5,
+            "volatility_20d": vol20,
+            "volatility_60d": vol60,
+            "atr14": atr14,
+            "true_range": true_range,
+            "summary": vol_regime_summary,
+        },
+        "candle": {
+            "intraday_range_pct": intraday_range_pct,
+            "body_pct": body_pct,
+            "upper_shadow_pct": upper_shadow_pct,
+            "lower_shadow_pct": lower_shadow_pct,
+            "gap_pct": gap_pct,
+        },
+    }
+
 # ----------------------------------------------------------
 # 6️⃣ Technical indicators + short interpretations
 # ----------------------------------------------------------
 @app.get("/technical/{symbol}")
 def get_technical(symbol: str):
-   """
-   Returns a structured technical snapshot:
-   - Numeric indicators (trend, momentum, volume, volatility, candle)
-   - Short interpretation strings for each block
-   """
-   symbol = symbol.upper()
-   try:
-       candles = fetch_daily_candles(symbol)
-       if not candles:
-           return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
+    """
+    Public endpoint: recompute candles + features,
+    then use build_technical_snapshot for output.
+    """
+    symbol = symbol.upper()
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
 
+        _, feat, last_close = compute_bullbrain_features(candles)
+        return build_technical_snapshot(symbol, feat, last_close)
+    except Exception as e:
+        print("get_technical error:", e)
+        return {"symbol": symbol, "error": str(e)}
+        @app.get("/stockdetail/{symbol}")
+def stockdetail(
+    symbol: str,
+    limit_candles: int = 120,
+    forceGrok: bool = False,
+):
+    """
+    Super endpoint for StockDetailScreen.
 
-       _, feat, last_close = compute_bullbrain_features(candles)
-       as_of = datetime.datetime.utcnow().isoformat()
+    Combines:
+    - Live quote (Finnhub → Yahoo)
+    - BullBrain v2 (48 features)
+    - Technical snapshot (trend, momentum, volume, volatility, candle)
+    - Compressed Grok view (Option B)
+    - Symbol news (from /market-news)
+    - Clean OHLC candles for chart
+    - Hybrid signal (BullBrain + Grok prob_up)
+    """
+    symbol = symbol.upper()
+    try:
+        # 1) Live quote
+        quote = backend_fetch_quote(symbol)
 
+        # 2) Candles + BullBrain v2 features & prediction
+        candles = fetch_daily_candles(symbol)
+        feature_dict = None
+        last_close = None
+        bullbrain_block = None
+        bull_prob_up = None
 
-       # Short-hand getter
-       def fv(name):
-           v = feat.get(name)
-           return None if v is None else float(v)
+        if candles and bullbrain_model is not None:
+            features_vec, feature_dict, last_close = compute_bullbrain_features(
+                candles
+            )
+            inference = bullbrain_infer(features_vec)
+            prob_up = float(
+                inference.get("probability_up")
+                or inference.get("raw_output")
+                or 0.5
+            )
+            bull_prob_up = prob_up
+            class_probs = _class_probs_from_prob_up(prob_up)
 
+            bullbrain_block = {
+                "version": BULLBRAIN_VERSION,
+                "signal": inference.get("signal"),
+                "confidence": inference.get("confidence"),
+                "probabilities": class_probs,
+                "raw": {
+                    "prob_up": prob_up,
+                    "prob_down": 1.0 - prob_up,
+                },
+            }
 
-       rsi = fv("rsi14")
-       macd_val = fv("macd")
-       macd_signal = fv("macd_signal")
-       macd_hist = fv("macd_hist")
-       stoch_k = fv("stoch_k_14")
-       stoch_d = fv("stoch_d_3")
-       willr = fv("williams_r_14")
+        if last_close is None and quote:
+            # Fallback: use quote price if for some reason feature pipeline failed
+            try:
+                last_close = float(quote.get("current") or 0.0)
+            except Exception:
+                last_close = None
 
+        # 3) Technical snapshot (from features) — no extra API calls
+        technical = None
+        if feature_dict is not None and last_close is not None:
+            technical = build_technical_snapshot(symbol, feature_dict, last_close)
 
-       vol5 = fv("volatility_5d")
-       vol20 = fv("volatility_20d")
-       vol60 = fv("volatility_60d")
+        # 4) Candles for chart (reuse already-fetched candles)
+        candles_payload = None
+        if candles:
+            closes = candles["close"]
+            highs = candles["high"]
+            lows = candles["low"]
+            opens = candles["open"]
+            vols = candles["volume"]
+            ts_list = candles.get("timestamp") or []
 
+            n = len(closes)
+            if n > 0:
+                use_n = min(limit_candles, n)
+                start_idx = n - use_n
+                chart_items = []
+                for i in range(start_idx, n):
+                    t_raw = ts_list[i] if i < len(ts_list) and ts_list[i] else None
+                    if t_raw:
+                        dt = datetime.datetime.utcfromtimestamp(
+                            t_raw / 1000.0
+                        ).replace(microsecond=0)
+                        t_iso = dt.isoformat() + "Z"
+                    else:
+                        dt = datetime.datetime.utcnow() - datetime.timedelta(
+                            days=(n - 1 - i)
+                        )
+                        t_iso = dt.replace(microsecond=0).isoformat() + "Z"
 
-       vol_change_1d = fv("volume_change_1d")
-       vol_vs_ma5 = fv("volume_vs_ma5_pct")
-       vol_vs_ma20 = fv("volume_vs_ma20_pct")
-       vol_z = fv("volume_zscore_20")
-       obv = fv("obv")
-       obv_slope_10 = fv("obv_slope_10")
+                    chart_items.append(
+                        {
+                            "t": t_iso,
+                            "open": float(opens[i]),
+                            "high": float(highs[i]),
+                            "low": float(lows[i]),
+                            "close": float(closes[i]),
+                            "volume": float(vols[i]),
+                        }
+                    )
 
+                candles_payload = {
+                    "symbol": symbol,
+                    "source": candles.get("source", "polygon"),
+                    "candles": chart_items,
+                }
 
-       price_vs_sma20 = fv("price_vs_sma20_pct")
-       sma5_sma20_pct = fv("sma5_sma20_pct")
-       sma20_sma50_pct = fv("sma20_sma50_pct")
-       dist_high = fv("distance_from_20d_high")
-       dist_low = fv("distance_from_20d_low")
-       trend_strength_20 = fv("trend_strength_20")
+        # 5) Symbol-specific news (filtered from /market-news)
+        news = get_symbol_news(symbol, limit=8)
 
+        # 6) Compressed Grok view (Option B)
+        grok_pack = get_stockdetail_grok(
+            symbol, quote, technical, force=forceGrok
+        )
+        grok_prob_up = grok_pack.get("prob_up")
 
-       intraday_range_pct = fv("intraday_range_pct")
-       body_pct = fv("body_pct")
-       upper_shadow_pct = fv("upper_shadow_pct")
-       lower_shadow_pct = fv("lower_shadow_pct")
-       gap_pct = fv("gap_pct")
-       atr14 = fv("atr14")
-       true_range = fv("true_range")
+        # 7) Hybrid: BullBrain prob_up + Grok prob_up
+        hybrid_p = None
+        hybrid_signal = None
+        hybrid_conf = None
+        if bull_prob_up is not None or grok_prob_up is not None:
+            hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
+                bull_prob_up, grok_prob_up
+            )
 
+        return {
+            "symbol": symbol,
+            "asOf": datetime.datetime.utcnow().isoformat(),
 
-       trend_summary = _interpret_trend(
-           trend_strength_20, dist_high, dist_low
-       )
-       momentum_summary = _interpret_rsi(rsi)
-       macd_summary = _interpret_macd(macd_hist)
-       volume_summary = _interpret_volume(vol_z, vol_vs_ma20)
-       vol_regime_summary = _interpret_volatility(vol20)
+            # Live quote block (for header)
+            "quote": quote,
+            "price": last_close,
 
+            # BullBrain v2
+            "bullbrain": bullbrain_block,
+            "features": feature_dict,
 
-       return {
-           "symbol": symbol,
-           "asOf": as_of,
-           "price": last_close,
-           "trend": {
-               "trend_strength_20": trend_strength_20,
-               "price_vs_sma20_pct": price_vs_sma20,
-               "sma5_sma20_pct": sma5_sma20_pct,
-               "sma20_sma50_pct": sma20_sma50_pct,
-               "distance_from_20d_high": dist_high,
-               "distance_from_20d_low": dist_low,
-               "summary": trend_summary,
-           },
-           "momentum": {
-               "rsi14": rsi,
-               "macd": macd_val,
-               "macd_signal": macd_signal,
-               "macd_hist": macd_hist,
-               "stoch_k_14": stoch_k,
-               "stoch_d_3": stoch_d,
-               "williams_r_14": willr,
-               "summary_rsi": momentum_summary,
-               "summary_macd": macd_summary,
-           },
-           "volume": {
-               "volume_change_1d": vol_change_1d,
-               "volume_vs_ma5_pct": vol_vs_ma5,
-               "volume_vs_ma20_pct": vol_vs_ma20,
-               "volume_zscore_20": vol_z,
-               "obv": obv,
-               "obv_slope_10": obv_slope_10,
-               "summary": volume_summary,
-           },
-           "volatility": {
-               "volatility_5d": vol5,
-               "volatility_20d": vol20,
-               "volatility_60d": vol60,
-               "atr14": atr14,
-               "true_range": true_range,
-               "summary": vol_regime_summary,
-           },
-           "candle": {
-               "intraday_range_pct": intraday_range_pct,
-               "body_pct": body_pct,
-               "upper_shadow_pct": upper_shadow_pct,
-               "lower_shadow_pct": lower_shadow_pct,
-               "gap_pct": gap_pct,
-           },
-       }
-   except Exception as e:
-       print("get_technical error:", e)
-       return {"symbol": symbol, "error": str(e)}
+            # Technical snapshot (human-readable)
+            "technical": technical,
+
+            # OHLC candles for chart
+            "candles": candles_payload,
+
+            # Symbol News (top 8)
+            "news": news,
+
+            # Compressed Grok (Option B)
+            "grok": grok_pack,
+
+            # Hybrid view
+            "hybridProbUp": hybrid_p,
+            "hybridSignal": hybrid_signal,
+            "hybridScore": hybrid_conf,
+        }
+
+    except Exception as e:
+        print("stockdetail error:", e)
+        return {"symbol": symbol, "error": str(e)}
+
 # ----------------------------------------------------------
 # 2. Analyst recommendations
 # ----------------------------------------------------------
@@ -1738,6 +1898,182 @@ Keep each section concise but meaningful. Include NFA disclaimer at end.
   except Exception as e:
       print("GROK STOCK ERROR:", e)
       return {"text": "⚠️ AI analysis unavailable.", "updatedAt": None}
+
+      def get_stockdetail_grok(symbol: str, quote: dict | None, technical: dict | None, force: bool = False):
+    """
+    Compressed Grok for StockDetail:
+    - Simple language (no RSI/MACD names)
+    - Short JSON only
+    - Cached for GROK_STOCK_CACHE_HOURS
+    """
+    symbol = symbol.upper()
+    now = datetime.datetime.utcnow()
+    cache_key = f"stockdetail_grok_{symbol}"
+
+    # Cache check
+    if not force:
+        item = cache.get(cache_key)
+        if item:
+            age_hours = (now - item["time"]).total_seconds() / 3600
+            if age_hours < GROK_STOCK_CACHE_HOURS:
+                return item["payload"]
+
+    # Basic numbers
+    current_price = None
+    change_pct = None
+    if quote:
+        current_price = quote.get("current")
+        change_pct = quote.get("changePct")
+
+    # If no Grok key, build a local fallback (no tokens used)
+    if not XAI_API_KEY:
+        trend_summary = ""
+        if technical and isinstance(technical, dict):
+            trend_summary = (
+                technical.get("trend", {}) or {}
+            ).get("summary") or ""
+        payload = {
+            "ai_signal": f"NEUTRAL - {trend_summary or 'AI sentiment unavailable.'}",
+            "short_term": "Short-term outlook is neutral based on recent price and trend.",
+            "medium_term": "Medium-term direction depends on earnings, macro trends, and news.",
+            "long_term": "Long-term potential depends on fundamentals, competition, and innovation.",
+            "risk_note": "Not financial advice. Consider your own risk tolerance and do your own research.",
+            "prob_up": 0.5,
+            "updatedAt": now.isoformat(),
+        }
+        cache[cache_key] = {"time": now, "payload": payload}
+        return payload
+
+    cp_str = (
+        f"{current_price:.2f}"
+        if isinstance(current_price, (int, float))
+        else "N/A"
+    )
+    chg_str = (
+        f"{change_pct:.2f}"
+        if isinstance(change_pct, (int, float))
+        else "N/A"
+    )
+
+    trend_summary = ""
+    momentum_summary = ""
+    vol_summary = ""
+    try:
+        if technical and isinstance(technical, dict):
+            trend_summary = (
+                technical.get("trend", {}) or {}
+            ).get("summary") or ""
+            momentum_summary = (
+                technical.get("momentum", {}) or {}
+            ).get("summary_rsi") or ""
+            vol_summary = (
+                technical.get("volatility", {}) or {}
+            ).get("summary") or ""
+    except Exception:
+        pass
+
+    prompt = f"""
+You are an expert stock analyst speaking to a non-technical investor.
+
+Stock:
+- Symbol: {symbol}
+- Current price: {cp_str}
+- Daily change (%): {chg_str}
+
+Technical context (already computed):
+- Trend: {trend_summary}
+- Momentum: {momentum_summary}
+- Volatility: {vol_summary}
+
+Task:
+Return ONLY a compact JSON object with these keys:
+
+- "ai_signal": one line like "BUY - reason" / "HOLD - reason" / "SELL - reason" / "NEUTRAL - reason" (max 18 words)
+- "short_term": 1 sentence on the next 1–6 weeks (max 30 words, NO indicator names like RSI, MACD, OBV)
+- "medium_term": 1 sentence on the next 6–12 months (max 35 words)
+- "long_term": 1 sentence on the next 1–3 years (max 35 words)
+- "risk_note": 1 brief risk disclaimer (max 25 words)
+- "prob_up": a number between 0 and 1 for the chance price is HIGHER 1–3 months from now.
+
+Rules:
+- Use simple language. Do NOT mention technical indicator names or formulas.
+- Do NOT add extra keys.
+- Respond ONLY with valid JSON.
+"""
+
+    try:
+        res = requests.post(
+            "https://api.x.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {XAI_API_KEY}"},
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.4,
+                "max_tokens": 220,  # keep it cheap
+            },
+            timeout=16,
+        )
+        j = res.json()
+        text = (
+            j.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = {}
+
+        # Normalize prob_up
+        prob_up = parsed.get("prob_up", 0.5)
+        try:
+            prob_up = float(prob_up)
+        except Exception:
+            prob_up = 0.5
+        if prob_up < 0.0:
+            prob_up = 0.0
+        if prob_up > 1.0:
+            prob_up = 1.0
+
+        payload = {
+            "ai_signal": parsed.get("ai_signal")
+            or "NEUTRAL - AI view unavailable.",
+            "short_term": parsed.get("short_term")
+            or "Short-term outlook is uncertain; price may remain choppy.",
+            "medium_term": parsed.get("medium_term")
+            or "Medium-term direction depends on earnings, news, and broader market conditions.",
+            "long_term": parsed.get("long_term")
+            or "Long-term performance will depend on fundamentals and competitive position.",
+            "risk_note": parsed.get("risk_note")
+            or "Not financial advice. Markets are volatile; manage your risk carefully.",
+            "prob_up": prob_up,
+            "updatedAt": now.isoformat(),
+        }
+
+        cache[cache_key] = {"time": now, "payload": payload}
+        return payload
+
+    except Exception as e:
+        print("get_stockdetail_grok error:", e)
+        # Fallback: use last cached or default neutral
+        item = cache.get(cache_key)
+        if item:
+            return item["payload"]
+
+        payload = {
+            "ai_signal": "NEUTRAL - AI analysis unavailable.",
+            "short_term": "Short-term outlook is unclear; price may move sideways.",
+            "medium_term": "Medium-term view is neutral without AI guidance.",
+            "long_term": "Long-term direction depends on fundamentals and macro trends.",
+            "risk_note": "Not financial advice. Consider your own risk before trading.",
+            "prob_up": 0.5,
+            "updatedAt": now.isoformat(),
+        }
+        cache[cache_key] = {"time": now, "payload": payload}
+        return payload
+
 # ----------------------------------------------------------
 # 🔄 Force Refresh Grok Cache (for testing)
 # ----------------------------------------------------------
@@ -1819,6 +2155,33 @@ def market_news():
   except Exception:
       pass
   return {"data": uniq[:50]}
+  def get_symbol_news(symbol: str, limit: int = 8):
+    """
+    Light symbol-specific news: reuse /market-news feed and filter titles/summaries
+    containing the symbol. Falls back to top general news if nothing matches.
+    """
+    sym = symbol.upper()
+    try:
+        resp = market_news()
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+        if not isinstance(data, list):
+            return []
+
+        filtered = []
+        for n in data:
+            title = (n.get("title") or "")
+            summary = (n.get("summary") or "")
+            text = (title + " " + summary).upper()
+            if sym in text:
+                filtered.append(n)
+
+        if not filtered:
+            return data[:limit]
+        return filtered[:limit]
+    except Exception as e:
+        print("get_symbol_news error:", e)
+        return []
+
 # ----------------------------------------------------------
 # 12. SEARCH + WATCHLIST endpoints (for WatchlistScreen)
 # ----------------------------------------------------------
