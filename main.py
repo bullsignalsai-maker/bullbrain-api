@@ -1493,7 +1493,11 @@ def get_technical(symbol: str):
     except Exception as e:
         print("get_technical error:", e)
         return {"symbol": symbol, "error": str(e)}
-        @app.get("/stockdetail/{symbol}")
+
+# ----------------------------------------------------------
+# Stockdetail end point
+# ----------------------------------------------------------        
+@app.get("/stockdetail/{symbol}")
 def stockdetail(
     symbol: str,
     limit_candles: int = 120,
