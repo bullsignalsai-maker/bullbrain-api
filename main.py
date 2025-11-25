@@ -257,19 +257,33 @@ def _evaluate_smart_pattern_row(
                 ),
             }
 
-    # 4) HAMMER REVERSAL
-    if ok(lower_shadow) and ok(body_pct) and ok(change):
-        if lower_shadow > 2.5 and body_pct > -1.0 and change > 0:
-            return {
-                "pattern": "HAMMER REVERSAL",
-                "winRate": 0.74,
-                "headline": "Bears pushed price down, but bulls slammed it back up by the close.",
-                "explanation": (
-                    "Intraday, the stock traded much lower, but buyers aggressively bought the dip "
-                    "and forced price back near the top of the day’s range. This hammer-style candle "
-                    "often appears near local bottoms where selling pressure is finally exhausted."
-                ),
-            }
+    # 4) HAMMER REVERSAL (Proper Candle Logic)
+if ok(lower_shadow) and ok(body_pct) and ok(change) and ok(upper_shadow):
+    # Hammer structure:
+    # 1) small body
+    # 2) long lower wick
+    # 3) tiny upper wick
+    structure_ok = (
+        abs(body_pct) < 30 and
+        lower_shadow > 40 and
+        upper_shadow < 15
+    )
+
+    # context: recent downtrend
+    context_ok = ret3 is not None and ret3 < -2.0
+
+    if structure_ok and context_ok:
+        return {
+            "pattern": "HAMMER REVERSAL",
+            "winRate": 0.74,
+            "headline": "A potential bottoming candle with aggressive dip-buying.",
+            "explanation": (
+                "The candle shows a long lower wick and a small body near the top of the range, "
+                "indicating heavy intraday selling followed by strong buyer dominance. "
+                "Appears often near pullback or capitulation points."
+            ),
+        }
+
 
     # 5) BUY THE DIP (UPTREND)
     if ok(trend) and ok(price_vs_sma20) and ok(change):
@@ -424,6 +438,18 @@ def scan_smart_pattern_history(
     # 5-day trailing return
     df["return_5d"] = df["close"].pct_change(5) * 100.0
 
+    # 3-day trailing return (for hammer reversal context)
+    df["ret3"] = df["close"].pct_change(3) * 100.0
+
+    # Upper shadow %
+    upper = df["high"] - df[["open", "close"]].max(axis=1)
+    df["upper_shadow_pct"] = np.where(
+        (df["high"] - df["low"]) > 0,
+        upper / (df["high"] - df["low"]) * 100.0,
+        0.0
+    )
+
+
     # Forward returns AFTER pattern
     df["fwd_5d"] = df["close"].shift(-lookahead_5) / df["close"] - 1.0
     df["fwd_10d"] = df["close"].shift(-lookahead_10) / df["close"] - 1.0
@@ -439,10 +465,12 @@ def scan_smart_pattern_history(
             rsi=row.get("rsi14"),
             will_r=row.get("williams_r_14"),
             lower_shadow=row.get("lower_shadow_pct"),
+            upper_shadow=row.get("upper_shadow_pct"),  # ✅ new
             body_pct=row.get("body_pct"),
             price_vs_sma20=row.get("price_vs_sma20_pct"),
             trend=row.get("trend_strength_20"),
             ret5=row.get("return_5d"),
+            ret3=row.get("ret3"),  
         )
         if not patt:
             continue
@@ -1748,7 +1776,7 @@ def get_technical(symbol: str):
     except Exception as e:
         print("get_technical error:", e)
         return {"symbol": symbol, "error": str(e)}
-        
+
 # --------------------------------------------------------------------
 # STOCKDETAIL SUPER ENDPOINT
 # --------------------------------------------------------------------
