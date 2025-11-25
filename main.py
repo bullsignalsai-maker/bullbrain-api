@@ -1789,7 +1789,7 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
         technical = None
         if feature_dict is not None and last_close is not None:
             technical = build_technical_snapshot(symbol, feature_dict, last_close)
-        smart_pattern = detect_smart_pattern(feature_dict, quote)
+        smart_pattern = detect_smart_pattern(feature_dict, quote, technical)
 
         candles_payload = None
         if candles:
