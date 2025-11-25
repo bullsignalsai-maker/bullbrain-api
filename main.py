@@ -170,6 +170,361 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
         print("fetch_daily_candles error:", e)
         return None
 
+# ============================================================
+# SMART PATTERN CORE + HISTORY SCANNER
+# ============================================================
+
+def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period, min_periods=period).mean()
+    avg_loss = loss.rolling(period, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def _compute_williams_r(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> pd.Series:
+    highest_high = high.rolling(period, min_periods=period).max()
+    lowest_low = low.rolling(period, min_periods=period).min()
+    wr = -100 * (highest_high - close) / (highest_high - lowest_low)
+    return wr
+
+
+def _evaluate_smart_pattern_row(
+    *,
+    gap: float | None,
+    change: float | None,
+    vol_z: float | None,
+    vol_vs_ma: float | None,
+    rsi: float | None,
+    will_r: float | None,
+    lower_shadow: float | None,
+    body_pct: float | None,
+    price_vs_sma20: float | None,
+    trend: float | None,
+    ret5: float | None,
+):
+    """
+    Core smart-pattern classifier.
+    Takes pre-computed daily metrics and returns a pattern dict or None.
+    """
+
+    def ok(x):
+        return x is not None and not np.isnan(x)
+
+    # 1) GAP UP & RUNNING
+    if ok(gap) and ok(change) and ok(vol_vs_ma):
+        if gap > 1.0 and change > 2.0 and vol_vs_ma > 20.0:
+            return {
+                "pattern": "GAP UP & RUNNING",
+                "winRate": 0.73,
+                "headline": "Stock exploded higher at the open and buyers kept control all day.",
+                "explanation": (
+                    "The stock opened noticeably above yesterday’s close and then continued "
+                    "to push higher on well-above-average volume. This is the kind of powerful "
+                    "gap-and-go behaviour that often marks the start of short-term momentum runs."
+                ),
+            }
+
+    # 2) MASSIVE VOLUME BREAKOUT
+    if ok(vol_z) and vol_z > 3.0:
+        return {
+            "pattern": "VOLUME BREAKOUT",
+            "winRate": 0.76,
+            "headline": "Unusually heavy trading volume – the big players are active.",
+            "explanation": (
+                "Today’s volume is far above the recent 20-day norm, which usually only happens "
+                "when institutions or large funds are buying or selling aggressively. "
+                "Such volume shocks often precede strong follow-through moves."
+            ),
+        }
+
+    # 3) OVERSOLD BOUNCE
+    if ok(rsi) and ok(will_r) and ok(vol_z):
+        if rsi < 30 and will_r < -80 and vol_z > 2.0:
+            return {
+                "pattern": "OVERSOLD BOUNCE",
+                "winRate": 0.80,
+                "headline": "After heavy selling, dip-buyers finally stepped in with size.",
+                "explanation": (
+                    "Momentum indicators show the stock had been deeply oversold, and now volume "
+                    "is spiking as buyers absorb the remaining supply. Historically, this kind of "
+                    "capitulation followed by strong buying often leads to sharp relief rallies."
+                ),
+            }
+
+    # 4) HAMMER REVERSAL
+    if ok(lower_shadow) and ok(body_pct) and ok(change):
+        if lower_shadow > 2.5 and body_pct > -1.0 and change > 0:
+            return {
+                "pattern": "HAMMER REVERSAL",
+                "winRate": 0.74,
+                "headline": "Bears pushed price down, but bulls slammed it back up by the close.",
+                "explanation": (
+                    "Intraday, the stock traded much lower, but buyers aggressively bought the dip "
+                    "and forced price back near the top of the day’s range. This hammer-style candle "
+                    "often appears near local bottoms where selling pressure is finally exhausted."
+                ),
+            }
+
+    # 5) BUY THE DIP (UPTREND)
+    if ok(trend) and ok(price_vs_sma20) and ok(change):
+        if trend > 1.0 and price_vs_sma20 < -3.0 and change > 0:
+            return {
+                "pattern": "BUY THE DIP (UPTREND)",
+                "winRate": 0.69,
+                "headline": "Strong trend, normal pullback, and buyers stepping back in.",
+                "explanation": (
+                    "The stock is still in a broader uptrend, but had pulled back below its recent "
+                    "20-day trend line and is now bouncing. This is the classic 'buy the dip' profile "
+                    "that trend-followers and institutions often look for to add to winning positions."
+                ),
+            }
+
+    # 6) DEAD CAT BOUNCE
+    if ok(ret5) and ok(change) and ok(vol_z):
+        if ret5 < -8.0 and change > 0 and vol_z < 1.0:
+            return {
+                "pattern": "DEAD CAT BOUNCE",
+                "winRate": 0.68,
+                "headline": "After a big drop, price is bouncing – but on weak conviction.",
+                "explanation": (
+                    "The stock has sold off hard over the past few days and is now showing a small "
+                    "bounce, but without a meaningful volume surge. Historically, many such weak "
+                    "rebounds fail and roll over again as sellers re-enter at slightly better prices."
+                ),
+            }
+
+    # 7) OVERBOUGHT DISTRIBUTION
+    if ok(rsi) and ok(vol_vs_ma) and ok(change):
+        if rsi > 70 and vol_vs_ma < 0:
+            return {
+                "pattern": "OVERBOUGHT DISTRIBUTION",
+                "winRate": 0.67,
+                "headline": "Sentiment is hot, but real demand is fading under the surface.",
+                "explanation": (
+                    "Momentum has been strong and the stock looks 'hot' on the chart, but today’s "
+                    "volume is no longer beating its recent average. This can indicate that smart "
+                    "money is quietly selling into late-stage enthusiasm near short-term peaks."
+                ),
+            }
+
+    # 8) FAILED BREAKOUT TRAP
+    if ok(change) and ok(vol_z):
+        if change < -2.0 and vol_z > 2.0:
+            return {
+                "pattern": "FAILED BREAKOUT TRAP",
+                "winRate": 0.66,
+                "headline": "Price broke higher, then reversed hard on heavy volume – classic bull trap.",
+                "explanation": (
+                    "After recently attempting to move higher, the stock is now reversing sharply "
+                    "down on strong volume. This pattern often marks failed breakouts where traders "
+                    "who chased the move higher are now being forced to exit at a loss."
+                ),
+            }
+
+    return None
+
+
+def scan_smart_pattern_history(
+    symbol: str,
+    candles: dict,
+    lookahead_5: int = 5,
+    lookahead_10: int = 10,
+):
+    """
+    Given raw daily candles (like fetch_daily_candles output), scan ~1 year of history
+    and compute how often each smart pattern appeared and what happened afterwards.
+
+    Returns a dict with:
+      - currentPattern: pattern dict for the most recent day (or None)
+      - historyForCurrent: aggregated stats where the same pattern appeared in the past
+      - allPatterns: basic counts for all detected patterns
+    """
+    closes = np.array(candles["close"], dtype=float)
+    highs = np.array(candles["high"], dtype=float)
+    lows = np.array(candles["low"], dtype=float)
+    opens = np.array(candles["open"], dtype=float)
+    vols = np.array(candles["volume"], dtype=float)
+    ts_list = candles.get("timestamp") or []
+
+    n = len(closes)
+    if n < 40:
+        return {
+            "currentPattern": None,
+            "historyForCurrent": None,
+            "allPatterns": [],
+            "note": "Not enough history to compute pattern stats.",
+        }
+
+    df = pd.DataFrame(
+        {
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": vols,
+        }
+    )
+
+    # Timestamps → ISO
+    if ts_list:
+        df["ts"] = [
+            datetime.datetime.utcfromtimestamp(t / 1000.0)
+            .replace(microsecond=0)
+            .isoformat()
+            + "Z"
+            if t
+            else None
+            for t in ts_list
+        ]
+    else:
+        base = datetime.datetime.utcnow().replace(microsecond=0)
+        df["ts"] = [
+            (base - datetime.timedelta(days=(n - 1 - i))).isoformat() + "Z"
+            for i in range(n)
+        ]
+
+    # Daily change & gap%
+    df["changePct"] = df["close"].pct_change() * 100.0
+    df["gap_pct"] = (df["open"] - df["close"].shift(1)) / df["close"].shift(1) * 100.0
+
+    # Volume stats vs 20d mean
+    df["vol_ma20"] = df["volume"].rolling(20, min_periods=20).mean()
+    df["vol_std20"] = df["volume"].rolling(20, min_periods=20).std()
+    df["volume_vs_ma20_pct"] = (df["volume"] / df["vol_ma20"] - 1.0) * 100.0
+    df["volume_zscore_20"] = (df["volume"] - df["vol_ma20"]) / df["vol_std20"]
+
+    # RSI & Williams %R
+    df["rsi14"] = _compute_rsi(df["close"], period=14)
+    df["williams_r_14"] = _compute_williams_r(
+        df["high"], df["low"], df["close"], period=14
+    )
+
+    # Candle anatomy
+    full_range = df["high"] - df["low"]
+    body = df["close"] - df["open"]
+    lower = df[["open", "close"]].min(axis=1) - df["low"]
+    df["body_pct"] = np.where(full_range > 0, body / full_range * 100.0, 0.0)
+    df["lower_shadow_pct"] = np.where(
+        full_range > 0, lower / full_range * 100.0, 0.0
+    )
+
+    # Trend / distance from 20d trend
+    df["sma20"] = df["close"].rolling(20, min_periods=20).mean()
+    df["price_vs_sma20_pct"] = (df["close"] / df["sma20"] - 1.0) * 100.0
+    df["trend_strength_20"] = (
+        df["close"] / df["close"].shift(20) - 1.0
+    ) * 100.0
+
+    # 5-day trailing return
+    df["return_5d"] = df["close"].pct_change(5) * 100.0
+
+    # Forward returns AFTER pattern
+    df["fwd_5d"] = df["close"].shift(-lookahead_5) / df["close"] - 1.0
+    df["fwd_10d"] = df["close"].shift(-lookahead_10) / df["close"] - 1.0
+
+    pattern_rows = []
+    for idx in range(len(df)):
+        row = df.iloc[idx]
+        patt = _evaluate_smart_pattern_row(
+            gap=row.get("gap_pct"),
+            change=row.get("changePct"),
+            vol_z=row.get("volume_zscore_20"),
+            vol_vs_ma=row.get("volume_vs_ma20_pct"),
+            rsi=row.get("rsi14"),
+            will_r=row.get("williams_r_14"),
+            lower_shadow=row.get("lower_shadow_pct"),
+            body_pct=row.get("body_pct"),
+            price_vs_sma20=row.get("price_vs_sma20_pct"),
+            trend=row.get("trend_strength_20"),
+            ret5=row.get("return_5d"),
+        )
+        if not patt:
+            continue
+
+        pattern_rows.append(
+            {
+                "date": row["ts"],
+                "pattern": patt["pattern"],
+                "headline": patt["headline"],
+                "winRate": patt["winRate"],
+                "fwd_5d": float(row["fwd_5d"]) if pd.notna(row["fwd_5d"]) else None,
+                "fwd_10d": float(row["fwd_10d"]) if pd.notna(row["fwd_10d"]) else None,
+                "changePct": float(row["changePct"])
+                if pd.notna(row["changePct"])
+                else None,
+            }
+        )
+
+    if not pattern_rows:
+        return {
+            "currentPattern": None,
+            "historyForCurrent": None,
+            "allPatterns": [],
+            "note": "No recognizable smart patterns in the available history.",
+        }
+
+    # Current pattern = last valid pattern in history (ideally last trading day)
+    current = pattern_rows[-1]
+    current_name = current["pattern"]
+
+    # Aggregate stats for all patterns
+    from collections import defaultdict
+
+    counts = defaultdict(int)
+    for r in pattern_rows:
+        counts[r["pattern"]] += 1
+
+    all_patterns = [
+        {"pattern": name, "occurrences": cnt} for name, cnt in counts.items()
+    ]
+    all_patterns.sort(key=lambda x: x["occurrences"], reverse=True)
+
+    # Filter rows matching current pattern (excluding today for forward stats)
+    history_matches = [
+        r for r in pattern_rows[:-1] if r["pattern"] == current_name
+    ]
+
+    def _agg(field: str):
+        vals = [r[field] * 100.0 for r in history_matches if r[field] is not None]
+        if not vals:
+            return None
+        return {
+            "avg": float(np.mean(vals)),
+            "median": float(np.median(vals)),
+            "best": float(np.max(vals)),
+            "worst": float(np.min(vals)),
+            "count": len(vals),
+        }
+
+    stats_5d = _agg("fwd_5d")
+    stats_10d = _agg("fwd_10d")
+
+    # Last few occurrences (excluding today)
+    sample_events = history_matches[-5:] if history_matches else []
+
+    history_block = {
+        "pattern": current_name,
+        "occurrences": counts[current_name],
+        "samples": sample_events,
+        "forwardReturns": {
+            "days5": stats_5d,
+            "days10": stats_10d,
+        },
+    }
+
+    return {
+        "currentPattern": current,
+        "historyForCurrent": history_block,
+        "allPatterns": all_patterns,
+        "note": None,
+    }
+
 
 def compute_bullbrain_features(candles: dict):
     closes = candles["close"]
@@ -1505,6 +1860,31 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
         print("stockdetail error:", e)
         return {"symbol": symbol, "error": str(e)}
 
+# --------------------------------------------------------------------
+# SMART PATTERN HISTORY ENDPOINT
+# --------------------------------------------------------------------
+@app.get("/patternhistory/{symbol}")
+def pattern_history(symbol: str, lookahead_5: int = 5, lookahead_10: int = 10):
+    symbol = symbol.upper()
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return {
+                "symbol": symbol,
+                "error": "No candle data available for this symbol.",
+            }
+
+        summary = scan_smart_pattern_history(
+            symbol,
+            candles,
+            lookahead_5=lookahead_5,
+            lookahead_10=lookahead_10,
+        )
+        summary["symbol"] = symbol
+        return summary
+    except Exception as e:
+        print("pattern_history error:", e)
+        return {"symbol": symbol, "error": str(e)}
 
 # --------------------------------------------------------------------
 # SIMPLE QUOTE + ANALYST ENDPOINTS
