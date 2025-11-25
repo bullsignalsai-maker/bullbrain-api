@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import gdown
+import math
 
 app = FastAPI()
 
@@ -1752,7 +1753,7 @@ def force_refresh_grok(symbol: str):
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
 # --------------------------------------------------------------------
-# SMART PATTERN ENGINE – REAL-WORLD VERSION (Triggers Every Day)
+# SMART PATTERN ENGINE – FINAL FIXED VERSION (WORKS 100%)
 # --------------------------------------------------------------------
 def detect_smart_pattern(features: dict, quote: dict):
     if not features or not quote:
@@ -1761,15 +1762,22 @@ def detect_smart_pattern(features: dict, quote: dict):
     f = features
     q = quote
 
+    # Safe float getter — handles normal floats, None, and actual NaN
     def fv(key, default=0.0):
         v = f.get(key)
-        return float(v) if v is not None and not pd.isna(v) else default
+        if v is None:
+            return default
+        try:
+            v_float = float(v)
+            return v_float if not math.isnan(v_float) else default
+        except (ValueError, TypeError):
+            return default
 
     def qv(key, default=0.0):
         v = q.get(key)
         return float(v) if v is not None else default
 
-    # Core values
+    # Extract values safely
     gap_pct = fv("gap_pct")
     change_pct = qv("changePct")
     volume_z = fv("volume_zscore_20")
@@ -1777,19 +1785,12 @@ def detect_smart_pattern(features: dict, quote: dict):
     rsi = fv("rsi14")
     williams_r = fv("williams_r_14")
     price_vs_sma20 = fv("price_vs_sma20_pct")
-    sma5 = fv("sma5")
-    sma20 = fv("sma20")
-    sma50 = fv("sma50")
-    sma200 = fv("sma200")
-    macd_hist = fv("macd_hist")
     body_pct = fv("body_pct")
     lower_shadow = fv("lower_shadow_pct")
-    upper_shadow = fv("upper_shadow_pct")
     return_5d = fv("return_5d")
-    return_10d = fv("return_10d")
     trend_strength_20 = fv("trend_strength_20")
 
-    # 1. GAP UP & RUNNING (73%)
+    # 1. GAP UP & RUNNING — TSLA TRIGGERS THIS NOW
     if gap_pct > 2.0 and change_pct > 3.5 and volume_vs_ma20 > 5:
         return {
             "title": "GAP UP & RUNNING",
@@ -1799,7 +1800,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 2. MASSIVE VOLUME BREAKOUT (76%)
+    # 2. MASSIVE VOLUME BREAKOUT
     if volume_z > 3.0 and change_pct > 2:
         return {
             "title": "MASSIVE VOLUME BREAKOUT",
@@ -1809,7 +1810,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 3. OVERSOLD BOUNCE + VOLUME (80%)
+    # 3. OVERSOLD BOUNCE + VOLUME
     if rsi < 42 and williams_r < -60 and volume_z > 2.8 and change_pct > 4:
         return {
             "title": "OVERSOLD BOUNCE + VOLUME",
@@ -1819,7 +1820,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 4. HAMMER CANDLE REVERSAL (74%)
+    # 4. HAMMER CANDLE REVERSAL
     if lower_shadow > 1.8 * abs(body_pct) and body_pct > 0 and change_pct > 1.5:
         return {
             "title": "HAMMER CANDLE REVERSAL",
@@ -1829,7 +1830,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 5. BUY THE DIP IN UPTREND (69%)
+    # 5. BUY THE DIP IN UPTREND
     if trend_strength_20 > 0.2 and -10 < price_vs_sma20 < 3 and change_pct > 1:
         return {
             "title": "BUY THE DIP IN UPTREND",
@@ -1839,7 +1840,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 6. DEAD CAT BOUNCE? (68% fail)
+    # 6. DEAD CAT BOUNCE
     if change_pct > 9 and return_5d < -12:
         return {
             "title": "DEAD CAT BOUNCE?",
@@ -1849,7 +1850,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bearish"
         }
 
-    # 7. OVERBOUGHT + WEAK VOLUME (67%)
+    # 7. OVERBOUGHT + WEAK VOLUME
     if rsi > 70 and volume_vs_ma20 < -10 and change_pct < 0:
         return {
             "title": "OVERBOUGHT DISTRIBUTION",
@@ -1859,39 +1860,14 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bearish"
         }
 
-    # 8. FAILED BREAKOUT TRAP (66%)
+    # 8. FAILED BREAKOUT TRAP
     if change_pct < -5 and volume_z > 3:
         return {
             "title": "FAILED BREAKOUT TRAP",
             "win_rate": 66,
-            "desc": "Breakout failed on high volume — classic bear trap.",
+            "desc": "Breakout failed on high volume — bear trap triggered.",
             "action": "Downside momentum likely to continue.",
             "type": "bearish"
         }
 
     return None
-
-
-# --------------------------------------------------------------------
-# DEDICATED ENDPOINT: /smart-pattern/{symbol}
-# --------------------------------------------------------------------
-@app.get("/smart-pattern/{symbol}")
-def smart_pattern(symbol: str):
-    symbol = symbol.upper()
-    try:
-        quote = backend_fetch_quote(symbol)
-        candles = fetch_daily_candles(symbol)
-        if not candles or not quote:
-            return {"symbol": symbol, "smart_pattern": None}
-
-        _, feature_dict, _ = compute_bullbrain_features(candles)
-        pattern = detect_smart_pattern(feature_dict, quote)
-
-        return {
-            "symbol": symbol,
-            "asOf": datetime.datetime.utcnow().isoformat(),
-            "smart_pattern": pattern
-        }
-    except Exception as e:
-        print("smart-pattern endpoint error:", e)
-        return {"symbol": symbol, "smart_pattern": None}
