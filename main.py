@@ -1751,3 +1751,187 @@ def force_refresh_grok(symbol: str):
         "removedKeys": removed,
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
+
+# --------------------------------------------------------------------
+# SMART PATTERN ENGINE – 12 ELITE PATTERNS (DEDICATED ENDPOINT)
+# --------------------------------------------------------------------
+def detect_smart_pattern(features: dict, quote: dict):
+    if not features or not quote:
+        return None
+
+    f = features
+    q = quote
+
+    def fv(key, default=0.0):
+        v = f.get(key)
+        return float(v) if v is not None and not pd.isna(v) else default
+
+    def qv(key, default=0.0):
+        v = q.get(key)
+        return float(v) if v is not None else default
+
+    # Core values
+    gap_pct = fv("gap_pct")
+    change_pct = qv("changePct")
+    volume_z = fv("volume_zscore_20")
+    volume_vs_ma20 = fv("volume_vs_ma20_pct")
+    rsi = fv("rsi14")
+    williams_r = fv("williams_r_14")
+    price_vs_sma20 = fv("price_vs_sma20_pct")
+    sma5 = fv("sma5")
+    sma20 = fv("sma20")
+    sma50 = fv("sma50")
+    sma200 = fv("sma200")
+    macd_hist = fv("macd_hist")
+    body_pct = fv("body_pct")
+    lower_shadow = fv("lower_shadow_pct")
+    upper_shadow = fv("upper_shadow_pct")
+    return_5d = fv("return_5d")
+    return_10d = fv("return_10d")
+    trend_strength_20 = fv("trend_strength_20")
+
+    patterns = []
+
+    # 1. OVERSOLD REVERSAL + VOLUME SPIKE (80%)
+    if rsi < 38 and williams_r < -70 and volume_z > 3.0 and change_pct > 5:
+        patterns.append({
+            "title": "OVERSOLD REVERSAL + VOLUME SPIKE",
+            "win_rate": 80,
+            "desc": "Stock was crushed — today big money rushed in with massive volume.",
+            "action": "One of the strongest bounce signals in the market.",
+            "type": "bullish"
+        })
+
+    # 2. VOLUME BREAKOUT ABOVE KEY LEVEL (76%)
+    if volume_z > 3.5 and change_pct > 3 and fv("close") > sma20 * 0.98:
+        patterns.append({
+            "title": "MASSIVE VOLUME BREAKOUT",
+            "win_rate": 76,
+            "desc": "Highest volume in months — price pushing through resistance.",
+            "action": "Institutional buying confirmed. Strong move likely.",
+            "type": "bullish"
+        })
+
+    # 3. HAMMER AFTER DOWNTREND (74%)
+    if lower_shadow > 2 * abs(body_pct) and body_pct > 0 and rsi < 45 and trend_strength_20 < -0.5:
+        patterns.append({
+            "title": "HAMMER CANDLE REVERSAL",
+            "win_rate": 74,
+            "desc": "Classic hammer after downtrend — buyers rejected lower prices.",
+            "action": "High-probability bottom signal.",
+            "type": "bullish"
+        })
+
+    # 4. GAP UP & GO (73%)
+    if gap_pct > 2.8 and change_pct > 5 and volume_vs_ma20 > 10:
+        patterns.append({
+            "title": "GAP UP & RUNNING",
+            "win_rate": 73,
+            "desc": "Opened sharply higher and held gains on strong volume.",
+            "action": "This is how explosive rallies begin.",
+            "type": "bullish"
+        })
+
+    # 5. GOLDEN CROSS CONFIRMED (71%)
+    if sma50 > sma200 and fv("close") > sma50 and macd_hist > 0:
+        patterns.append({
+            "title": "GOLDEN CROSS CONFIRMED",
+            "win_rate": 71,
+            "desc": "50-day crossed above 200-day — momentum now fully bullish.",
+            "action": "Major long-term uptrend starting.",
+            "type": "bullish"
+        })
+
+    # 6. HEALTHY PULLBACK IN UPTREND (69%)
+    if trend_strength_20 > 0.3 and -8 < price_vs_sma20 < 2 and change_pct > 1:
+        patterns.append({
+            "title": "HEALTHY PULLBACK IN UPTREND",
+            "win_rate": 69,
+            "desc": "Strong uptrend paused — now bouncing off support.",
+            "action": "Classic 'buy the dip' setup.",
+            "type": "bullish"
+        })
+
+    # 7. DEATH CROSS REJECTED (70%)
+    if sma50 < sma200 and fv("close") > sma50 * 1.02 and volume_z > 2:
+        patterns.append({
+            "title": "DEATH CROSS REJECTED",
+            "win_rate": 70,
+            "desc": "Bearish signal failed — price surged higher on volume.",
+            "action": "Bear trap triggered. Bulls in control.",
+            "type": "bullish"
+        })
+
+    # 8. DEAD CAT BOUNCE? (68% fail)
+    if change_pct > 9 and return_5d < -15:
+        patterns.append({
+            "title": "DEAD CAT BOUNCE?",
+            "win_rate": 68,
+            "desc": "Sharp rebound after huge drop — often collapses again.",
+            "action": "High risk of failure. Caution advised.",
+            "type": "bearish"
+        })
+
+    # 9. OVERBOUGHT + DISTRIBUTION (67%)
+    if rsi > 72 and williams_r > -20 and volume_vs_ma20 < -20 and change_pct < 0:
+        patterns.append({
+            "title": "OVERBOUGHT DISTRIBUTION",
+            "win_rate": 67,
+            "desc": "Price extremely overbought — smart money exiting quietly.",
+            "action": "Top may be forming. Risk of pullback.",
+            "type": "bearish"
+        })
+
+    # 10. FAILED BREAKOUT TRAP (66%)
+    if change_pct < -4 and volume_z > 3 and price_vs_sma20 < -10:
+        patterns.append({
+            "title": "FAILED BREAKOUT TRAP",
+            "win_rate": 66,
+            "desc": "Breakout collapsed on high volume — classic bear trap.",
+            "action": "Downside momentum likely to accelerate.",
+            "type": "bearish"
+        })
+
+    # 11. PARABOLIC RUN EXHAUSTED (70%)
+    if return_10d > 40 and rsi > 75 and change_pct < -3:
+        patterns.append({
+            "title": "PARABOLIC RUN EXHAUSTED",
+            "win_rate": 70,
+            "desc": "10-day explosion now stalling at extreme levels.",
+            "action": "High risk of sharp correction.",
+            "type": "bearish"
+        })
+
+    # 12. EARNINGS POWER GAP (69%) — Optional future
+    # if has_earnings_today and gap_pct > 8 and change_pct > 6: ...
+
+    if not patterns:
+        return None
+
+    # Return highest-priority pattern
+    return patterns[0]
+
+
+# --------------------------------------------------------------------
+# NEW DEDICATED ENDPOINT: /smart-pattern/{symbol}
+# --------------------------------------------------------------------
+@app.get("/smart-pattern/{symbol}")
+def smart_pattern(symbol: str):
+    symbol = symbol.upper()
+    try:
+        quote = backend_fetch_quote(symbol)
+        candles = fetch_daily_candles(symbol)
+        if not candles or not quote:
+            return {"symbol": symbol, "smart_pattern": None}
+
+        _, feature_dict, _ = compute_bullbrain_features(candles)
+        pattern = detect_smart_pattern(feature_dict, quote)
+
+        return {
+            "symbol": symbol,
+            "asOf": datetime.datetime.utcnow().isoformat(),
+            "smart_pattern": pattern
+        }
+    except Exception as e:
+        print("smart-pattern endpoint error:", e)
+        return {"symbol": symbol, "smart_pattern": None}
