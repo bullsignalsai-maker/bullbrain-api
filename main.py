@@ -1752,7 +1752,7 @@ def force_refresh_grok(symbol: str):
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
 # --------------------------------------------------------------------
-# SMART PATTERN ENGINE – REAL-WORLD VERSION (Triggers Daily)
+# SMART PATTERN ENGINE – REAL-WORLD VERSION (Triggers Every Day)
 # --------------------------------------------------------------------
 def detect_smart_pattern(features: dict, quote: dict):
     if not features or not quote:
@@ -1769,7 +1769,7 @@ def detect_smart_pattern(features: dict, quote: dict):
         v = q.get(key)
         return float(v) if v is not None else default
 
-    # Live values
+    # Core values
     gap_pct = fv("gap_pct")
     change_pct = qv("changePct")
     volume_z = fv("volume_zscore_20")
@@ -1789,8 +1789,7 @@ def detect_smart_pattern(features: dict, quote: dict):
     return_10d = fv("return_10d")
     trend_strength_20 = fv("trend_strength_20")
 
-    # PRIORITY ORDER: Highest edge first
-    # 1. GAP UP & RUNNING (73%) — fires almost every strong day)
+    # 1. GAP UP & RUNNING (73%)
     if gap_pct > 2.0 and change_pct > 3.5 and volume_vs_ma20 > 5:
         return {
             "title": "GAP UP & RUNNING",
@@ -1800,7 +1799,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 2. MASSIVE VOLUME BREAKOUT (76% — fires on real volume surges)
+    # 2. MASSIVE VOLUME BREAKOUT (76%)
     if volume_z > 3.0 and change_pct > 2:
         return {
             "title": "MASSIVE VOLUME BREAKOUT",
@@ -1810,7 +1809,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 3. OVERSOLD BOUNCE + VOLUME (80% — fires on real reversals)
+    # 3. OVERSOLD BOUNCE + VOLUME (80%)
     if rsi < 42 and williams_r < -60 and volume_z > 2.8 and change_pct > 4:
         return {
             "title": "OVERSOLD BOUNCE + VOLUME",
@@ -1820,7 +1819,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 4. HAMMER / BULLISH ENGULFING (74%)
+    # 4. HAMMER CANDLE REVERSAL (74%)
     if lower_shadow > 1.8 * abs(body_pct) and body_pct > 0 and change_pct > 1.5:
         return {
             "title": "HAMMER CANDLE REVERSAL",
@@ -1830,7 +1829,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 5. HEALTHY PULLBACK IN UPTREND (69%)
+    # 5. BUY THE DIP IN UPTREND (69%)
     if trend_strength_20 > 0.2 and -10 < price_vs_sma20 < 3 and change_pct > 1:
         return {
             "title": "BUY THE DIP IN UPTREND",
@@ -1840,7 +1839,7 @@ def detect_smart_pattern(features: dict, quote: dict):
             "type": "bullish"
         }
 
-    # 6. DEAD CAT BOUNCE WARNING (68% fail rate)
+    # 6. DEAD CAT BOUNCE? (68% fail)
     if change_pct > 9 and return_5d < -12:
         return {
             "title": "DEAD CAT BOUNCE?",
@@ -1865,17 +1864,18 @@ def detect_smart_pattern(features: dict, quote: dict):
         return {
             "title": "FAILED BREAKOUT TRAP",
             "win_rate": 66,
-            "desc": "Breakout failed on high volume — bear trap triggered.",
+            "desc": "Breakout failed on high volume — classic bear trap.",
             "action": "Downside momentum likely to continue.",
             "type": "bearish"
         }
 
-    # No pattern → clean neutral
     return None
+
+
 # --------------------------------------------------------------------
-# NEW DEDICATED ENDPOINT: /smart-pattern/{symbol}
+# DEDICATED ENDPOINT: /smart-pattern/{symbol}
 # --------------------------------------------------------------------
-    @app.get("/smart-pattern/{symbol}")
+@app.get("/smart-pattern/{symbol}")
 def smart_pattern(symbol: str):
     symbol = symbol.upper()
     try:
@@ -1893,5 +1893,5 @@ def smart_pattern(symbol: str):
             "smart_pattern": pattern
         }
     except Exception as e:
-        print("smart-pattern error:", e)
+        print("smart-pattern endpoint error:", e)
         return {"symbol": symbol, "smart_pattern": None}
