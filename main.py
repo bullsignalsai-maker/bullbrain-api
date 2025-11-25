@@ -1748,8 +1748,7 @@ def get_technical(symbol: str):
     except Exception as e:
         print("get_technical error:", e)
         return {"symbol": symbol, "error": str(e)}
-
-
+        
 # --------------------------------------------------------------------
 # STOCKDETAIL SUPER ENDPOINT
 # --------------------------------------------------------------------
@@ -1759,11 +1758,13 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
     try:
         quote = backend_fetch_quote(symbol)
         candles = fetch_daily_candles(symbol)
+
         feature_dict = None
         last_close = None
         bullbrain_block = None
         bull_prob_up = None
 
+        # BULLBRAIN
         if candles and bullbrain_model is not None:
             features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
             inference = bullbrain_infer(features_vec)
@@ -1781,16 +1782,14 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
             }
 
         if last_close is None and quote:
-            try:
-                last_close = float(quote.get("current") or 0.0)
-            except Exception:
-                last_close = None
+            last_close = float(quote.get("current") or 0.0)
 
+        # TECHNICAL SNAPSHOT
         technical = None
         if feature_dict is not None and last_close is not None:
             technical = build_technical_snapshot(symbol, feature_dict, last_close)
-        smart_pattern = detect_smart_pattern(feature_dict, quote, technical)
 
+        # CANDLES PAYLOAD
         candles_payload = None
         if candles:
             closes = candles["close"]
@@ -1805,13 +1804,14 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
                 start_idx = n - use_n
                 chart_items = []
                 for i in range(start_idx, n):
-                    t_raw = ts_list[i] if i < len(ts_list) and ts_list[i] else None
+                    t_raw = ts_list[i] if i < len(ts_list) else None
                     if t_raw:
                         dt = datetime.datetime.utcfromtimestamp(t_raw / 1000.0).replace(microsecond=0)
                         t_iso = dt.isoformat() + "Z"
                     else:
                         dt = datetime.datetime.utcnow() - datetime.timedelta(days=(n - 1 - i))
                         t_iso = dt.replace(microsecond=0).isoformat() + "Z"
+
                     chart_items.append(
                         {
                             "t": t_iso,
@@ -1828,18 +1828,31 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
                     "candles": chart_items,
                 }
 
+        # NEWS + GROK
         news = get_symbol_news(symbol, limit=8)
         grok_pack = get_stockdetail_grok(symbol, quote, technical, force=forceGrok)
         grok_prob_up = grok_pack.get("prob_up")
 
-        hybrid_p = None
-        hybrid_signal = None
-        hybrid_conf = None
-        if bull_prob_up is not None or grok_prob_up is not None:
-            hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
-                bull_prob_up, grok_prob_up
-            )
+        # HYBRID
+        hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
+            bull_prob_up, grok_prob_up
+        )
 
+        # -----------------------------------------------------------
+        # SMART PATTERN + HISTORY (NEW)
+        # -----------------------------------------------------------
+        pattern_history = scan_smart_pattern_history(symbol, candles)
+        current_pattern = None
+        pattern_dates = []
+
+        if pattern_history:
+            current_pattern = pattern_history.get("currentPattern")
+            hist = pattern_history.get("historyForCurrent")
+
+            if hist and "samples" in hist:
+                pattern_dates = hist["samples"][:5]
+
+        # FINAL RESPONSE
         return {
             "symbol": symbol,
             "asOf": datetime.datetime.utcnow().isoformat(),
@@ -1854,8 +1867,13 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
             "hybridProbUp": hybrid_p,
             "hybridSignal": hybrid_signal,
             "hybridScore": hybrid_conf,
-            "smartPattern": smart_pattern,
+
+            # NEW — Smart pattern data for UI
+            "smartPattern": current_pattern,
+            "patternDates": pattern_dates,
+            "patternStats": pattern_history,
         }
+
     except Exception as e:
         print("stockdetail error:", e)
         return {"symbol": symbol, "error": str(e)}
