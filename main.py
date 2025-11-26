@@ -2328,6 +2328,7 @@ def market_mood():
 @app.get("/market-news")
 def market_news():
     import feedparser
+
     FEEDS = [
         "https://www.benzinga.com/rss/stock-news.xml",
         "https://seekingalpha.com/api/sa/combined/global_news.rss",
@@ -2336,46 +2337,93 @@ def market_news():
         "https://www.zacks.com/rss/news.xml",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL,TSLA,MSFT,NVDA,META,AMZN,GOOGL,AMD,INTC,JPM,BAC,GS&region=US&lang=en-US",
     ]
+
+    # STRICT MARKET-RELATED KEYWORDS
     KEYWORDS = [
-        "dow", "nasdaq", "s&p", "fed", "inflation", "cpi", "ppi",
-        "earnings", "guidance", "profit", "loss", "upgrade", "downgrade",
-        "ipo", "merger", "acquisition", "forecast", "ai", "chip",
-        "market", "stock", "recession", "treasury", "jobs", "rate", "futures",
+        "stocks", "stock",
+        "market", "markets",
+        "dow", "nasdaq", "s&p", "s&p 500", "sp500",
+        "fed", "fomc", "treasury yield",
+        "inflation", "cpi", "ppi", "jobs report",
+        "earnings", "revenue", "guidance",
+        "outlook", "forecast", "analyst",
+        "ipo", "merger", "acquisition",
+        "equities", "futures", "trading",
+        "volume", "vix", "volatility",
+        "upgrade", "downgrade", "price target",
+        "dividend", "share repurchase",
+        "company", "corporate",
     ]
+
+    # HARD EXCLUSIONS — remove noise & personal stuff
+    EXCLUDE = [
+        "why i", "how i", "my", "opinion", "reddit",
+        "family", "kids", "mom", "dad",
+        "travel", "fitness", "health", "lifestyle",
+        "crypto", "bitcoin", "ethereum",
+        "sports", "music", "celebrity",
+        "politics", "election", "government",
+        "lawsuit", "crime", "scam",
+        "weather",
+    ]
+
+    US_SOURCES = [
+        "yahoo", "benzinga", "marketwatch", "zacks", "investing.com", "seekingalpha"
+    ]
+
     news = []
+
     for url in FEEDS:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:20]:
+
                 title = getattr(e, "title", "")
                 summary = getattr(e, "summary", "")
                 link = getattr(e, "link", "")
                 pub_date = getattr(e, "published", datetime.datetime.utcnow().isoformat())
-                text = (title + summary).lower()
-                if any(k in text for k in KEYWORDS):
-                    news.append(
-                        {
-                            "title": title,
-                            "summary": (summary or "")[:220] + "...",
-                            "link": link,
-                            "pubDate": pub_date,
-                            "source": getattr(e, "source", {}).get("title", "News"),
-                        }
-                    )
+                text = (title + " " + summary).lower()
+
+                # REQUIRED: Must contain a strict stock-market keyword
+                if not any(k in text for k in KEYWORDS):
+                    continue
+
+                # REQUIRED: Must be from a U.S. financial news source
+                if not any(s in link.lower() for s in US_SOURCES):
+                    continue
+
+                # HARD EXCLUDE based on content
+                if any(bad in text for bad in EXCLUDE):
+                    continue
+
+                news.append({
+                    "title": title,
+                    "summary": (summary or "")[:220] + "...",
+                    "link": link,
+                    "pubDate": pub_date,
+                    "source": getattr(e, "source", {}).get("title", "News")
+                })
+
         except Exception as ex:
             print("RSS error:", ex)
+
+    # Remove duplicates
     seen = set()
     uniq = []
     for n in news:
-        key = (n["title"] or "")[:40].lower()
+        key = (n["title"] or "")[:50].lower()
         if key not in seen:
             seen.add(key)
             uniq.append(n)
+
+    # Sort newest first
     try:
         uniq.sort(key=lambda x: x["pubDate"], reverse=True)
     except Exception:
         pass
+
     return {"data": uniq[:50]}
+
 
 
 def get_symbol_news(symbol: str, limit: int = 8):
