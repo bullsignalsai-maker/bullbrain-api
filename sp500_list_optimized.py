@@ -61,9 +61,9 @@ SP500_LIST = {
     "SMCI","APP","IONQ","RKLB","ASTS","SOUN","AMC","GME","BB","MARA","RIOT","OPEN","IONQ","QUBT","PACB",
     "EDIT","LAC","ASST","ATYR","RVPH","RXRX","BYND","BMNR"
 }
-
+SP500_SET = SP500_LIST
 # ------------------------------------------------------------
-# 2️⃣ Ultra-fast indices
+# 3️⃣ Ultra-fast indices
 # ------------------------------------------------------------
 
 # Length-indexed tickers (1–5 chars)
@@ -82,28 +82,29 @@ TICKER_REGEX = re.compile(
 )
 
 # ------------------------------------------------------------
-# 3️⃣ Ticker detection helpers
+# 4️⃣ Ticker detection helpers
 # ------------------------------------------------------------
 
 def is_valid_ticker(sym: str) -> bool:
+    """Check if symbol is real SP500 or extended list ticker."""
     if not sym:
         return False
     return sym.upper() in SP500_LIST
 
 
 def extract_ticker(text: str):
-    """Ultra-fast ticker detection from headline or summary."""
+    """Ultra-fast ticker detection using SP500 regex and fallbacks."""
     if not text:
         return None
 
     text = text.upper()
 
-    # Regex match first (fastest)
+    # Regex match (fast & preferred)
     match = TICKER_REGEX.search(text)
     if match:
         return match.group(1)
 
-    # Manual fallback (rare)
+    # Manual fallback (handles weird RSS formats)
     words = re.findall(r"\b[A-Z]{1,5}\b", text)
     for w in words:
         if is_valid_ticker(w):
@@ -111,20 +112,34 @@ def extract_ticker(text: str):
 
     return None
 
+
 # ------------------------------------------------------------
-# 4️⃣ Category detection
+# 5️⃣ Category detection
 # ------------------------------------------------------------
 
 CATEGORY_KEYWORDS = {
-    "Earnings": ["earnings", "eps", "revenue", "guidance", "profit", "loss", "beat", "miss"],
-    "Tech / AI": ["ai", "chip", "nvidia", "gpu", "machine learning", "cloud", "semiconductor"],
-    "M&A": ["merger", "acquisition", "deal", "buyout", "takeover"],
-    "Fed / Macro": ["inflation", "fed", "cpi", "ppi", "jobs", "treasury", "rates", "economic"],
+    "Earnings": [
+        "earnings", "eps", "revenue", "guidance",
+        "profit", "loss", "beat", "miss"
+    ],
+    "Tech / AI": [
+        "ai", "chip", "nvidia", "gpu",
+        "machine learning", "cloud", "semiconductor"
+    ],
+    "M&A": [
+        "merger", "acquisition", "deal",
+        "buyout", "takeover"
+    ],
+    "Fed / Macro": [
+        "inflation", "fed", "cpi", "ppi",
+        "jobs", "treasury", "rates", "economic"
+    ],
 }
 
 def detect_category(text: str):
+    """Classify article based on keyword rules."""
     t = text.lower()
-    for cat, keys in CATEGORY_KEYWORDS.items():
+    for category, keys in CATEGORY_KEYWORDS.items():
         if any(k in t for k in keys):
-            return cat
+            return category
     return "General"
