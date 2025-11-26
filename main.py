@@ -1982,18 +1982,55 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
         )
 
         # -----------------------------------------------------------
-        # SMART PATTERN + HISTORY (NEW)
+        # SMART PATTERN + HISTORY (SAFE WRAPPER)
         # -----------------------------------------------------------
-        pattern_history = scan_smart_pattern_history(symbol, candles)
-        current_pattern = None
-        pattern_dates = []
+        raw_ph = scan_smart_pattern_history(symbol, candles)
 
-        if pattern_history:
-            current_pattern = pattern_history.get("currentPattern")
-            hist = pattern_history.get("historyForCurrent")
+        safe_smart_pattern = None
+        safe_pattern_dates = []
+        safe_pattern_stats = raw_ph  # return full stats for debugging/UI
 
-            if hist and "samples" in hist:
-                pattern_dates = hist["samples"][:5]
+        if raw_ph:
+            cp = raw_ph.get("currentPattern")
+            hist = raw_ph.get("historyForCurrent")
+
+            # If we have a valid pattern for today
+            if cp and cp.get("pattern"):
+                safe_smart_pattern = {
+                    "pattern": cp.get("pattern"),
+                    "headline": cp.get("headline"),
+                    "winRate": cp.get("winRate"),
+                    "occurrences": hist.get("occurrences") if hist else 0,
+                    "samples": hist.get("samples") if hist else [],
+                    "forwardReturns": hist.get("forwardReturns") if hist else {},
+                }
+
+                if hist and hist.get("samples"):
+                    safe_pattern_dates = hist["samples"][:5]
+
+            else:
+                # No pattern today — return clean structure (prevents frontend crash)
+                safe_smart_pattern = {
+                    "pattern": None,
+                    "headline": None,
+                    "winRate": None,
+                    "occurrences": 0,
+                    "samples": [],
+                    "forwardReturns": {},
+                }
+                safe_pattern_dates = []
+
+        else:
+            # No history at all
+            safe_smart_pattern = {
+                "pattern": None,
+                "headline": None,
+                "winRate": None,
+                "occurrences": 0,
+                "samples": [],
+                "forwardReturns": {},
+            }
+            safe_pattern_dates = []
 
         # FINAL RESPONSE
         return {
@@ -2012,9 +2049,9 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
             "hybridScore": hybrid_conf,
 
             # NEW — Smart pattern data for UI
-            "smartPattern": current_pattern,
-            "patternDates": pattern_dates,
-            "patternStats": pattern_history,
+            "smartPattern": safe_smart_pattern,
+            "patternDates": safe_pattern_dates,
+            "patternStats": safe_pattern_stats,
         }
 
     except Exception as e:
