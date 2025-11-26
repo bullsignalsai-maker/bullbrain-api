@@ -175,6 +175,7 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
 # ============================================================
 
 def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Classic RSI calculation on a pandas Series of closes."""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -188,6 +189,7 @@ def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
 def _compute_williams_r(
     high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
 ) -> pd.Series:
+    """Williams %R over a lookback window."""
     highest_high = high.rolling(period, min_periods=period).max()
     lowest_low = low.rolling(period, min_periods=period).min()
     wr = -100 * (highest_high - close) / (highest_high - lowest_low)
@@ -203,145 +205,273 @@ def _evaluate_smart_pattern_row(
     rsi: float | None,
     will_r: float | None,
     lower_shadow: float | None,
+    upper_shadow: float | None,
     body_pct: float | None,
     price_vs_sma20: float | None,
     trend: float | None,
+    ret3: float | None,
     ret5: float | None,
 ):
     """
     Core smart-pattern classifier.
-    Takes pre-computed daily metrics and returns a pattern dict or None.
+    Takes pre-computed daily metrics and returns a single "best" pattern dict or None.
+
+    We keep the UI simple (only the best pattern per day), but internally this engine
+    can support many patterns without changing the API.
     """
 
     def ok(x):
         return x is not None and not np.isnan(x)
 
-    # 1) GAP UP & RUNNING
+    # (score, pattern_dict)
+    patterns: list[tuple[float, dict]] = []
+
+    # 1) GAP UP & RUNNING – strong upside ignition
     if ok(gap) and ok(change) and ok(vol_vs_ma):
         if gap > 1.0 and change > 2.0 and vol_vs_ma > 20.0:
-            return {
-                "pattern": "GAP UP & RUNNING",
-                "winRate": 0.73,
-                "headline": "Stock exploded higher at the open and buyers kept control all day.",
-                "explanation": (
-                    "The stock opened noticeably above yesterday’s close and then continued "
-                    "to push higher on well-above-average volume. This is the kind of powerful "
-                    "gap-and-go behaviour that often marks the start of short-term momentum runs."
-                ),
-            }
+            patterns.append(
+                (
+                    0.9,
+                    {
+                        "pattern": "GAP UP & RUNNING",
+                        "winRate": 0.73,
+                        "bias": "bull",
+                        "headline": "Stock exploded higher at the open and buyers kept control all day.",
+                        "explanation": (
+                            "The stock opened noticeably above yesterday’s close and then continued "
+                            "to push higher on well-above-average volume. This kind of gap-and-go move "
+                            "often marks the start of short-term momentum runs."
+                        ),
+                    },
+                )
+            )
 
-    # 2) MASSIVE VOLUME BREAKOUT
+    # 2) MASSIVE VOLUME BREAKOUT – abnormal participation
     if ok(vol_z) and vol_z > 3.0:
-        return {
-            "pattern": "VOLUME BREAKOUT",
-            "winRate": 0.76,
-            "headline": "Unusually heavy trading volume – the big players are active.",
-            "explanation": (
-                "Today’s volume is far above the recent 20-day norm, which usually only happens "
-                "when institutions or large funds are buying or selling aggressively. "
-                "Such volume shocks often precede strong follow-through moves."
-            ),
-        }
+        patterns.append(
+            (
+                0.85,
+                {
+                    "pattern": "VOLUME BREAKOUT",
+                    "winRate": 0.76,
+                    "bias": "bull",
+                    "headline": "Unusually heavy trading volume – the big players are active.",
+                    "explanation": (
+                        "Today’s volume is far above the typical 20-day range, which usually only "
+                        "happens when institutions or large funds are buying or selling aggressively. "
+                        "Such volume shocks often precede strong follow-through moves."
+                    ),
+                },
+            )
+        )
 
-    # 3) OVERSOLD BOUNCE
+    # 3) OVERSOLD BOUNCE – washout then reversal attempt
     if ok(rsi) and ok(will_r) and ok(vol_z):
         if rsi < 30 and will_r < -80 and vol_z > 2.0:
-            return {
-                "pattern": "OVERSOLD BOUNCE",
-                "winRate": 0.80,
-                "headline": "After heavy selling, dip-buyers finally stepped in with size.",
-                "explanation": (
-                    "Momentum indicators show the stock had been deeply oversold, and now volume "
-                    "is spiking as buyers absorb the remaining supply. Historically, this kind of "
-                    "capitulation followed by strong buying often leads to sharp relief rallies."
-                ),
-            }
+            patterns.append(
+                (
+                    0.9,
+                    {
+                        "pattern": "OVERSOLD BOUNCE",
+                        "winRate": 0.80,
+                        "bias": "bull",
+                        "headline": "After heavy selling, dip-buyers finally stepped in with size.",
+                        "explanation": (
+                            "The stock had been deeply oversold and now shows a strong bounce on elevated "
+                            "volume. Historically this kind of capitulation followed by high-conviction "
+                            "buying often leads to sharp relief rallies."
+                        ),
+                    },
+                )
+            )
 
-    # 4) HAMMER REVERSAL (Proper Candle Logic)
-if ok(lower_shadow) and ok(body_pct) and ok(change) and ok(upper_shadow):
-    # Hammer structure:
-    # 1) small body
-    # 2) long lower wick
-    # 3) tiny upper wick
-    structure_ok = (
-        abs(body_pct) < 30 and
-        lower_shadow > 40 and
-        upper_shadow < 15
-    )
+    # 4) HAMMER REVERSAL – intraday flush, close near highs
+    if ok(lower_shadow) and ok(body_pct) and ok(change):
+        # much longer lower wick, small body, green day
+        if lower_shadow > 40.0 and abs(body_pct) < 40.0 and change > 0:
+            patterns.append(
+                (
+                    0.8,
+                    {
+                        "pattern": "HAMMER REVERSAL",
+                        "winRate": 0.74,
+                        "bias": "bull",
+                        "headline": "Bears pushed price down, but bulls slammed it back up by the close.",
+                        "explanation": (
+                            "Intraday the stock traded significantly lower, but buyers aggressively bought "
+                            "the dip and forced price back toward the top of the day’s range. This hammer-style "
+                            "candle often appears near local bottoms where selling pressure is finally exhausted."
+                        ),
+                    },
+                )
+            )
 
-    # context: recent downtrend
-    context_ok = ret3 is not None and ret3 < -2.0
-
-    if structure_ok and context_ok:
-        return {
-            "pattern": "HAMMER REVERSAL",
-            "winRate": 0.74,
-            "headline": "A potential bottoming candle with aggressive dip-buying.",
-            "explanation": (
-                "The candle shows a long lower wick and a small body near the top of the range, "
-                "indicating heavy intraday selling followed by strong buyer dominance. "
-                "Appears often near pullback or capitulation points."
-            ),
-        }
-
-
-    # 5) BUY THE DIP (UPTREND)
+    # 5) BUY THE DIP (UPTREND) – pullback within strong trend
     if ok(trend) and ok(price_vs_sma20) and ok(change):
-        if trend > 1.0 and price_vs_sma20 < -3.0 and change > 0:
-            return {
-                "pattern": "BUY THE DIP (UPTREND)",
-                "winRate": 0.69,
-                "headline": "Strong trend, normal pullback, and buyers stepping back in.",
-                "explanation": (
-                    "The stock is still in a broader uptrend, but had pulled back below its recent "
-                    "20-day trend line and is now bouncing. This is the classic 'buy the dip' profile "
-                    "that trend-followers and institutions often look for to add to winning positions."
-                ),
-            }
+        if trend > 10.0 and price_vs_sma20 < -3.0 and change > 0:
+            patterns.append(
+                (
+                    0.78,
+                    {
+                        "pattern": "BUY THE DIP (UPTREND)",
+                        "winRate": 0.69,
+                        "bias": "bull",
+                        "headline": "Strong trend, normal pullback, and buyers stepping back in.",
+                        "explanation": (
+                            "The stock remains in a clear uptrend but had pulled back below its 20-day "
+                            "trend line and is now bouncing. This is the classic 'buy the dip' profile "
+                            "that many trend-followers use to add to winning positions."
+                        ),
+                    },
+                )
+            )
 
-    # 6) DEAD CAT BOUNCE
+    # 6) DEAD CAT BOUNCE – weak rebound after big fall
     if ok(ret5) and ok(change) and ok(vol_z):
         if ret5 < -8.0 and change > 0 and vol_z < 1.0:
-            return {
-                "pattern": "DEAD CAT BOUNCE",
-                "winRate": 0.68,
-                "headline": "After a big drop, price is bouncing – but on weak conviction.",
-                "explanation": (
-                    "The stock has sold off hard over the past few days and is now showing a small "
-                    "bounce, but without a meaningful volume surge. Historically, many such weak "
-                    "rebounds fail and roll over again as sellers re-enter at slightly better prices."
-                ),
-            }
+            patterns.append(
+                (
+                    0.75,
+                    {
+                        "pattern": "DEAD CAT BOUNCE",
+                        "winRate": 0.68,
+                        "bias": "bear",
+                        "headline": "After a big drop, price is bouncing – but on weak conviction.",
+                        "explanation": (
+                            "The stock has sold off hard over the past few sessions and is now showing a small "
+                            "bounce, but without a meaningful volume surge. Many such weak rebounds fail and "
+                            "roll over again as sellers re-enter at slightly better prices."
+                        ),
+                    },
+                )
+            )
 
-    # 7) OVERBOUGHT DISTRIBUTION
+    # 7) OVERBOUGHT DISTRIBUTION – hot chart, cooling demand
     if ok(rsi) and ok(vol_vs_ma) and ok(change):
         if rsi > 70 and vol_vs_ma < 0:
-            return {
-                "pattern": "OVERBOUGHT DISTRIBUTION",
-                "winRate": 0.67,
-                "headline": "Sentiment is hot, but real demand is fading under the surface.",
-                "explanation": (
-                    "Momentum has been strong and the stock looks 'hot' on the chart, but today’s "
-                    "volume is no longer beating its recent average. This can indicate that smart "
-                    "money is quietly selling into late-stage enthusiasm near short-term peaks."
-                ),
-            }
+            patterns.append(
+                (
+                    0.72,
+                    {
+                        "pattern": "OVERBOUGHT DISTRIBUTION",
+                        "winRate": 0.67,
+                        "bias": "bear",
+                        "headline": "Sentiment is hot, but real demand is fading under the surface.",
+                        "explanation": (
+                            "Momentum has been strong and the chart looks extended, but today’s volume is no "
+                            "longer beating its recent average. This can indicate that smart money is quietly "
+                            "selling into late-stage enthusiasm near short-term peaks."
+                        ),
+                    },
+                )
+            )
 
-    # 8) FAILED BREAKOUT TRAP
+    # 8) FAILED BREAKOUT TRAP – breakout hunters punished
     if ok(change) and ok(vol_z):
         if change < -2.0 and vol_z > 2.0:
-            return {
-                "pattern": "FAILED BREAKOUT TRAP",
-                "winRate": 0.66,
-                "headline": "Price broke higher, then reversed hard on heavy volume – classic bull trap.",
-                "explanation": (
-                    "After recently attempting to move higher, the stock is now reversing sharply "
-                    "down on strong volume. This pattern often marks failed breakouts where traders "
-                    "who chased the move higher are now being forced to exit at a loss."
-                ),
-            }
+            patterns.append(
+                (
+                    0.7,
+                    {
+                        "pattern": "FAILED BREAKOUT TRAP",
+                        "winRate": 0.66,
+                        "bias": "bear",
+                        "headline": "Price broke higher, then reversed hard on heavy volume – classic bull trap.",
+                        "explanation": (
+                            "After recently attempting to move higher, the stock is now reversing sharply down "
+                            "on strong volume. This pattern often marks failed breakouts where traders who "
+                            "chased the move higher are now being forced to exit at a loss."
+                        ),
+                    },
+                )
+            )
 
-    return None
+    # 9) INSIDE RANGE COMPRESSION – energy coiling
+    if ok(change) and ok(ret3) and ok(vol_vs_ma):
+        if abs(change) < 0.8 and abs(ret3 or 0) < 2.0 and vol_vs_ma < 0:
+            patterns.append(
+                (
+                    0.6,
+                    {
+                        "pattern": "INSIDE RANGE COMPRESSION",
+                        "winRate": 0.62,
+                        "bias": "neutral",
+                        "headline": "Price is consolidating in a tight range after recent moves.",
+                        "explanation": (
+                            "The last few days show relatively small net movement and below-average volume. "
+                            "This kind of quiet consolidation can precede a larger directional move once a new "
+                            "trend leader emerges."
+                        ),
+                    },
+                )
+            )
+
+    # 10) HIGH-WAVE INDECISION – long wicks both sides
+    if ok(upper_shadow) and ok(lower_shadow) and ok(body_pct):
+        if upper_shadow > 30.0 and lower_shadow > 30.0 and abs(body_pct) < 20.0:
+            patterns.append(
+                (
+                    0.58,
+                    {
+                        "pattern": "HIGH-WAVE INDECISION",
+                        "winRate": 0.60,
+                        "bias": "neutral",
+                        "headline": "Buyers and sellers both swung hard, but neither side won clearly.",
+                        "explanation": (
+                            "Today’s candle shows long upper and lower wicks with a small real body, "
+                            "signaling strong intraday tug-of-war without a decisive close. Markets often "
+                            "pause or pivot after such high-uncertainty sessions."
+                        ),
+                    },
+                )
+            )
+
+    # 11) TREND ACCELERATION – trend with fresh follow-through
+    if ok(trend) and ok(change) and ok(vol_vs_ma):
+        if trend > 15.0 and change > 1.5 and vol_vs_ma > 5.0:
+            patterns.append(
+                (
+                    0.7,
+                    {
+                        "pattern": "TREND ACCELERATION",
+                        "winRate": 0.70,
+                        "bias": "bull",
+                        "headline": "Existing uptrend just got a fresh burst of momentum.",
+                        "explanation": (
+                            "The stock had already been trending higher and now shows another solid up day on "
+                            "above-average volume. This kind of continuation behavior is typical of sustained "
+                            "institutional accumulation phases."
+                        ),
+                    },
+                )
+            )
+
+    # 12) GAP DOWN & PRESSURE – controlled selloff
+    if ok(gap) and ok(change):
+        if gap < -1.0 and change < -2.0:
+            patterns.append(
+                (
+                    0.68,
+                    {
+                        "pattern": "GAP DOWN & PRESSURE",
+                        "winRate": 0.65,
+                        "bias": "bear",
+                        "headline": "Stock opened sharply lower and sellers kept control.",
+                        "explanation": (
+                            "The session started with a clear downside gap versus yesterday and continued to "
+                            "fade through the day. This can reflect negative news or widespread risk-off behavior "
+                            "where buyers step aside rather than defend prior levels."
+                        ),
+                    },
+                )
+            )
+
+    if not patterns:
+        return None
+
+    # Pick the pattern with the highest internal score
+    patterns.sort(key=lambda x: x[0], reverse=True)
+    return patterns[0][1]
 
 
 def scan_smart_pattern_history(
@@ -350,9 +480,7 @@ def scan_smart_pattern_history(
     lookahead_5: int = 5,
     lookahead_10: int = 10,
 ):
-    """
-    Given raw daily candles (like fetch_daily_candles output), scan ~1 year of history
-    and compute how often each smart pattern appeared and what happened afterwards.
+    """Scan ~1 year of daily candles and compute smart-pattern stats.
 
     Returns a dict with:
       - currentPattern: pattern dict for the most recent day (or None)
@@ -419,14 +547,14 @@ def scan_smart_pattern_history(
         df["high"], df["low"], df["close"], period=14
     )
 
-    # Candle anatomy
+    # Candle anatomy (upper/lower wicks, body)
     full_range = df["high"] - df["low"]
     body = df["close"] - df["open"]
     lower = df[["open", "close"]].min(axis=1) - df["low"]
+    upper = df["high"] - df[["open", "close"]].max(axis=1)
     df["body_pct"] = np.where(full_range > 0, body / full_range * 100.0, 0.0)
-    df["lower_shadow_pct"] = np.where(
-        full_range > 0, lower / full_range * 100.0, 0.0
-    )
+    df["lower_shadow_pct"] = np.where(full_range > 0, lower / full_range * 100.0, 0.0)
+    df["upper_shadow_pct"] = np.where(full_range > 0, upper / full_range * 100.0, 0.0)
 
     # Trend / distance from 20d trend
     df["sma20"] = df["close"].rolling(20, min_periods=20).mean()
@@ -435,20 +563,9 @@ def scan_smart_pattern_history(
         df["close"] / df["close"].shift(20) - 1.0
     ) * 100.0
 
-    # 5-day trailing return
-    df["return_5d"] = df["close"].pct_change(5) * 100.0
-
-    # 3-day trailing return (for hammer reversal context)
+    # 3-day and 5-day trailing returns
     df["ret3"] = df["close"].pct_change(3) * 100.0
-
-    # Upper shadow %
-    upper = df["high"] - df[["open", "close"]].max(axis=1)
-    df["upper_shadow_pct"] = np.where(
-        (df["high"] - df["low"]) > 0,
-        upper / (df["high"] - df["low"]) * 100.0,
-        0.0
-    )
-
+    df["return_5d"] = df["close"].pct_change(5) * 100.0
 
     # Forward returns AFTER pattern
     df["fwd_5d"] = df["close"].shift(-lookahead_5) / df["close"] - 1.0
@@ -465,12 +582,12 @@ def scan_smart_pattern_history(
             rsi=row.get("rsi14"),
             will_r=row.get("williams_r_14"),
             lower_shadow=row.get("lower_shadow_pct"),
-            upper_shadow=row.get("upper_shadow_pct"),  # ✅ new
+            upper_shadow=row.get("upper_shadow_pct"),
             body_pct=row.get("body_pct"),
             price_vs_sma20=row.get("price_vs_sma20_pct"),
             trend=row.get("trend_strength_20"),
+            ret3=row.get("ret3"),
             ret5=row.get("return_5d"),
-            ret3=row.get("ret3"),  
         )
         if not patt:
             continue
@@ -481,6 +598,7 @@ def scan_smart_pattern_history(
                 "pattern": patt["pattern"],
                 "headline": patt["headline"],
                 "winRate": patt["winRate"],
+                "bias": patt.get("bias"),
                 "fwd_5d": float(row["fwd_5d"]) if pd.notna(row["fwd_5d"]) else None,
                 "fwd_10d": float(row["fwd_10d"]) if pd.notna(row["fwd_10d"]) else None,
                 "changePct": float(row["changePct"])
@@ -501,7 +619,6 @@ def scan_smart_pattern_history(
     current = pattern_rows[-1]
     current_name = current["pattern"]
 
-    # Aggregate stats for all patterns
     from collections import defaultdict
 
     counts = defaultdict(int)
@@ -514,9 +631,7 @@ def scan_smart_pattern_history(
     all_patterns.sort(key=lambda x: x["occurrences"], reverse=True)
 
     # Filter rows matching current pattern (excluding today for forward stats)
-    history_matches = [
-        r for r in pattern_rows[:-1] if r["pattern"] == current_name
-    ]
+    history_matches = [r for r in pattern_rows[:-1] if r["pattern"] == current_name]
 
     def _agg(field: str):
         vals = [r[field] * 100.0 for r in history_matches if r[field] is not None]
