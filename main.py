@@ -2328,7 +2328,7 @@ def market_mood():
 @app.get("/market-news")
 def market_news():
     import feedparser
-    from sp500_list_optimized import extract_ticker, detect_category
+    from sp500_list_optimized import extract_ticker, detect_category, SP500_SET
 
     FEEDS = [
         "https://www.benzinga.com/rss/stock-news.xml",
@@ -2341,14 +2341,22 @@ def market_news():
         "&region=US&lang=en-US",
     ]
 
-    # Strict U.S. market filters
-    KEYWORDS = [
-        "dow", "nasdaq", "s&p", "fed", "inflation", "cpi", "ppi",
-        "earnings", "revenue", "guidance", "profit", "loss", "upgrade", "downgrade",
-        "ipo", "merger", "acquisition", "forecast",
-        "ai", "chip", "semiconductor",
-        "market", "stock", "index", "trading", "volume", "rates",
-        "recession", "treasury", "jobs", "futures",
+    HARD_KEYWORDS = [
+        "earnings","revenue","profit","loss","beat","miss",
+        "upgrade","downgrade","guidance","forecast","price target",
+        "ipo","merger","acquisition","buyback","m&a",
+        "dividend","split",
+        "index","s&p","nasdaq","dow","futures","volatility","vix",
+        "treasury","yields","bonds",
+        "fed","inflation","cpi","ppi","jobs report","payrolls",
+        "interest rate","recession"
+    ]
+
+    BLOCK_KEYWORDS = [
+        "why ","how to","ways to","personal","story","advice",
+        "holiday","thanksgiving","shopping","consumer","family",
+        "relationship","career","anxiety","parents","children",
+        "human interest","what to know","guide","what","stories","experience"
     ]
 
     news = []
@@ -2360,42 +2368,40 @@ def market_news():
             for e in feed.entries[:25]:
                 title = getattr(e, "title", "") or ""
                 summary = getattr(e, "summary", "") or ""
-                link = getattr(e, "link", "") or ""
-                published = getattr(e, "published", None)
+                text_combined = (title + " " + summary).lower()
 
-                if not title:
+                # 1️⃣ HARD FILTER → Must contain a stock-related keyword
+                if not any(k in text_combined for k in HARD_KEYWORDS):
                     continue
 
-                text_blob = (title + " " + summary).lower()
-
-                # ❌ Filter out *non-stock* stories
-                if not any(k in text_blob for k in KEYWORDS):
+                # 2️⃣ BLOCK lifestyle / personal / irrelevant content
+                if any(b in text_combined for b in BLOCK_KEYWORDS):
                     continue
 
-                # 🧠 Extract first valid SP500 ticker
+                # 3️⃣ Detect ticker and allow only S&P500
                 ticker = extract_ticker(title + " " + summary)
+                if not ticker or ticker not in SP500_SET:
+                    continue
 
-                # 🧠 Category detection (Earnings, AI, M&A, Fed…)
-                category = detect_category(title + " " + summary)
+                # 4️⃣ Title length filter
+                if len(title.split()) < 5:
+                    continue
 
-                # Clean preview summary
-                clean_summary = (summary.replace("<p>", "")
-                                           .replace("</p>", "")
-                                           .replace("&amp;", "&"))[:220] + "..."
+                # 5️⃣ Category detection
+                category = detect_category(text_combined)
 
-                # Fallback pub date
+                published = getattr(e, "published", None)
                 if not published:
                     published = datetime.datetime.utcnow().isoformat()
 
-                # Try reading real source name
-                source = "News"
-                if hasattr(e, "source") and isinstance(e.source, dict):
-                    source = e.source.get("title", "News")
+                source = getattr(getattr(e, "source", {}), "title", "News")
+
+                clean_summary = summary.replace("<p>", "").replace("</p>", "")[:220] + "..."
 
                 news.append({
                     "title": title,
                     "summary": clean_summary,
-                    "link": link,
+                    "link": getattr(e, "link", ""),
                     "pubDate": published,
                     "source": source,
                     "ticker": ticker,
@@ -2405,27 +2411,19 @@ def market_news():
         except Exception as ex:
             print("RSS error:", ex)
 
-    # ------------------------
-    # DEDUPLICATE
-    # ------------------------
+    # Deduplicate
     seen = set()
-    uniq = []
+    final = []
     for n in news:
-        key = (n["title"] or "").strip().lower()[:60]
+        key = n["title"].lower()[:60]
         if key not in seen:
             seen.add(key)
-            uniq.append(n)
+            final.append(n)
 
-    # ------------------------
-    # SORT BY DATE
-    # ------------------------
-    try:
-        uniq.sort(key=lambda x: x["pubDate"], reverse=True)
-    except:
-        pass
+    # Sort by latest
+    final.sort(key=lambda x: x["pubDate"], reverse=True)
 
-    # Return top 50 only
-    return {"data": uniq[:50]}
+    return {"data": final[:50]}
 
 
 
