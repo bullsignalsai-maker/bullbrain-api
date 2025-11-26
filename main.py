@@ -2356,8 +2356,19 @@ def market_news():
         "why ","how to","ways to","personal","story","advice",
         "holiday","thanksgiving","shopping","consumer","family",
         "relationship","career","anxiety","parents","children",
-        "human interest","what to know","guide","what","stories","experience"
-    ]
+        "human interest","what to know","guide","interview","q&a",
+        "asks","said in","told","my story","journey","how i","i made","i lost",
+        "my portfolio","my wife","my husband","my family","lesson","regret","wish i","net worth",
+        "millionaire","billionaire","divorce","baby","died","health","cancer","lawsuit","arrested",
+        "jail","prison","crime","fraud","scam","ponzi","opinion","think","believe","prediction",
+        "will hit","target price","bullish on","bearish on","love this","hate this","meme","joke",
+        "lol","lmao","diamond hands","paper hands","to the moon","yolo","fomo","fud","reddit",
+        "wallstreetbets","wsb","ada","stories",
+        "nft","defi","web3","metaverse","politics",
+        "election","war","ukraine","russia","weather","storm","hurricane","celebrity","movie",
+        "tv show","netflix show","disney+","recipe","diet","fitness","gym","travel","vacation",
+        "dating","relationship","sex","reddit","clickbait","you won't believe","shocking","my life"
+            ]
 
     news = []
 
@@ -2424,6 +2435,7 @@ def market_news():
     final.sort(key=lambda x: x["pubDate"], reverse=True)
 
     return {"data": final[:50]}
+
 
 
 
@@ -2511,43 +2523,33 @@ def build_watchlist_item(symbol: str):
 # BATCH PRICE FETCH — /prices?symbols=AAPL,TSLA,NVDA
 # ---------------------------------------------------------------
 @app.get("/prices")
-def get_prices(symbols: str):
-    symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    result = {}
+def get_batch_prices(symbols: str):
+    """
+    Return lightweight price + prevClose for multiple tickers.
+    Example:
+    /prices?symbols=AAPL,TSLA,NVDA
+    """
+    try:
+        tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    except:
+        return {"error": "Invalid symbols list"}
 
-    for sym in symbols_list:
-        price = None
-        prevClose = None
+    output = {}
 
-        # ---- Finnhub first attempt ----
+    for sym in tickers:
         try:
-            if FINNHUB_KEY:
-                q_url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_KEY}"
-                q = requests.get(q_url, timeout=5).json()
-                price = q.get("c")
-                prevClose = q.get("pc")
-        except:
-            pass
+            q = backend_fetch_quote(sym)  # reusing your fast quote fetcher
+            if not q:
+                continue
 
-        # ---- FMP fallback (RELIABLE) ----
-        if price is None:
-            try:
-                if FMP_API_KEY:
-                    fmp_url = f"https://financialmodelingprep.com/api/v3/quote/{sym}?apikey={FMP_API_KEY}"
-                    fmp = requests.get(fmp_url, timeout=5).json()
-                    if isinstance(fmp, list) and len(fmp) > 0:
-                        price = fmp[0].get("price") or price
-                        prevClose = fmp[0].get("previousClose") or prevClose
-            except:
-                pass
+            output[sym] = {
+                "price": q.get("price") or q.get("c") or None,
+                "prevClose": q.get("prevClose") or q.get("pc") or None,
+            }
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
 
-        result[sym] = {
-            "price": price,
-            "prevClose": prevClose,
-        }
-
-    return result
-
+    return output
 
 
 @app.get("/search")
