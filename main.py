@@ -2328,7 +2328,11 @@ def market_mood():
 @app.get("/market-news")
 def market_news():
     import feedparser
+    import re
 
+    # ---------------------------------------------
+    # RSS SOURCES (US MARKET ONLY)
+    # ---------------------------------------------
     FEEDS = [
         "https://www.benzinga.com/rss/stock-news.xml",
         "https://seekingalpha.com/api/sa/combined/global_news.rss",
@@ -2338,80 +2342,119 @@ def market_news():
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=AAPL,TSLA,MSFT,NVDA,META,AMZN,GOOGL,AMD,INTC,JPM,BAC,GS&region=US&lang=en-US",
     ]
 
-    # STRICT MARKET-RELATED KEYWORDS
-    KEYWORDS = [
-        "stocks", "stock",
-        "market", "markets",
-        "dow", "nasdaq", "s&p", "s&p 500", "sp500",
-        "fed", "fomc", "treasury yield",
-        "inflation", "cpi", "ppi", "jobs report",
-        "earnings", "revenue", "guidance",
-        "outlook", "forecast", "analyst",
-        "ipo", "merger", "acquisition",
-        "equities", "futures", "trading",
-        "volume", "vix", "volatility",
-        "upgrade", "downgrade", "price target",
-        "dividend", "share repurchase",
-        "company", "corporate",
+    # ---------------------------------------------
+    # Category Detection Keywords
+    # ---------------------------------------------
+    CATEGORY_KEYWORDS = {
+        "Earnings": ["earnings", "eps", "q1", "q2", "q3", "q4", "quarter", "revenue", "profit", "loss"],
+        "M&A": ["acquisition", "merger", "buyout", "takeover", "deal"],
+        "Analyst": ["upgrade", "downgrade", "price target", "initiates", "maintains", "rating"],
+        "Fed / Macro": ["fed", "cpi", "ppi", "inflation", "treasury", "rates", "fomc", "jobs report"],
+        "Tech / AI": ["ai", "chip", "gpu", "semiconductor", "cloud", "server", "ml", "nlp", "robotics"],
+        "IPO": ["ipo", "initial public offering"],
+    }
+
+    # ---------------------------------------------
+    # Detect ticker from title or summary
+    # ---------------------------------------------
+    def detect_ticker(text: str):
+        if not text:
+            return None
+        # match AAPL, MSFT, TSLA etc.
+        m = re.findall(r"\b[A-Z]{2,5}\b", text)
+        if not m:
+            return None
+        # Ignore common false positives
+        BLACKLIST = {"CEO","CFO","USA","GDP","AI"}
+        for t in m:
+            if t not in BLACKLIST:
+                return t
+        return None
+
+    # ---------------------------------------------
+    # Detect source from link
+    # ---------------------------------------------
+    def detect_source(link: str):
+        link = (link or "").lower()
+        if "yahoo" in link: return "Yahoo Finance"
+        if "marketwatch" in link: return "MarketWatch"
+        if "seekingalpha" in link: return "Seeking Alpha"
+        if "benzinga" in link: return "Benzinga"
+        if "zacks" in link: return "Zacks"
+        if "investing.com" in link: return "Investing.com"
+        return "News"
+
+    # ---------------------------------------------
+    # Detect category from text
+    # ---------------------------------------------
+    def detect_category(text: str):
+        text = text.lower()
+        for cat, keys in CATEGORY_KEYWORDS.items():
+            if any(k in text for k in keys):
+                return cat
+        return "General"
+
+    # ---------------------------------------------
+    # Strict Market Filtering Keywords
+    # ---------------------------------------------
+    STRICT_FILTER = [
+        "dow", "nasdaq", "s&p", "fed", "inflation", "cpi", "ppi",
+        "earnings", "guidance", "profit", "loss",
+        "upgrade", "downgrade", "ipo", "merger", "acquisition",
+        "forecast", "market", "stock", "recession", "treasury",
+        "jobs", "rate", "futures", "chip", "ai", "tech"
     ]
 
-    # HARD EXCLUSIONS — remove noise & personal stuff
-    EXCLUDE = [
-        "why i", "how i", "my", "opinion", "reddit",
-        "family", "kids", "mom", "dad",
-        "travel", "fitness", "health", "lifestyle",
-        "crypto", "bitcoin", "ethereum",
-        "sports", "music", "celebrity",
-        "politics", "election", "government",
-        "lawsuit", "crime", "scam",
-        "weather",
-    ]
-
-    US_SOURCES = [
-        "yahoo", "benzinga", "marketwatch", "zacks", "investing.com", "seekingalpha"
-    ]
-
+    # ---------------------------------------------
+    # MAIN PARSE LOOP
+    # ---------------------------------------------
     news = []
 
     for url in FEEDS:
         try:
             feed = feedparser.parse(url)
-            for e in feed.entries[:20]:
-
-                title = getattr(e, "title", "")
-                summary = getattr(e, "summary", "")
-                link = getattr(e, "link", "")
+            for e in feed.entries[:30]:
+                title = getattr(e, "title", "") or ""
+                summary = getattr(e, "summary", "") or ""
+                link = getattr(e, "link", "") or ""
                 pub_date = getattr(e, "published", datetime.datetime.utcnow().isoformat())
-                text = (title + " " + summary).lower()
 
-                # REQUIRED: Must contain a strict stock-market keyword
-                if not any(k in text for k in KEYWORDS):
+                combined = (title + " " + summary).lower()
+
+                # Strict filtering — remove personal stories / noise
+                if not any(kw in combined for kw in STRICT_FILTER):
                     continue
 
-                # REQUIRED: Must be from a U.S. financial news source
-                if not any(s in link.lower() for s in US_SOURCES):
-                    continue
+                # Extract ticker
+                ticker = detect_ticker(title + " " + summary)
 
-                # HARD EXCLUDE based on content
-                if any(bad in text for bad in EXCLUDE):
-                    continue
+                # Detect category
+                category = detect_category(combined)
 
-                news.append({
-                    "title": title,
-                    "summary": (summary or "")[:220] + "...",
-                    "link": link,
-                    "pubDate": pub_date,
-                    "source": getattr(e, "source", {}).get("title", "News")
-                })
+                # Detect real source
+                source = detect_source(link)
 
+                news.append(
+                    {
+                        "title": title.strip(),
+                        "summary": (summary.strip()[:220] + "..."),
+                        "link": link,
+                        "pubDate": pub_date,
+                        "source": source,
+                        "category": category,     # 🆕 Category
+                        "ticker": ticker,         # 🆕 Ticker
+                    }
+                )
         except Exception as ex:
             print("RSS error:", ex)
 
-    # Remove duplicates
+    # ---------------------------------------------
+    # Deduplicate by first 40 chars of title
+    # ---------------------------------------------
     seen = set()
     uniq = []
     for n in news:
-        key = (n["title"] or "")[:50].lower()
+        key = (n["title"] or "")[:40].lower()
         if key not in seen:
             seen.add(key)
             uniq.append(n)
@@ -2419,10 +2462,11 @@ def market_news():
     # Sort newest first
     try:
         uniq.sort(key=lambda x: x["pubDate"], reverse=True)
-    except Exception:
+    except:
         pass
 
     return {"data": uniq[:50]}
+
 
 
 
