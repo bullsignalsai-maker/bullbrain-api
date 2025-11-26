@@ -2509,6 +2509,38 @@ def build_watchlist_item(symbol: str):
         "sentimentSummary": summary,
     }
 
+# ---------------------------------------------------------------
+# BATCH PRICE FETCH — /prices?symbols=AAPL,TSLA,NVDA
+# ---------------------------------------------------------------
+@app.get("/prices")
+def get_batch_prices(symbols: str):
+    """
+    Return lightweight price + prevClose for multiple tickers.
+    Example:
+    /prices?symbols=AAPL,TSLA,NVDA
+    """
+    try:
+        tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    except:
+        return {"error": "Invalid symbols list"}
+
+    output = {}
+
+    for sym in tickers:
+        try:
+            q = backend_fetch_quote(sym)  # reusing your fast quote fetcher
+            if not q:
+                continue
+
+            output[sym] = {
+                "price": q.get("price") or q.get("c") or None,
+                "prevClose": q.get("prevClose") or q.get("pc") or None,
+            }
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}")
+
+    return output
+
 
 @app.get("/search")
 def search(q: str, limit: int = 5):
