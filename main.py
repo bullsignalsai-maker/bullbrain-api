@@ -2513,33 +2513,43 @@ def build_watchlist_item(symbol: str):
 # BATCH PRICE FETCH — /prices?symbols=AAPL,TSLA,NVDA
 # ---------------------------------------------------------------
 @app.get("/prices")
-def get_batch_prices(symbols: str):
-    """
-    Return lightweight price + prevClose for multiple tickers.
-    Example:
-    /prices?symbols=AAPL,TSLA,NVDA
-    """
-    try:
-        tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    except:
-        return {"error": "Invalid symbols list"}
+def get_prices(symbols: str):
+    symbols_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    result = {}
 
-    output = {}
+    for sym in symbols_list:
+        price = None
+        prevClose = None
 
-    for sym in tickers:
+        # ---- Finnhub first attempt ----
         try:
-            q = backend_fetch_quote(sym)  # reusing your fast quote fetcher
-            if not q:
-                continue
+            if FINNHUB_KEY:
+                q_url = f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_KEY}"
+                q = requests.get(q_url, timeout=5).json()
+                price = q.get("c")
+                prevClose = q.get("pc")
+        except:
+            pass
 
-            output[sym] = {
-                "price": q.get("price") or q.get("c") or None,
-                "prevClose": q.get("prevClose") or q.get("pc") or None,
-            }
-        except Exception as e:
-            print(f"Error fetching {sym}: {e}")
+        # ---- FMP fallback (RELIABLE) ----
+        if price is None:
+            try:
+                if FMP_API_KEY:
+                    fmp_url = f"https://financialmodelingprep.com/api/v3/quote/{sym}?apikey={FMP_API_KEY}"
+                    fmp = requests.get(fmp_url, timeout=5).json()
+                    if isinstance(fmp, list) and len(fmp) > 0:
+                        price = fmp[0].get("price") or price
+                        prevClose = fmp[0].get("previousClose") or prevClose
+            except:
+                pass
 
-    return output
+        result[sym] = {
+            "price": price,
+            "prevClose": prevClose,
+        }
+
+    return result
+
 
 
 @app.get("/search")
