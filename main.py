@@ -2687,3 +2687,99 @@ def force_refresh_grok(symbol: str):
         "removedKeys": removed,
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
+
+# ---------------------------------------------------------------
+# AI INSIGHT (DYNAMIC) — BullBrain v2 Output Summarizer
+# ---------------------------------------------------------------
+@app.get("/portfolio-ai-insight/{symbol}")
+def portfolio-ai-insight(symbol: str):
+    """
+    Dynamic, fast BullBrain v2 insight generator.
+    Converts raw model output into human-friendly summary.
+    Used in Portfolio -> AI Insights section.
+    """
+
+    symbol = symbol.upper()
+
+    try:
+        # 1) Fetch candles (your existing helper)
+        candles = fetch_daily_candles(symbol)
+        if not candles or len(candles) < 30:
+            return {"error": "Insufficient candle data"}
+
+        # 2) Compute 48 features
+        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+        if features_vec is None:
+            return {"error": "Feature computation failed"}
+
+        # 3) Model inference
+        out = bullbrain_infer(features_vec)
+        prob_up = float(out.get("probability_up") or 0.5)
+        signal = out.get("signal") or "NEUTRAL"
+
+        # -------------------------------
+        # 4) Convert into meaningful values
+        # -------------------------------
+
+        # Trend
+        if signal == "BUY":
+            trend = "Bullish"
+        elif signal == "SELL":
+            trend = "Bearish"
+        else:
+            trend = "Neutral"
+
+        # Expected move scale (based on volatility)
+        vol = feature_dict.get("volatility_5d", 0.02)
+        expected_move = round(vol * (prob_up * 2 - 1), 4)  # -1 to +1 scale → move estimate
+        expected_move_pct = f"{expected_move * 100:+.2f}%"
+
+        # Confidence = convert probability to %
+        confidence_pct = f"{prob_up * 100:.0f}%"
+
+        # Risk (volatility scale)
+        if vol < 0.015:
+            risk = "Low"
+        elif vol < 0.035:
+            risk = "Medium"
+        else:
+            risk = "High"
+
+        # Pattern detection (simple but effective)
+        sma5 = feature_dict.get("sma5", 0)
+        sma20 = feature_dict.get("sma20", 0)
+
+        if sma5 > sma20:
+            pattern = "Short-term Momentum"
+        elif sma5 < sma20:
+            pattern = "Reversal Risk"
+        else:
+            pattern = "Sideways Consolidation"
+
+        # -------------------------------
+        # 5) Build human-readable summary
+        # -------------------------------
+        message = (
+            f"AI View Today:\n"
+            f"{symbol} is showing a {trend} trend.\n"
+            f"Expected move: {expected_move_pct}.\n"
+            f"Risk level: {risk}.\n"
+            f"AI confidence: {confidence_pct}.\n"
+            f"Pattern detected: {pattern}.\n"
+            f"(BullBrain v2)"
+        )
+
+        return {
+            "symbol": symbol,
+            "trend": trend,
+            "expected_move": expected_move_pct,
+            "risk": risk,
+            "confidence": confidence_pct,
+            "pattern": pattern,
+            "model": "BullBrain v2",
+            "message": message,
+        }
+
+    except Exception as e:
+        print("AI insight error:", e)
+        return {"error": "AI insight unavailable"}
