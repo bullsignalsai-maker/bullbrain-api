@@ -2688,57 +2688,44 @@ def force_refresh_grok(symbol: str):
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
 
-# ---------------------------------------------------------------
-# AI INSIGHT (DYNAMIC) — BullBrain v2 Output Summarizer
-# ---------------------------------------------------------------
+
 @app.get("/portfolio-ai-insight/{symbol}")
 def portfolio_ai_insight(symbol: str):
-    """
-    Dynamic, fast BullBrain v2 insight generator.
-    Converts raw model output into human-friendly summary.
-    Used in Portfolio -> AI Insights section.
-    """
-    # -------------------------
-    # DEBUG LOGS (TEMPORARY)
-    # -------------------------
-    print("🔍 AI Insight DEBUG ----")
-    print("Incoming symbol:", symbol)
-
-    try:
-        print("POLYGON_KEY exists?:", POLYGON_KEY is not None)
-        print("POLYGON_KEY (first 6 chars):", str(POLYGON_KEY)[:6] if POLYGON_KEY else "NONE")
-    except:
-        print("Error printing polygon key")
-
-    # Test candle count
-    test_candles = fetch_daily_candles(symbol.upper())
-    if test_candles is None:
-        print("Candle fetch returned: None ❌")
-    else:
-        print("Candle count:", len(test_candles))
-    print("-------------------------")
+    """BullBrain v2 dynamic AI insight generator."""
 
     symbol = symbol.upper()
+    print("\n🔍 AI Insight DEBUG ----")
+    print("Incoming symbol:", symbol)
+    print("POLYGON_KEY exists?:", bool(POLYGON_KEY))
+    if POLYGON_KEY:
+        print("POLYGON_KEY (first 6 chars):", POLYGON_KEY[:6])
 
     try:
-        # 1) Fetch candles (your existing helper)
+        # 1) Get candles using your working function
         candles = fetch_daily_candles(symbol)
-        if not candles or len(candles) < 30:
+        if not candles:
+            print("❌ fetch_daily_candles returned None")
+            return {"error": "Candle fetch failed"}
+
+        candle_count = len(candles["close"])
+        print("Candle count:", candle_count)
+
+        if candle_count < 60:
+            print("❌ Not enough candle data for AI")
             return {"error": "Insufficient candle data"}
 
         # 2) Compute 48 features
         features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
         if features_vec is None:
+            print("❌ Feature computation failed")
             return {"error": "Feature computation failed"}
 
-        # 3) Model inference
+        # 3) Infer with BullBrain v2
         out = bullbrain_infer(features_vec)
         prob_up = float(out.get("probability_up") or 0.5)
         signal = out.get("signal") or "NEUTRAL"
 
-        # -------------------------------
-        # 4) Convert into meaningful values
-        # -------------------------------
+
 
         # Trend
         if signal == "BUY":
@@ -2748,9 +2735,9 @@ def portfolio_ai_insight(symbol: str):
         else:
             trend = "Neutral"
 
-        # Expected move scale (based on volatility)
+        # Expected move
         vol = feature_dict.get("volatility_5d", 0.02)
-        expected_move = round(vol * (prob_up * 2 - 1), 4)  
+        expected_move = round(vol * (prob_up * 2 - 1), 4)
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
         # Confidence
@@ -2764,7 +2751,7 @@ def portfolio_ai_insight(symbol: str):
         else:
             risk = "High"
 
-        # Pattern detection
+        # Pattern
         sma5 = feature_dict.get("sma5", 0)
         sma20 = feature_dict.get("sma20", 0)
 
@@ -2775,9 +2762,7 @@ def portfolio_ai_insight(symbol: str):
         else:
             pattern = "Sideways Consolidation"
 
-        # -------------------------------
-        # 5) Build human-readable summary
-        # -------------------------------
+        # Summary
         message = (
             f"AI View Today:\n"
             f"{symbol} is showing a {trend} trend.\n"
@@ -2800,5 +2785,6 @@ def portfolio_ai_insight(symbol: str):
         }
 
     except Exception as e:
-        print("AI insight error:", e)
+        print("❌ AI insight error:", e)
         return {"error": "AI insight unavailable"}
+
