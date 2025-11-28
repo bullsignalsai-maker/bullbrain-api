@@ -2687,12 +2687,12 @@ def force_refresh_grok(symbol: str):
         "removedKeys": removed,
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
-
+    
 # ---------------------------------------------------------------
 # AI INSIGHT (DYNAMIC) — BullBrain v2 Output Summarizer
 # ---------------------------------------------------------------
 @app.get("/portfolio-ai-insight/{symbol}")
-def portfolio-ai-insight(symbol: str):
+def portfolio_ai_insight(symbol: str):
     """
     Dynamic, fast BullBrain v2 insight generator.
     Converts raw model output into human-friendly summary.
@@ -2731,13 +2731,13 @@ def portfolio-ai-insight(symbol: str):
 
         # Expected move scale (based on volatility)
         vol = feature_dict.get("volatility_5d", 0.02)
-        expected_move = round(vol * (prob_up * 2 - 1), 4)  # -1 to +1 scale → move estimate
+        expected_move = round(vol * (prob_up * 2 - 1), 4)  
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
-        # Confidence = convert probability to %
+        # Confidence
         confidence_pct = f"{prob_up * 100:.0f}%"
 
-        # Risk (volatility scale)
+        # Risk
         if vol < 0.015:
             risk = "Low"
         elif vol < 0.035:
@@ -2745,7 +2745,7 @@ def portfolio-ai-insight(symbol: str):
         else:
             risk = "High"
 
-        # Pattern detection (simple but effective)
+        # Pattern detection
         sma5 = feature_dict.get("sma5", 0)
         sma20 = feature_dict.get("sma20", 0)
 
