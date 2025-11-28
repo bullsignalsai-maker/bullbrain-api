@@ -2687,7 +2687,7 @@ def force_refresh_grok(symbol: str):
         "removedKeys": removed,
         "message": "Grok cache cleared — next request will fetch fresh data.",
     }
-    
+
 # ---------------------------------------------------------------
 # AI INSIGHT (DYNAMIC) — BullBrain v2 Output Summarizer
 # ---------------------------------------------------------------
@@ -2698,6 +2698,25 @@ def portfolio_ai_insight(symbol: str):
     Converts raw model output into human-friendly summary.
     Used in Portfolio -> AI Insights section.
     """
+    # -------------------------
+    # DEBUG LOGS (TEMPORARY)
+    # -------------------------
+    print("🔍 AI Insight DEBUG ----")
+    print("Incoming symbol:", symbol)
+
+    try:
+        print("POLYGON_KEY exists?:", POLYGON_KEY is not None)
+        print("POLYGON_KEY (first 6 chars):", str(POLYGON_KEY)[:6] if POLYGON_KEY else "NONE")
+    except:
+        print("Error printing polygon key")
+
+    # Test candle count
+    test_candles = fetch_daily_candles(symbol.upper())
+    if test_candles is None:
+        print("Candle fetch returned: None ❌")
+    else:
+        print("Candle count:", len(test_candles))
+    print("-------------------------")
 
     symbol = symbol.upper()
 
