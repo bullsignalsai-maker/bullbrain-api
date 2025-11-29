@@ -2670,80 +2670,56 @@ def watchlist_batch(symbols: str = Query(..., description="Comma-separated ticke
         return {"error": str(e)}
 
 
-# --------------------------------------------------------------------
-# FORCE CLEAR GROK CACHE (DEBUG)
-# --------------------------------------------------------------------
-@app.get("/force-refresh-grok/{symbol}")
-def force_refresh_grok(symbol: str):
-    key_stock = f"grok_stock_{symbol.upper()}"
-    key_watch = f"watch_grok_v2_{symbol.upper()}"
-    removed = []
-    for k in (key_stock, key_watch):
-        if k in cache:
-            del cache[k]
-            removed.append(k)
-    return {
-        "symbol": symbol.upper(),
-        "removedKeys": removed,
-        "message": "Grok cache cleared — next request will fetch fresh data.",
-    }
-
-
+# ---------------------------------------------------------------
+# AI INSIGHT (SMART PORTFOLIO-AWARE) — BullBrain v2
+# ---------------------------------------------------------------
 @app.get("/portfolio-ai-insight/{symbol}")
-def portfolio_ai_insight(symbol: str):
-    """BullBrain v2 dynamic AI insight generator."""
-
-    symbol = symbol.upper()
-    print("\n🔍 AI Insight DEBUG ----")
-    print("Incoming symbol:", symbol)
-    print("POLYGON_KEY exists?:", bool(POLYGON_KEY))
-    if POLYGON_KEY:
-        print("POLYGON_KEY (first 6 chars):", POLYGON_KEY[:6])
+def portfolio_ai_insight(
+    symbol: str,
+    allocation_pct: float = 0.0,
+    gain_pct: float = 0.0,
+    position_value: float = 0.0,
+    portfolio_total_value: float = 0.0,
+):
+    """
+    Smart AI Insight:
+    - Uses BullBrain v2 model inference
+    - Uses portfolio allocation + gain data
+    - Produces trend, expected move, risk, pattern
+    - Includes 5-day bullish probability
+    - Includes AI rebalancing suggestion
+    """
 
     try:
-        # 1) Get candles using your working function
+        symbol = symbol.upper()
+
+        # -------- FETCH CANDLES & FEATURES --------
         candles = fetch_daily_candles(symbol)
-        if not candles:
-            print("❌ fetch_daily_candles returned None")
-            return {"error": "Candle fetch failed"}
+        if not candles or len(candles["close"]) < 60:
+            return {"error": "Insufficient data"}
 
-        candle_count = len(candles["close"])
-        print("Candle count:", candle_count)
-
-        if candle_count < 60:
-            print("❌ Not enough candle data for AI")
-            return {"error": "Insufficient candle data"}
-
-        # 2) Compute 48 features
         features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-        if features_vec is None:
-            print("❌ Feature computation failed")
-            return {"error": "Feature computation failed"}
-
-        # 3) Infer with BullBrain v2
         out = bullbrain_infer(features_vec)
+
         prob_up = float(out.get("probability_up") or 0.5)
         signal = out.get("signal") or "NEUTRAL"
 
+        # -------- TREND --------
+        trend = (
+            "Bullish" if signal == "BUY"
+            else "Bearish" if signal == "SELL"
+            else "Neutral"
+        )
 
-
-        # Trend
-        if signal == "BUY":
-            trend = "Bullish"
-        elif signal == "SELL":
-            trend = "Bearish"
-        else:
-            trend = "Neutral"
-
-        # Expected move
+        # -------- EXPECTED MOVE --------
         vol = feature_dict.get("volatility_5d", 0.02)
-        expected_move = round(vol * (prob_up * 2 - 1), 4)
+        expected_move = (prob_up * 2 - 1) * vol
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
-        # Confidence
+        # -------- CONFIDENCE --------
         confidence_pct = f"{prob_up * 100:.0f}%"
 
-        # Risk
+        # -------- RISK --------
         if vol < 0.015:
             risk = "Low"
         elif vol < 0.035:
@@ -2751,25 +2727,58 @@ def portfolio_ai_insight(symbol: str):
         else:
             risk = "High"
 
-        # Pattern
+        # -------- PATTERN --------
         sma5 = feature_dict.get("sma5", 0)
         sma20 = feature_dict.get("sma20", 0)
+        pattern = (
+            "Momentum" if sma5 > sma20
+            else "Reversal Risk" if sma5 < sma20
+            else "Consolidation"
+        )
 
-        if sma5 > sma20:
-            pattern = "Short-term Momentum"
-        elif sma5 < sma20:
-            pattern = "Reversal Risk"
-        else:
-            pattern = "Sideways Consolidation"
+        # -------- 5-DAY TREND PROBABILITY --------
+        five_day_prob = f"{int(prob_up * 100)}% Bullish"
 
-        # Summary
+        # -------------------------------------------------------
+        # AI REBALANCING LOGIC (super lightweight)
+        # -------------------------------------------------------
+        suggestion = "No suggestion."
+
+        if portfolio_total_value > 0 and position_value > 0:
+            # Ideal weighting based purely on confidence
+            ideal_pct = prob_up * 12  # scale: 0–12%
+
+            delta = allocation_pct - ideal_pct
+
+            if delta < -1.5:
+                # underweight
+                needed = abs(delta) / 100 * portfolio_total_value
+                suggestion = (
+                    f"{symbol} is slightly underweight relative to its momentum. "
+                    f"Consider increasing exposure by {abs(delta):.1f}% "
+                    f"(~${needed:.0f})."
+                )
+            elif delta > 1.5:
+                # overweight
+                trim = abs(delta) / 100 * portfolio_total_value
+                suggestion = (
+                    f"{symbol} is overweight compared to its trend strength. "
+                    f"Consider trimming {delta:.1f}% (~${trim:.0f})."
+                )
+            else:
+                suggestion = (
+                    f"Your position in {symbol} is well balanced for the current trend."
+                )
+
+        # -------- MESSAGE --------
         message = (
             f"AI View Today:\n"
-            f"{symbol} is showing a {trend} trend.\n"
-            f"Expected move: {expected_move_pct}.\n"
-            f"Risk level: {risk}.\n"
-            f"AI confidence: {confidence_pct}.\n"
-            f"Pattern detected: {pattern}.\n"
+            f"{symbol} trend: {trend}\n"
+            f"Expected move: {expected_move_pct}\n"
+            f"Risk: {risk}\n"
+            f"Confidence: {confidence_pct}\n"
+            f"Pattern: {pattern}\n"
+            f"5-Day Bullish Probability: {five_day_prob}\n"
             f"(BullBrain v2)"
         )
 
@@ -2780,11 +2789,13 @@ def portfolio_ai_insight(symbol: str):
             "risk": risk,
             "confidence": confidence_pct,
             "pattern": pattern,
-            "model": "BullBrain v2",
+            "five_day_prob": five_day_prob,
+            "rebalancing": suggestion,
             "message": message,
         }
 
     except Exception as e:
-        print("❌ AI insight error:", e)
+        print("AI insight error:", e)
         return {"error": "AI insight unavailable"}
+
 
