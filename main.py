@@ -2671,55 +2671,91 @@ def watchlist_batch(symbols: str = Query(..., description="Comma-separated ticke
 
 
 # ---------------------------------------------------------------
-# AI INSIGHT (SMART PORTFOLIO-AWARE) — BullBrain v2
+# AI INSIGHT (DYNAMIC) — BullBrain v2 + Rebalancing + 5-Day Trend
 # ---------------------------------------------------------------
+
+from functools import lru_cache
+import time
+
+# 15-min cache (900 sec)
+AI_CACHE = {}  # key = (symbol, allocation, gainPct, posValue, totalValue)
+
+
+def set_cache(key, data):
+    AI_CACHE[key] = {
+        "data": data,
+        "ts": time.time()
+    }
+
+
+def get_cache(key):
+    item = AI_CACHE.get(key)
+    if not item:
+        return None
+    if time.time() - item["ts"] > 900:  # 15 min expiry
+        return None
+    return item["data"]
+
+
 @app.get("/portfolio-ai-insight/{symbol}")
 def portfolio_ai_insight(
     symbol: str,
     allocation_pct: float = 0.0,
     gain_pct: float = 0.0,
     position_value: float = 0.0,
-    portfolio_total_value: float = 0.0,
+    portfolio_total_value: float = 0.0
 ):
     """
-    Smart AI Insight:
-    - Uses BullBrain v2 model inference
-    - Uses portfolio allocation + gain data
-    - Produces trend, expected move, risk, pattern
-    - Includes 5-day bullish probability
-    - Includes AI rebalancing suggestion
+    Dynamic BullBrain v2 insight + 5-day trend probability + rebalancing suggestions.
+    Lightweight, cached, and fast.
     """
 
+    symbol = symbol.upper()
+
+    # ------- CACHE CHECK -------
+    cache_key = (symbol, round(allocation_pct, 2), round(gain_pct, 2),
+                 round(position_value, 2), round(portfolio_total_value, 2))
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
     try:
-        symbol = symbol.upper()
-
-        # -------- FETCH CANDLES & FEATURES --------
+        # 1) Fetch candles
         candles = fetch_daily_candles(symbol)
-        if not candles or len(candles["close"]) < 60:
-            return {"error": "Insufficient data"}
+        if not candles:
+            return {"error": "Insufficient candle data"}
 
+        # 2) Compute 48 features
         features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-        out = bullbrain_infer(features_vec)
+        if features_vec is None:
+            return {"error": "Feature computation failed"}
 
+        # 3) Model inference
+        out = bullbrain_infer(features_vec)
         prob_up = float(out.get("probability_up") or 0.5)
         signal = out.get("signal") or "NEUTRAL"
 
-        # -------- TREND --------
-        trend = (
-            "Bullish" if signal == "BUY"
-            else "Bearish" if signal == "SELL"
-            else "Neutral"
-        )
+        # -------------------------------
+        # TREND
+        # -------------------------------
+        if signal == "BUY":
+            trend = "Bullish"
+        elif signal == "SELL":
+            trend = "Bearish"
+        else:
+            trend = "Neutral"
 
-        # -------- EXPECTED MOVE --------
+        # ------------------------------------
+        # EXPECTED MOVE (VOL * probability)
+        # ------------------------------------
         vol = feature_dict.get("volatility_5d", 0.02)
-        expected_move = (prob_up * 2 - 1) * vol
+        expected_move = round(vol * (prob_up * 2 - 1), 4)
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
-        # -------- CONFIDENCE --------
+        # CONFIDENCE
         confidence_pct = f"{prob_up * 100:.0f}%"
 
-        # -------- RISK --------
+        # RISK
         if vol < 0.015:
             risk = "Low"
         elif vol < 0.035:
@@ -2727,50 +2763,52 @@ def portfolio_ai_insight(
         else:
             risk = "High"
 
-        # -------- PATTERN --------
+        # PATTERN
         sma5 = feature_dict.get("sma5", 0)
         sma20 = feature_dict.get("sma20", 0)
-        pattern = (
-            "Momentum" if sma5 > sma20
-            else "Reversal Risk" if sma5 < sma20
-            else "Consolidation"
-        )
+        if sma5 > sma20:
+            pattern = "Short-term Momentum"
+        elif sma5 < sma20:
+            pattern = "Reversal Risk"
+        else:
+            pattern = "Sideways Consolidation"
 
-        # -------- 5-DAY TREND PROBABILITY --------
+        # ------------------------------------
+        # NEW: 5-DAY TREND PROBABILITY
+        # ------------------------------------
         five_day_prob = f"{int(prob_up * 100)}% Bullish"
 
-        # -------------------------------------------------------
-        # AI REBALANCING LOGIC (super lightweight)
-        # -------------------------------------------------------
-        suggestion = "No suggestion."
+        # ------------------------------------
+        # NEW: REBALANCING SUGGESTION
+        # ------------------------------------
+        suggestion = "No rebalancing needed."
 
-        if portfolio_total_value > 0 and position_value > 0:
-            # Ideal weighting based purely on confidence
-            ideal_pct = prob_up * 12  # scale: 0–12%
+        if portfolio_total_value > 0 and last_close > 0:
+            ideal_pct = prob_up  # If model is 78% bullish, ideal weighting ~78%/100
 
-            delta = allocation_pct - ideal_pct
+            diff = (allocation_pct / 100) - prob_up
+            diff_pct = round(abs(diff) * 100, 2)
 
-            if delta < -1.5:
-                # underweight
-                needed = abs(delta) / 100 * portfolio_total_value
+            # Dollar difference
+            dollar_diff = abs(diff) * portfolio_total_value
+
+            # Shares difference
+            shares_diff = round(dollar_diff / last_close)
+
+            if diff > 0.02:  # overweight
                 suggestion = (
-                    f"{symbol} is slightly underweight relative to its momentum. "
-                    f"Consider increasing exposure by {abs(delta):.1f}% "
-                    f"(~${needed:.0f})."
+                    f"Trim ~{shares_diff} shares (≈{diff_pct}% ≈ ${dollar_diff:,.0f}). "
+                    f"This reduces {symbol} to an optimal allocation."
                 )
-            elif delta > 1.5:
-                # overweight
-                trim = abs(delta) / 100 * portfolio_total_value
+            elif diff < -0.02:  # underweight
                 suggestion = (
-                    f"{symbol} is overweight compared to its trend strength. "
-                    f"Consider trimming {delta:.1f}% (~${trim:.0f})."
-                )
-            else:
-                suggestion = (
-                    f"Your position in {symbol} is well balanced for the current trend."
+                    f"Add ~{shares_diff} shares (≈{diff_pct}% ≈ ${dollar_diff:,.0f}). "
+                    f"{symbol} shows improving momentum — consider increasing exposure."
                 )
 
-        # -------- MESSAGE --------
+        # ------------------------------------
+        # Construct Human Message
+        # ------------------------------------
         message = (
             f"AI View Today:\n"
             f"{symbol} trend: {trend}\n"
@@ -2782,7 +2820,7 @@ def portfolio_ai_insight(
             f"(BullBrain v2)"
         )
 
-        return {
+        result = {
             "symbol": symbol,
             "trend": trend,
             "expected_move": expected_move_pct,
@@ -2791,11 +2829,15 @@ def portfolio_ai_insight(
             "pattern": pattern,
             "five_day_prob": five_day_prob,
             "rebalancing": suggestion,
+            "last_price": last_close,
             "message": message,
         }
+
+        # SAVE TO CACHE
+        set_cache(cache_key, result)
+
+        return result
 
     except Exception as e:
         print("AI insight error:", e)
         return {"error": "AI insight unavailable"}
-
-
