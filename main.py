@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import requests
@@ -19,14 +19,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Load SP500 → Sector Map
-SECTOR_MAP_PATH = os.path.join(os.path.dirname(__file__), "data", "sector_map.json")
-
-with open(SECTOR_MAP_PATH, "r") as f:
-    SECTOR_MAP = json.load(f)
-
-
 
 # --------------------------------------------------------------------
 # ENV + CONSTANTS
@@ -98,61 +90,6 @@ BULLBRAIN_FEATURES = [
 
 bullbrain_model: xgb.Booster | None = None
 cache: dict[str, dict] = {}
-
-
-def compute_market_mood(prob_list):
-    if not prob_list:
-        return "Neutral (50%)"
-
-    avg = sum(prob_list) / len(prob_list)
-    pct = round(avg * 100)
-
-    if avg >= 0.60:
-        return f"Bullish ({pct}%)"
-    if avg <= 0.40:
-        return f"Bearish ({pct}%)"
-    return f"Neutral ({pct}%)"
-
-
-def build_sector_strength(results):
-    sector_scores = {}
-
-    for r in results:
-        sym = r["symbol"]
-        prob = r.get("hybridProbUp", 0.5)
-
-        # Lookup sector (default = Other)
-        sector = SECTOR_MAP.get(sym, "Other")
-
-        if sector not in sector_scores:
-            sector_scores[sector] = []
-        sector_scores[sector].append(prob)
-
-    final = []
-
-    for sector, vals in sector_scores.items():
-        avg = sum(vals) / len(vals)
-        final.append({
-            "sector": sector,
-            "mood": round(avg * 100, 2)
-        })
-
-    # Highest momentum sectors first
-    final.sort(key=lambda x: x["mood"], reverse=True)
-
-    return final
-
-def hybrid_probability(model_prob, price_change):
-    if price_change is None:
-        return model_prob
-
-    # Live influence capped at ±0.20 weight
-    live_adj = (price_change / 100) * 0.20
-    hybrid = model_prob + live_adj
-
-    # Keep within 1–99%
-    return max(0.01, min(0.99, hybrid))
-
 
 # --------------------------------------------------------------------
 # UTILS
@@ -2897,7 +2834,7 @@ def portfolio_ai_insight(
         }
 
         # SAVE TO CACHE
-        set_cache(cache_key, result)        
+        set_cache(cache_key, result)
 
         return result
 
@@ -2906,165 +2843,332 @@ def portfolio_ai_insight(
         return {"error": "AI insight unavailable"}
 
 
-# ------------------------------------
-        # build_smartpattern_block
-# ------------------------------------ 
-def build_smartpattern_block(symbol):
+
+# ---------------------------------------------------------------
+# BullBuddy — Portfolio Chat Backend (no external AI calls)
+# ---------------------------------------------------------------
+
+def _fmt_dollar(x: float) -> str:
     try:
-        candles = fetch_daily_candles(symbol)
-        if not candles:
-            return {
-                "symbol": symbol,
-                "pattern": "No pattern",
-                "summary": "Not enough data to compute pattern.",
-                "win_rate": None,
-            }
+        return f"{x:,.2f}"
+    except Exception:
+        return "0.00"
 
-        closes = candles.get("close") or []
-        if len(closes) < 50:
-            return {
-                "symbol": symbol,
-                "pattern": "No pattern",
-                "summary": "Not enough data to compute pattern.",
-                "win_rate": None,
-            }
-
-        # Use last 5 closing prices for a simple slope
-        recent5 = closes[-5:]
-        slope = (recent5[-1] - recent5[0]) / 5.0
-
-        if slope > 0:
-            pattern = "Bullish Momentum"
-            summary = f"{symbol} shows upward short-term momentum."
-            win_rate = 0.64
-        elif slope < 0:
-            pattern = "Bearish Momentum"
-            summary = f"{symbol} shows downward short-term weakness."
-            win_rate = 0.41
-        else:
-            pattern = "Neutral Compression"
-            summary = f"{symbol} is consolidating."
-            win_rate = 0.52
-
-        return {
-            "symbol": symbol,
-            "pattern": pattern,
-            "summary": summary,
-            "win_rate": win_rate,
-        }
-
-    except Exception as e:
-        return {
-            "symbol": symbol,
-            "pattern": "Error",
-            "summary": str(e),
-            "win_rate": None,
-        }
-
-
-# ------------------------------------
-        # home-summary endpoint
-# ------------------------------------
-
-@app.get("/home-summary")
-def home_summary():
+def _fmt_pct(x: float) -> str:
     try:
-        # Choose High-Liquidity SP500 Universe
-        # Can expand later or load dynamically
-        universe = [
-            "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META",
-            "TSLA", "JPM", "XOM", "UNH"
-        ]
+        return f"{x:+.2f}%"
+    except Exception:
+        return "+0.00%"
 
-        results = []
-
-        for sym in universe:
-
-            # ------------------------------------
-            # 1. LIVE QUOTE
-            # ------------------------------------
-            quote = backend_fetch_quote(sym)
-            price = quote.get("current") or quote.get("price") or 0.0
-            change_pct = quote.get("changePct", 0.0)
-
-            # ------------------------------------
-            # 2. DAILY CANDLES
-            # ------------------------------------
-            candles = fetch_daily_candles(sym)
-            if not candles:
+def _normalize_positions(raw_positions):
+    """Ensure each position dict has safe numeric fields."""
+    positions = []
+    for item in (raw_positions or []):
+        try:
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol:
                 continue
+            allocation = float(item.get("allocation_pct") or 0.0)
+            gain_pct = float(item.get("gain_pct") or 0.0)
+            today_gain = float(item.get("today_gain") or 0.0)
+            curr_value = float(item.get("curr_value") or 0.0)
 
-            # ------------------------------------
-            # 3. Feature Engineering (48 Features)
-            # ------------------------------------
-            feature_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+            pos = {
+                "symbol": symbol,
+                "allocation_pct": allocation,
+                "gain_pct": gain_pct,
+                "today_gain": today_gain,
+                "curr_value": curr_value,
+                # optional fields (if you want to pass later)
+                "trend": item.get("trend"),
+                "prob_bull_5d": item.get("prob_bull_5d"),
+            }
+            positions.append(pos)
+        except Exception:
+            # Ignore malformed item and continue
+            continue
+    return positions
 
-            # ------------------------------------
-            # 4. Model Inference
-            # ------------------------------------
-            infer = bullbrain_infer(feature_vec)
-            model_prob = float(infer.get("probability_up") or 0.5)
-            model_signal = infer.get("signal") or "HOLD"
+def _compute_concentration(positions):
+    """Return highest allocation symbol + pct and a concentration label."""
+    if not positions:
+        return None, 0.0, "Unknown"
 
-            # ------------------------------------
-            # 5. Hybrid Probability
-            # ------------------------------------
-            hybrid_prob = hybrid_probability(model_prob, change_pct)
+    top = max(positions, key=lambda p: p.get("allocation_pct", 0.0))
+    pct = top.get("allocation_pct", 0.0)
 
-            # Push record
-            results.append({
-                "symbol": sym,
-                "price": price,
-                "changePct": change_pct,
-                "modelProbUp": model_prob,
-                "hybridProbUp": hybrid_prob,
-                "hybridSignal": model_signal,
-                "features": feature_dict,
-                "sector": SECTOR_MAP.get(sym, "Other")
-            })
+    if pct > 40:
+        label = "High"
+    elif pct > 20:
+        label = "Moderate"
+    else:
+        label = "Balanced"
 
-        # ----------------------------------------------------------
-        # TOP 3 AI PICKS
-        # ----------------------------------------------------------
-        top_ai = sorted(results, key=lambda x: x["hybridProbUp"], reverse=True)[:3]
+    return top["symbol"], pct, label
 
-        # ----------------------------------------------------------
-        # SMART PATTERN (best symbol)
-        # ----------------------------------------------------------
-        best_symbol = top_ai[0]["symbol"]
-        smart_pattern = build_smartpattern_block(best_symbol)
+def _top_gainers_losers(positions, n=3):
+    """Return top N gainers & losers by gain_pct."""
+    if not positions:
+        return [], []
 
-        # ----------------------------------------------------------
-        # MARKET MOOD
-        # ----------------------------------------------------------
-        prob_list = [r["hybridProbUp"] for r in results]
-        market_mood = compute_market_mood(prob_list)
+    sorted_positions = sorted(
+        positions,
+        key=lambda p: p.get("gain_pct", 0.0),
+        reverse=True,
+    )
+    top = sorted_positions[:n]
+    worst = list(reversed(sorted_positions))[:n]
+    return top, worst
 
-        # ----------------------------------------------------------
-        # SECTOR MOOD (AI Heatmap)
-        # ----------------------------------------------------------
-        sector_mood = build_sector_strength(results)
+def _big_movers_today(positions, n=3):
+    """Top intraday movers by absolute today_gain value."""
+    if not positions:
+        return []
+    sorted_positions = sorted(
+        positions,
+        key=lambda p: abs(p.get("today_gain", 0.0)),
+        reverse=True,
+    )
+    return sorted_positions[:n]
 
-        # ----------------------------------------------------------
-        # AI Market Insight Summary
-        # ----------------------------------------------------------
-        avg_prob = sum(prob_list) / len(prob_list)
-        ai_market_insights = f"AI sees {round(avg_prob*100)}% upside probability across key sectors."
+def _rebalancing_suggestions(positions, total_value):
+    """
+    Simple deterministic rules for rebalancing:
+    - Overweight if allocation > 30%
+    - Underweight if allocation < 5% but gain_pct > 5 (doing well but small)
+    Returns a list of human-readable suggestion strings.
+    """
+    if not positions or total_value <= 0:
+        return []
 
-        # ----------------------------------------------------------
-        # FINAL JSON
-        # ----------------------------------------------------------
+    suggestions = []
+    for p in positions:
+        sym = p["symbol"]
+        alloc = p.get("allocation_pct", 0.0)
+        gain_pct = p.get("gain_pct", 0.0)
+        curr_val = p.get("curr_value", 0.0)
+
+        # 1) Overweight trim suggestion
+        if alloc > 30:
+            # Example: trim back toward 25%
+            target_pct = 25.0
+            excess_pct = alloc - target_pct
+            trim_value = total_value * (excess_pct / 100.0)
+            # approximate shares → caller can later compute shares if desired
+            suggestions.append(
+                f"{sym} looks overweight at {alloc:.1f}% of your portfolio. "
+                f"Consider trimming about {excess_pct:.1f}% (~${_fmt_dollar(trim_value)})."
+            )
+
+        # 2) Underweight but performing well → consider adding
+        elif alloc < 5 and gain_pct > 5:
+            target_pct = 8.0
+            add_pct = target_pct - alloc
+            add_value = total_value * (add_pct / 100.0)
+            suggestions.append(
+                f"{sym} is a small position at {alloc:.1f}% but has gained {_fmt_pct(gain_pct)}. "
+                f"If it matches your conviction, you could consider increasing it by about {add_pct:.1f}% "
+                f"(~${_fmt_dollar(add_value)})."
+            )
+
+    return suggestions
+
+@app.post("/bullbuddy")
+def bullbuddy(portfolio: dict = Body(...)):
+    """
+    BullBuddy — rule-based portfolio 'chatbot'.
+
+    Expected JSON:
+    {
+      "question_id": "overview" | "today" | "risks" | "gainers" | "losers" | "rebalancing" | "bullish" | "weak",
+      "total_value": 63867.2,
+      "total_gain_pct": 14.2,
+      "today_gain_total": 235.7,
+      "positions": [
+        {
+          "symbol": "TSLA",
+          "allocation_pct": 23.4,
+          "gain_pct": 18.2,
+          "today_gain": 125.4,
+          "curr_value": 14987.2
+        },
+        ...
+      ]
+    }
+    """
+
+    try:
+        question_id = (portfolio.get("question_id") or "").lower().strip()
+        total_value = float(portfolio.get("total_value") or 0.0)
+        total_gain_pct = float(portfolio.get("total_gain_pct") or 0.0)
+        today_gain_total = float(portfolio.get("today_gain_total") or 0.0)
+        positions = _normalize_positions(portfolio.get("positions") or [])
+
+        # Basic metrics
+        num_positions = len(positions)
+        top_symbol, top_pct, concentration_label = _compute_concentration(positions)
+        top_gainers, top_losers = _top_gainers_losers(positions)
+        movers_today = _big_movers_today(positions)
+        rebal_suggestions = _rebalancing_suggestions(positions, total_value)
+
+        # Generic strings we will reuse
+        direction_total = "up" if total_gain_pct >= 0 else "down"
+        direction_today = "up" if today_gain_total >= 0 else "down"
+
+        tv_str = _fmt_dollar(total_value)
+        tg_str = _fmt_pct(total_gain_pct)
+        td_str = _fmt_dollar(abs(today_gain_total))
+
+        # Helper to format top 2 positions list
+        def _fmt_pos_list(lst):
+            if not lst:
+                return "none"
+            names = []
+            for p in lst[:2]:
+                names.append(
+                    f"{p['symbol']} ({_fmt_pct(p.get('gain_pct', 0.0))})"
+                )
+            return ", ".join(names)
+
+        # Default answer (overview-style)
+        answer = (
+            f"Your portfolio is currently worth ${tv_str} and is {direction_total} {tg_str} overall. "
+            f"Today you are {direction_today} ${td_str}. "
+            f"You hold {num_positions} positions. "
+            f"Your largest position is {top_symbol or 'N/A'} at {top_pct:.1f}% of the portfolio, "
+            f"which gives you a {concentration_label.lower()} level of concentration."
+        )
+
+        # Specialized answers based on question_id
+        if question_id in ("overview", ""):
+            # Already covered by default answer, but add a bit more
+            answer += (
+                f" The biggest contributors to your gains are {_fmt_pos_list(top_gainers)}, "
+                f"while {_fmt_pos_list(top_losers)} have lagged behind."
+            )
+
+        elif question_id == "today":
+            answer = (
+                f"Today your portfolio is {direction_today} ${td_str}. "
+                f"The largest intraday movers are "
+                f"{_fmt_pos_list(movers_today)}. "
+                f"Overall, your portfolio stands at ${tv_str}, {direction_total} {tg_str} from your cost basis."
+            )
+
+        elif question_id in ("risks", "risk"):
+            answer = (
+                f"Your largest holding is {top_symbol or 'N/A'} at {top_pct:.1f}% of the portfolio, "
+                f"which indicates a {concentration_label.lower()} concentration level. "
+            )
+            if concentration_label == "High":
+                answer += (
+                    "This means a single stock has a strong influence on your overall returns. "
+                    "You may want to review whether this level of exposure matches your risk tolerance."
+                )
+            elif concentration_label == "Moderate":
+                answer += (
+                    "This is a reasonable level of concentration, but it is still worth monitoring "
+                    "to ensure it aligns with your comfort level."
+                )
+            else:
+                answer += (
+                    "Your allocation looks fairly balanced across positions from a concentration standpoint."
+                )
+
+        elif question_id in ("gainers", "winners"):
+            answer = (
+                f"Your strongest performers based on overall gain percentage are "
+                f"{_fmt_pos_list(top_gainers)}. "
+                "These positions have contributed the most to your returns so far."
+            )
+
+        elif question_id in ("losers", "laggards"):
+            answer = (
+                f"The positions dragging your performance the most right now are "
+                f"{_fmt_pos_list(top_losers)}. "
+                "These may warrant a closer look to understand whether the thesis still holds."
+            )
+
+        elif question_id in ("rebalancing", "rebalance", "suggestions"):
+            if not rebal_suggestions:
+                answer = (
+                    "Based on your current allocations and performance, there are no obvious "
+                    "rebalancing flags from a purely quantitative standpoint. "
+                    "Your exposure looks reasonably aligned."
+                )
+            else:
+                # Stitch suggestions into a paragraph
+                answer = "Here are some data-driven rebalancing observations:\n"
+                for s in rebal_suggestions:
+                    answer += f"- {s}\n"
+                answer += (
+                    "These are not buy or sell recommendations, but they highlight where your "
+                    "portfolio is most out of balance relative to simple allocation thresholds."
+                )
+
+        elif question_id in ("bullish", "momentum"):
+            # Positions with positive gain_pct sorted by gain_pct descending
+            bullish = [p for p in positions if p.get("gain_pct", 0.0) > 0]
+            if not bullish:
+                answer = (
+                    "None of your positions are currently showing strong upside based on overall gains. "
+                    "Most of your holdings are flat or down from cost."
+                )
+            else:
+                bullish_sorted = sorted(
+                    bullish, key=lambda p: p.get("gain_pct", 0.0), reverse=True
+                )
+                names = _fmt_pos_list(bullish_sorted)
+                answer = (
+                    f"The clearest upside momentum in your portfolio is in {names}. "
+                    "These positions have moved the furthest above your entry levels so far."
+                )
+
+        elif question_id in ("weak", "underperform", "weakness"):
+            weak = [p for p in positions if p.get("gain_pct", 0.0) < 0]
+            if not weak:
+                answer = (
+                    "None of your positions are showing significant weakness versus your entry cost right now. "
+                    "Your holdings are either flat or up overall."
+                )
+            else:
+                weak_sorted = sorted(
+                    weak, key=lambda p: p.get("gain_pct", 0.0)
+                )
+                names = _fmt_pos_list(weak_sorted)
+                answer = (
+                    f"The main underperformers versus your entry price are {names}. "
+                    "These may be worth monitoring more closely."
+                )
+
+        # Build highlights for UI (can be used now or later)
+        highlights = {
+            "total_value": total_value,
+            "total_gain_pct": total_gain_pct,
+            "today_gain_total": today_gain_total,
+            "num_positions": num_positions,
+            "concentration": {
+                "symbol": top_symbol,
+                "allocation_pct": top_pct,
+                "label": concentration_label,
+            },
+            "top_gainers": top_gainers,
+            "top_losers": top_losers,
+            "movers_today": movers_today,
+            "rebalancing_suggestions": rebal_suggestions,
+        }
+
         return {
-            "status": "success",
-            "version": BULLBRAIN_VERSION,
-            "ai_picks": top_ai,
-            "smart_pattern": smart_pattern,
-            "market_mood": market_mood,
-            "ai_market_insights": ai_market_insights,
-            "sector_mood": sector_mood,
-            "raw": results
+            "question_id": question_id or "overview",
+            "answer": answer,
+            "highlights": highlights,
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        print("BullBuddy error:", e)
+        return {
+            "question_id": portfolio.get("question_id"),
+            "answer": "I couldn't analyze your portfolio right now. Please try again.",
+            "highlights": {},
+        }
 
