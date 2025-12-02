@@ -2912,17 +2912,26 @@ def portfolio_ai_insight(
 def build_smartpattern_block(symbol):
     try:
         candles = fetch_daily_candles(symbol)
-        if not candles or len(candles) < 50:
+        if not candles:
             return {
                 "symbol": symbol,
                 "pattern": "No pattern",
                 "summary": "Not enough data to compute pattern.",
-                "win_rate": None
+                "win_rate": None,
             }
 
-        closes = [c["close"] for c in candles]
+        closes = candles.get("close") or []
+        if len(closes) < 50:
+            return {
+                "symbol": symbol,
+                "pattern": "No pattern",
+                "summary": "Not enough data to compute pattern.",
+                "win_rate": None,
+            }
+
+        # Use last 5 closing prices for a simple slope
         recent5 = closes[-5:]
-        slope = (recent5[-1] - recent5[0]) / 5
+        slope = (recent5[-1] - recent5[0]) / 5.0
 
         if slope > 0:
             pattern = "Bullish Momentum"
@@ -2941,7 +2950,7 @@ def build_smartpattern_block(symbol):
             "symbol": symbol,
             "pattern": pattern,
             "summary": summary,
-            "win_rate": win_rate
+            "win_rate": win_rate,
         }
 
     except Exception as e:
@@ -2949,7 +2958,7 @@ def build_smartpattern_block(symbol):
             "symbol": symbol,
             "pattern": "Error",
             "summary": str(e),
-            "win_rate": None
+            "win_rate": None,
         }
 
 
@@ -2975,8 +2984,8 @@ def home_summary():
             # 1. LIVE QUOTE
             # ------------------------------------
             quote = backend_fetch_quote(sym)
-            price = quote.get("price")
-            change_pct = quote.get("changePct", 0)
+            price = quote.get("current") or quote.get("price") or 0.0
+            change_pct = quote.get("changePct", 0.0)
 
             # ------------------------------------
             # 2. DAILY CANDLES
