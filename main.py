@@ -20,6 +20,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Load SP500 → Sector Map
+SECTOR_MAP_PATH = os.path.join(os.path.dirname(__file__), "data", "sector_map.json")
+
+with open(SECTOR_MAP_PATH, "r") as f:
+    SECTOR_MAP = json.load(f)
+
+
+
 # --------------------------------------------------------------------
 # ENV + CONSTANTS
 # --------------------------------------------------------------------
@@ -90,6 +98,61 @@ BULLBRAIN_FEATURES = [
 
 bullbrain_model: xgb.Booster | None = None
 cache: dict[str, dict] = {}
+
+
+def compute_market_mood(prob_list):
+    if not prob_list:
+        return "Neutral (50%)"
+
+    avg = sum(prob_list) / len(prob_list)
+    pct = round(avg * 100)
+
+    if avg >= 0.60:
+        return f"Bullish ({pct}%)"
+    if avg <= 0.40:
+        return f"Bearish ({pct}%)"
+    return f"Neutral ({pct}%)"
+
+
+def build_sector_strength(results):
+    sector_scores = {}
+
+    for r in results:
+        sym = r["symbol"]
+        prob = r.get("hybridProbUp", 0.5)
+
+        # Lookup sector (default = Other)
+        sector = SECTOR_MAP.get(sym, "Other")
+
+        if sector not in sector_scores:
+            sector_scores[sector] = []
+        sector_scores[sector].append(prob)
+
+    final = []
+
+    for sector, vals in sector_scores.items():
+        avg = sum(vals) / len(vals)
+        final.append({
+            "sector": sector,
+            "mood": round(avg * 100, 2)
+        })
+
+    # Highest momentum sectors first
+    final.sort(key=lambda x: x["mood"], reverse=True)
+
+    return final
+
+def hybrid_probability(model_prob, price_change):
+    if price_change is None:
+        return model_prob
+
+    # Live influence capped at ±0.20 weight
+    live_adj = (price_change / 100) * 0.20
+    hybrid = model_prob + live_adj
+
+    # Keep within 1–99%
+    return max(0.01, min(0.99, hybrid))
+
 
 # --------------------------------------------------------------------
 # UTILS
@@ -2834,10 +2897,117 @@ def portfolio_ai_insight(
         }
 
         # SAVE TO CACHE
-        set_cache(cache_key, result)
+        set_cache(cache_key, result)        
 
         return result
 
     except Exception as e:
         print("AI insight error:", e)
         return {"error": "AI insight unavailable"}
+
+ # ------------------------------------
+        # home-summary endpoint
+# ------------------------------------
+
+@app.get("/home-summary")
+def home_summary():
+    try:
+        # Choose High-Liquidity SP500 Universe
+        # Can expand later or load dynamically
+        universe = [
+            "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META",
+            "TSLA", "JPM", "XOM", "UNH"
+        ]
+
+        results = []
+
+        for sym in universe:
+
+            # ------------------------------------
+            # 1. LIVE QUOTE
+            # ------------------------------------
+            quote = backend_fetch_quote(sym)
+            price = quote.get("price")
+            change_pct = quote.get("changePct", 0)
+
+            # ------------------------------------
+            # 2. DAILY CANDLES
+            # ------------------------------------
+            candles = fetch_daily_candles(sym)
+            if not candles:
+                continue
+
+            # ------------------------------------
+            # 3. Feature Engineering (48 Features)
+            # ------------------------------------
+            feature_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+
+            # ------------------------------------
+            # 4. Model Inference
+            # ------------------------------------
+            infer = bullbrain_infer(feature_vec)
+            model_prob = float(infer.get("probability_up") or 0.5)
+            model_signal = infer.get("signal") or "HOLD"
+
+            # ------------------------------------
+            # 5. Hybrid Probability
+            # ------------------------------------
+            hybrid_prob = hybrid_probability(model_prob, change_pct)
+
+            # Push record
+            results.append({
+                "symbol": sym,
+                "price": price,
+                "changePct": change_pct,
+                "modelProbUp": model_prob,
+                "hybridProbUp": hybrid_prob,
+                "hybridSignal": model_signal,
+                "features": feature_dict,
+                "sector": SECTOR_MAP.get(sym, "Other")
+            })
+
+        # ----------------------------------------------------------
+        # TOP 3 AI PICKS
+        # ----------------------------------------------------------
+        top_ai = sorted(results, key=lambda x: x["hybridProbUp"], reverse=True)[:3]
+
+        # ----------------------------------------------------------
+        # SMART PATTERN (best symbol)
+        # ----------------------------------------------------------
+        best_symbol = top_ai[0]["symbol"]
+        smart_pattern = build_smartpattern_block(best_symbol)
+
+        # ----------------------------------------------------------
+        # MARKET MOOD
+        # ----------------------------------------------------------
+        prob_list = [r["hybridProbUp"] for r in results]
+        market_mood = compute_market_mood(prob_list)
+
+        # ----------------------------------------------------------
+        # SECTOR MOOD (AI Heatmap)
+        # ----------------------------------------------------------
+        sector_mood = build_sector_strength(results)
+
+        # ----------------------------------------------------------
+        # AI Market Insight Summary
+        # ----------------------------------------------------------
+        avg_prob = sum(prob_list) / len(prob_list)
+        ai_market_insights = f"AI sees {round(avg_prob*100)}% upside probability across key sectors."
+
+        # ----------------------------------------------------------
+        # FINAL JSON
+        # ----------------------------------------------------------
+        return {
+            "status": "success",
+            "version": BULLBRAIN_VERSION,
+            "ai_picks": top_ai,
+            "smart_pattern": smart_pattern,
+            "market_mood": market_mood,
+            "ai_market_insights": ai_market_insights,
+            "sector_mood": sector_mood,
+            "raw": results
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
