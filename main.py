@@ -1,5 +1,7 @@
-from fastapi import FastAPI, Query, Body
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
+from pydantic import BaseModel
 import os
 import requests
 import datetime
@@ -1622,6 +1624,58 @@ Rules:
         cache[cache_key] = {"time": now, "payload": payload}
         return payload
 
+# ---------------------------------------------------------------
+# Astra LLM Helper (Grok via XAI)
+# ---------------------------------------------------------------
+def astra_llm_answer(system_prompt: str, user_prompt: str) -> Optional[str]:
+    """
+    Calls Grok (XAI) to generate a natural language answer.
+    Returns None on failure so we can gracefully fall back.
+    """
+    try:
+        if not XAI_API_KEY:
+            print("Astra LLM: XAI_API_KEY missing, skipping Grok call")
+            return None
+
+        url = "https://api.x.ai/v1/chat/completions"
+
+        payload = {
+            "model": MODEL,  # e.g. "grok-4-fast-reasoning"
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ],
+            "temperature": 0.4,
+            "max_tokens": 600,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {XAI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            print("Astra LLM error:", resp.status_code, resp.text[:300])
+            return None
+
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+
+        content = choices[0]["message"]["content"]
+        return content.strip()
+    except Exception as e:
+        print("Astra LLM exception:", e)
+        return None
+
 
 # --------------------------------------------------------------------
 # WATCHLIST GROK HELPER + HYBRID
@@ -2845,330 +2899,333 @@ def portfolio_ai_insight(
 
 
 # ---------------------------------------------------------------
-# BullBuddy — Portfolio Chat Backend (no external AI calls)
+# Astra Chat Request Models
 # ---------------------------------------------------------------
+class AstraPosition(BaseModel):
+    symbol: str
+    shares: float
+    avg_cost: float
+    price: float
+    gain: float
+    gain_pct: float
+    allocation_pct: float
+    today: float
 
-def _fmt_dollar(x: float) -> str:
-    try:
-        return f"{x:,.2f}"
-    except Exception:
-        return "0.00"
 
-def _fmt_pct(x: float) -> str:
-    try:
-        return f"{x:+.2f}%"
-    except Exception:
-        return "+0.00%"
+class AstraChatRequest(BaseModel):
+    # Either a free-form question or a predefined question_id from the app
+    question: Optional[str] = ""
+    question_id: Optional[str] = None
 
-def _normalize_positions(raw_positions):
-    """Ensure each position dict has safe numeric fields."""
-    positions = []
-    for item in (raw_positions or []):
-        try:
-            symbol = str(item.get("symbol") or "").upper()
-            if not symbol:
-                continue
-            allocation = float(item.get("allocation_pct") or 0.0)
-            gain_pct = float(item.get("gain_pct") or 0.0)
-            today_gain = float(item.get("today_gain") or 0.0)
-            curr_value = float(item.get("curr_value") or 0.0)
+    total_value: float = 0.0
+    total_gain: float = 0.0
+    today_gain: float = 0.0
 
-            pos = {
-                "symbol": symbol,
-                "allocation_pct": allocation,
-                "gain_pct": gain_pct,
-                "today_gain": today_gain,
-                "curr_value": curr_value,
-                # optional fields (if you want to pass later)
-                "trend": item.get("trend"),
-                "prob_bull_5d": item.get("prob_bull_5d"),
-            }
-            positions.append(pos)
-        except Exception:
-            # Ignore malformed item and continue
-            continue
-    return positions
+    positions: List[AstraPosition] = []
 
-def _compute_concentration(positions):
-    """Return highest allocation symbol + pct and a concentration label."""
-    if not positions:
-        return None, 0.0, "Unknown"
 
-    top = max(positions, key=lambda p: p.get("allocation_pct", 0.0))
-    pct = top.get("allocation_pct", 0.0)
-
-    if pct > 40:
-        label = "High"
-    elif pct > 20:
-        label = "Moderate"
-    else:
-        label = "Balanced"
-
-    return top["symbol"], pct, label
-
-def _top_gainers_losers(positions, n=3):
-    """Return top N gainers & losers by gain_pct."""
-    if not positions:
-        return [], []
-
-    sorted_positions = sorted(
-        positions,
-        key=lambda p: p.get("gain_pct", 0.0),
-        reverse=True,
-    )
-    top = sorted_positions[:n]
-    worst = list(reversed(sorted_positions))[:n]
-    return top, worst
-
-def _big_movers_today(positions, n=3):
-    """Top intraday movers by absolute today_gain value."""
-    if not positions:
-        return []
-    sorted_positions = sorted(
-        positions,
-        key=lambda p: abs(p.get("today_gain", 0.0)),
-        reverse=True,
-    )
-    return sorted_positions[:n]
-
-def _rebalancing_suggestions(positions, total_value):
+# ---------------------------------------------------------------
+# ASTRA CHAT — Portfolio AI Analyst (BullBrain v2 + Grok)
+# ---------------------------------------------------------------
+@app.post("/astra-chat")
+def astra_chat(req: AstraChatRequest):
     """
-    Simple deterministic rules for rebalancing:
-    - Overweight if allocation > 30%
-    - Underweight if allocation < 5% but gain_pct > 5 (doing well but small)
-    Returns a list of human-readable suggestion strings.
+    Astra – portfolio AI analyst for BullSignalsAI.
+
+    Uses:
+    - Live candles from Polygon
+    - BullBrain v2 (48 features) per symbol
+    - Allocation %, gain %, position value
+    - Grok (XAI) for natural language answers
+
+    Works for both:
+    - Predefined questions (question_id)
+    - Custom free-form questions (question)
     """
-    if not positions or total_value <= 0:
-        return []
 
-    suggestions = []
-    for p in positions:
-        sym = p["symbol"]
-        alloc = p.get("allocation_pct", 0.0)
-        gain_pct = p.get("gain_pct", 0.0)
-        curr_val = p.get("curr_value", 0.0)
+    # 1) Basic validation
+    if not req.positions or req.total_value <= 0:
+        return {
+            "answer": (
+                "I need at least one holding with a non-zero portfolio value "
+                "to analyze. Please add positions to your portfolio and try again."
+            ),
+            "used_llm": False,
+            "analysis": {},
+        }
 
-        # 1) Overweight trim suggestion
-        if alloc > 30:
-            # Example: trim back toward 25%
-            target_pct = 25.0
-            excess_pct = alloc - target_pct
-            trim_value = total_value * (excess_pct / 100.0)
-            # approximate shares → caller can later compute shares if desired
-            suggestions.append(
-                f"{sym} looks overweight at {alloc:.1f}% of your portfolio. "
-                f"Consider trimming about {excess_pct:.1f}% (~${_fmt_dollar(trim_value)})."
-            )
-
-        # 2) Underweight but performing well → consider adding
-        elif alloc < 5 and gain_pct > 5:
-            target_pct = 8.0
-            add_pct = target_pct - alloc
-            add_value = total_value * (add_pct / 100.0)
-            suggestions.append(
-                f"{sym} is a small position at {alloc:.1f}% but has gained {_fmt_pct(gain_pct)}. "
-                f"If it matches your conviction, you could consider increasing it by about {add_pct:.1f}% "
-                f"(~${_fmt_dollar(add_value)})."
-            )
-
-    return suggestions
-
-@app.post("/bullbuddy")
-def bullbuddy(portfolio: dict = Body(...)):
-    """
-    BullBuddy — rule-based portfolio 'chatbot'.
-
-    Expected JSON:
-    {
-      "question_id": "overview" | "today" | "risks" | "gainers" | "losers" | "rebalancing" | "bullish" | "weak",
-      "total_value": 63867.2,
-      "total_gain_pct": 14.2,
-      "today_gain_total": 235.7,
-      "positions": [
-        {
-          "symbol": "TSLA",
-          "allocation_pct": 23.4,
-          "gain_pct": 18.2,
-          "today_gain": 125.4,
-          "curr_value": 14987.2
-        },
-        ...
-      ]
+    # 2) Resolve question (chips or custom text)
+    q_map = {
+        "overview": "Give a concise, user-friendly overview of how my portfolio is doing.",
+        "risk_exposure": "Explain my overall risk exposure and concentration.",
+        "overweight": "Which stocks are overweight or underweight, and what should I do?",
+        "worst": "Which positions need my urgent attention and why?",
+        "ai_suggestions": "Give me AI-driven suggestions on how to optimize this portfolio.",
     }
-    """
 
-    try:
-        question_id = (portfolio.get("question_id") or "").lower().strip()
-        total_value = float(portfolio.get("total_value") or 0.0)
-        total_gain_pct = float(portfolio.get("total_gain_pct") or 0.0)
-        today_gain_total = float(portfolio.get("today_gain_total") or 0.0)
-        positions = _normalize_positions(portfolio.get("positions") or [])
-
-        # Basic metrics
-        num_positions = len(positions)
-        top_symbol, top_pct, concentration_label = _compute_concentration(positions)
-        top_gainers, top_losers = _top_gainers_losers(positions)
-        movers_today = _big_movers_today(positions)
-        rebal_suggestions = _rebalancing_suggestions(positions, total_value)
-
-        # Generic strings we will reuse
-        direction_total = "up" if total_gain_pct >= 0 else "down"
-        direction_today = "up" if today_gain_total >= 0 else "down"
-
-        tv_str = _fmt_dollar(total_value)
-        tg_str = _fmt_pct(total_gain_pct)
-        td_str = _fmt_dollar(abs(today_gain_total))
-
-        # Helper to format top 2 positions list
-        def _fmt_pos_list(lst):
-            if not lst:
-                return "none"
-            names = []
-            for p in lst[:2]:
-                names.append(
-                    f"{p['symbol']} ({_fmt_pct(p.get('gain_pct', 0.0))})"
-                )
-            return ", ".join(names)
-
-        # Default answer (overview-style)
-        answer = (
-            f"Your portfolio is currently worth ${tv_str} and is {direction_total} {tg_str} overall. "
-            f"Today you are {direction_today} ${td_str}. "
-            f"You hold {num_positions} positions. "
-            f"Your largest position is {top_symbol or 'N/A'} at {top_pct:.1f}% of the portfolio, "
-            f"which gives you a {concentration_label.lower()} level of concentration."
+    base_question = (req.question or "").strip()
+    if not base_question and req.question_id:
+        base_question = q_map.get(
+            req.question_id,
+            "Give a clear, practical analysis of this portfolio.",
         )
 
-        # Specialized answers based on question_id
-        if question_id in ("overview", ""):
-            # Already covered by default answer, but add a bit more
-            answer += (
-                f" The biggest contributors to your gains are {_fmt_pos_list(top_gainers)}, "
-                f"while {_fmt_pos_list(top_losers)} have lagged behind."
-            )
+    if not base_question:
+        base_question = "Give a clear, practical analysis of this portfolio."
 
-        elif question_id == "today":
-            answer = (
-                f"Today your portfolio is {direction_today} ${td_str}. "
-                f"The largest intraday movers are "
-                f"{_fmt_pos_list(movers_today)}. "
-                f"Overall, your portfolio stands at ${tv_str}, {direction_total} {tg_str} from your cost basis."
-            )
+    # 3) Sort positions by allocation (focus on biggest ones first)
+    positions_sorted = sorted(
+        req.positions, key=lambda p: p.allocation_pct, reverse=True
+    )
 
-        elif question_id in ("risks", "risk"):
-            answer = (
-                f"Your largest holding is {top_symbol or 'N/A'} at {top_pct:.1f}% of the portfolio, "
-                f"which indicates a {concentration_label.lower()} concentration level. "
+    # Limit how many symbols we send to BullBrain (performance)
+    max_symbols_for_model = 10
+    focus_positions = positions_sorted[:max_symbols_for_model]
+
+    per_symbol_analysis = []
+    bullbrain_failures = []
+
+    # 4) Per-symbol BullBrain v2 analysis
+    for pos in focus_positions:
+        symbol = pos.symbol.upper()
+
+        try:
+            candles = fetch_daily_candles(symbol)
+            if not candles:
+                bullbrain_failures.append(symbol)
+                continue
+
+            features_vec, feature_dict, last_close = compute_bullbrain_features(
+                candles
             )
-            if concentration_label == "High":
-                answer += (
-                    "This means a single stock has a strong influence on your overall returns. "
-                    "You may want to review whether this level of exposure matches your risk tolerance."
-                )
-            elif concentration_label == "Moderate":
-                answer += (
-                    "This is a reasonable level of concentration, but it is still worth monitoring "
-                    "to ensure it aligns with your comfort level."
-                )
+            if features_vec is None:
+                bullbrain_failures.append(symbol)
+                continue
+
+            out = bullbrain_infer(features_vec)
+            prob_up = float(out.get("probability_up") or out.get("raw_output") or 0.5)
+            signal = out.get("signal") or "NEUTRAL"
+
+            vol = feature_dict.get("volatility_5d", 0.02)
+            # Approx expected move (5d-ish) on a -1..+1 scale
+            expected_move = vol * (prob_up * 2 - 1)
+            # Convert to %
+            expected_move_pct = round(expected_move * 100, 2)
+
+            # Confidence bucket
+            if prob_up >= 0.66:
+                confidence = "High"
+            elif prob_up >= 0.55:
+                confidence = "Moderate"
             else:
-                answer += (
-                    "Your allocation looks fairly balanced across positions from a concentration standpoint."
-                )
+                confidence = "Low"
 
-        elif question_id in ("gainers", "winners"):
-            answer = (
-                f"Your strongest performers based on overall gain percentage are "
-                f"{_fmt_pos_list(top_gainers)}. "
-                "These positions have contributed the most to your returns so far."
+            # Risk bucket from volatility
+            if vol < 0.015:
+                risk = "Low"
+            elif vol < 0.035:
+                risk = "Medium"
+            else:
+                risk = "High"
+
+            # Simple pattern from SMAs
+            sma5 = feature_dict.get("sma5", 0)
+            sma20 = feature_dict.get("sma20", 0)
+            if sma5 > sma20:
+                pattern = "Short-term Momentum"
+            elif sma5 < sma20:
+                pattern = "Reversal Risk"
+            else:
+                pattern = "Sideways Consolidation"
+
+            # Over/under-weight (vs equal-weight baseline)
+            equal_weight = 100.0 / max(len(req.positions), 1)
+            allocation = pos.allocation_pct
+            if allocation > equal_weight * 1.8:
+                weight_flag = "Strongly Overweight"
+            elif allocation > equal_weight * 1.2:
+                weight_flag = "Overweight"
+            elif allocation < equal_weight * 0.5:
+                weight_flag = "Underweight"
+            else:
+                weight_flag = "Balanced"
+
+            per_symbol_analysis.append(
+                {
+                    "symbol": symbol,
+                    "allocation_pct": round(pos.allocation_pct, 2),
+                    "gain_pct": round(pos.gain_pct, 2),
+                    "unrealized_gain": round(pos.gain, 2),
+                    "today_pl": round(pos.today, 2),
+                    "shares": pos.shares,
+                    "avg_cost": pos.avg_cost,
+                    "price": pos.price,
+                    "bullbrain": {
+                        "signal": signal,
+                        "prob_up": round(prob_up * 100, 1),  # %
+                        "expected_move_pct": expected_move_pct,
+                        "risk": risk,
+                        "confidence": confidence,
+                        "pattern": pattern,
+                    },
+                    "weight_flag": weight_flag,
+                }
             )
 
-        elif question_id in ("losers", "laggards"):
-            answer = (
-                f"The positions dragging your performance the most right now are "
-                f"{_fmt_pos_list(top_losers)}. "
-                "These may warrant a closer look to understand whether the thesis still holds."
-            )
+        except Exception as e:
+            print(f"Astra BullBrain error for {symbol}:", e)
+            bullbrain_failures.append(symbol)
+            continue
 
-        elif question_id in ("rebalancing", "rebalance", "suggestions"):
-            if not rebal_suggestions:
-                answer = (
-                    "Based on your current allocations and performance, there are no obvious "
-                    "rebalancing flags from a purely quantitative standpoint. "
-                    "Your exposure looks reasonably aligned."
-                )
-            else:
-                # Stitch suggestions into a paragraph
-                answer = "Here are some data-driven rebalancing observations:\n"
-                for s in rebal_suggestions:
-                    answer += f"- {s}\n"
-                answer += (
-                    "These are not buy or sell recommendations, but they highlight where your "
-                    "portfolio is most out of balance relative to simple allocation thresholds."
-                )
-
-        elif question_id in ("bullish", "momentum"):
-            # Positions with positive gain_pct sorted by gain_pct descending
-            bullish = [p for p in positions if p.get("gain_pct", 0.0) > 0]
-            if not bullish:
-                answer = (
-                    "None of your positions are currently showing strong upside based on overall gains. "
-                    "Most of your holdings are flat or down from cost."
-                )
-            else:
-                bullish_sorted = sorted(
-                    bullish, key=lambda p: p.get("gain_pct", 0.0), reverse=True
-                )
-                names = _fmt_pos_list(bullish_sorted)
-                answer = (
-                    f"The clearest upside momentum in your portfolio is in {names}. "
-                    "These positions have moved the furthest above your entry levels so far."
-                )
-
-        elif question_id in ("weak", "underperform", "weakness"):
-            weak = [p for p in positions if p.get("gain_pct", 0.0) < 0]
-            if not weak:
-                answer = (
-                    "None of your positions are showing significant weakness versus your entry cost right now. "
-                    "Your holdings are either flat or up overall."
-                )
-            else:
-                weak_sorted = sorted(
-                    weak, key=lambda p: p.get("gain_pct", 0.0)
-                )
-                names = _fmt_pos_list(weak_sorted)
-                answer = (
-                    f"The main underperformers versus your entry price are {names}. "
-                    "These may be worth monitoring more closely."
-                )
-
-        # Build highlights for UI (can be used now or later)
-        highlights = {
-            "total_value": total_value,
-            "total_gain_pct": total_gain_pct,
-            "today_gain_total": today_gain_total,
-            "num_positions": num_positions,
-            "concentration": {
-                "symbol": top_symbol,
-                "allocation_pct": top_pct,
-                "label": concentration_label,
+    if not per_symbol_analysis:
+        # If BullBrain failed for everything, we at least return basic metrics.
+        return {
+            "answer": (
+                "I could not compute AI signals for your holdings at this time. "
+                "Please try again later. Your portfolio still has a positive value, "
+                "but BullBrain analysis is temporarily unavailable."
+            ),
+            "used_llm": False,
+            "analysis": {
+                "total_value": req.total_value,
+                "total_gain": req.total_gain,
+                "today_gain": req.today_gain,
+                "positions": [p.symbol for p in req.positions],
+                "bullbrain_unavailable": bullbrain_failures,
             },
-            "top_gainers": top_gainers,
-            "top_losers": top_losers,
-            "movers_today": movers_today,
-            "rebalancing_suggestions": rebal_suggestions,
         }
 
-        return {
-            "question_id": question_id or "overview",
-            "answer": answer,
-            "highlights": highlights,
-        }
+    # 5) Portfolio-level aggregates
 
-    except Exception as e:
-        print("BullBuddy error:", e)
-        return {
-            "question_id": portfolio.get("question_id"),
-            "answer": "I couldn't analyze your portfolio right now. Please try again.",
-            "highlights": {},
-        }
+    # Overall return %
+    overall_return_pct = (
+        (req.total_gain / max(req.total_value - req.total_gain, 1)) * 100.0
+        if req.total_value > 0
+        else 0.0
+    )
+
+    # Weighted average bullish probability (by allocation)
+    total_alloc_for_weight = sum(p["allocation_pct"] for p in per_symbol_analysis) or 1
+    weighted_prob_up = (
+        sum(
+            p["allocation_pct"] * p["bullbrain"]["prob_up"]
+            for p in per_symbol_analysis
+        )
+        / total_alloc_for_weight
+    )
+
+    # Top contributors / laggards
+    sorted_by_gain = sorted(
+        per_symbol_analysis, key=lambda p: p["unrealized_gain"], reverse=True
+    )
+    top_gainer = sorted_by_gain[0] if sorted_by_gain else None
+    worst_loser = sorted_by_gain[-1] if sorted_by_gain else None
+
+    # Risk exposure heuristic: max allocation and high-vol names
+    max_alloc = max(p["allocation_pct"] for p in per_symbol_analysis)
+    high_risk_names = [
+        p
+        for p in per_symbol_analysis
+        if p["bullbrain"]["risk"] == "High" and p["allocation_pct"] >= 10
+    ]
+
+    if max_alloc > 40:
+        portfolio_risk_label = "High (concentrated in a single position)"
+    elif max_alloc > 25:
+        portfolio_risk_label = "Moderate to High (few large positions)"
+    else:
+        portfolio_risk_label = "Balanced to Moderate"
+
+    analysis_obj = {
+        "total_value": round(req.total_value, 2),
+        "total_gain": round(req.total_gain, 2),
+        "today_gain": round(req.today_gain, 2),
+        "overall_return_pct": round(overall_return_pct, 2),
+        "weighted_bull_prob_pct": round(weighted_prob_up, 1),
+        "portfolio_risk_label": portfolio_risk_label,
+        "top_gainer": top_gainer,
+        "worst_loser": worst_loser,
+        "high_risk_concentrations": high_risk_names,
+        "per_symbol": per_symbol_analysis,
+        "bullbrain_failed_symbols": bullbrain_failures,
+    }
+
+    # 6) Build LLM prompt for Grok
+    system_prompt = (
+        "You are Astra, a professional AI portfolio analyst inside a mobile app "
+        "called BullSignalsAI. The user is a retail investor. "
+        "You MUST be clear, calm, and practical. No financial jargon. "
+        "Never mention that you are calling external APIs or models. "
+        "Speak in 2–5 short paragraphs plus 1–3 bullet lists if helpful. "
+        "Always reference tickers by symbol (e.g., AAPL, TSLA). "
+        "Include gentle risk reminders but DO NOT give explicit investment advice "
+        "like 'buy' or 'sell'; instead say 'consider reducing exposure' or "
+        "'consider increasing exposure'."
+    )
+
+    user_prompt = (
+        f"User question: {base_question}\n\n"
+        "Here is their portfolio and AI analysis as JSON. "
+        "Use it as ground truth and do NOT invent numbers.\n\n"
+        f"{json.dumps(analysis_obj, indent=2)}\n\n"
+        "Now answer the user's question using this data only. "
+        "Focus on:\n"
+        "1) Overall portfolio health (trend, return, bullish probability)\n"
+        "2) Risk exposure and concentration\n"
+        "3) Which positions stand out positively or negatively and why\n"
+        "4) Any overweight / underweight imbalances and what to 'consider'\n"
+        "5) A concise closing summary in one sentence.\n"
+    )
+
+    llm_answer = astra_llm_answer(system_prompt, user_prompt)
+    used_llm = llm_answer is not None
+
+    # 7) Fallback answer if Grok fails
+    if not llm_answer:
+        lines = []
+        lines.append(
+            f"Your portfolio is currently valued at ${req.total_value:,.2f} "
+            f"with an overall return of {overall_return_pct:+.2f}%."
+        )
+        lines.append(
+            f"Across your largest positions, BullBrain sees an average "
+            f"bullish probability of about {weighted_prob_up:.1f}%."
+        )
+        lines.append(f"Risk level: {portfolio_risk_label}.")
+
+        if top_gainer:
+            lines.append(
+                f"Top contributor: {top_gainer['symbol']} "
+                f"with an unrealized gain of ${top_gainer['unrealized_gain']:,.2f} "
+                f"({top_gainer['gain_pct']:+.1f}%)."
+            )
+        if worst_loser:
+            lines.append(
+                f"Largest drag: {worst_loser['symbol']} "
+                f"at ${worst_loser['unrealized_gain']:,.2f} "
+                f"({worst_loser['gain_pct']:+.1f}%)."
+            )
+
+        if high_risk_names:
+            risk_syms = ", ".join(p["symbol"] for p in high_risk_names)
+            lines.append(
+                f"Astra flags higher risk concentration in: {risk_syms}. "
+                "Consider whether each of these still fits your risk tolerance."
+            )
+
+        lines.append(
+            "As always, these are AI-driven insights, not investment advice. "
+            "Use them alongside your own research and goals."
+        )
+
+        llm_answer = " ".join(lines)
+
+    # 8) Return structured response
+    return {
+        "answer": llm_answer,
+        "used_llm": used_llm,
+        "analysis": analysis_obj,
+    }
+
+
 
