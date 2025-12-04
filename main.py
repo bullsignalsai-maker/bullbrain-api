@@ -2435,6 +2435,20 @@ def market_news():
                 title = getattr(e, "title", "") or ""
                 summary = getattr(e, "summary", "") or ""
                 text_combined = (title + " " + summary).lower()
+                                title = getattr(e, "title", "") or ""
+                summary = getattr(e, "summary", "") or ""
+
+                # 🔹 NEW: Hard filter out question-style / clickbait titles
+                lower_title = title.lower()
+                if (
+                    "?" in title
+                    or lower_title.startswith(("why ", "how ", "what ", "should ", "is ", "can "))
+                    or " q&a" in lower_title
+                ):
+                    continue
+
+                text_combined = (title + " " + summary).lower()
+
 
                 # 1️⃣ HARD FILTER → Must contain a stock-related keyword
                 if not any(k in text_combined for k in HARD_KEYWORDS):
@@ -2444,8 +2458,9 @@ def market_news():
                 if any(b in text_combined for b in BLOCK_KEYWORDS):
                     continue
 
-                # 3️⃣ Detect ticker and allow only S&P500
-                ticker = extract_ticker(title + " " + summary)
+                # 3️⃣ Detect ticker and allow only S&P500 (UPPERCASE text)
+                full_text_upper = (title + " " + summary).upper()  # 🔹 NEW
+                ticker = extract_ticker(full_text_upper)           # 🔹 CHANGED
                 if not ticker or ticker not in SP500_SET:
                     continue
 
@@ -2453,8 +2468,8 @@ def market_news():
                 if len(title.split()) < 5:
                     continue
 
-                # 5️⃣ Category detection
-                category = detect_category(text_combined)
+                 # 5️⃣ Category detection (use same uppercase combined text)
+                category = detect_category(full_text_upper)  # 🔹 CHANGED
 
                 published = getattr(e, "published", None)
                 if not published:
@@ -2477,19 +2492,26 @@ def market_news():
         except Exception as ex:
             print("RSS error:", ex)
 
-    # Deduplicate
+        # Deduplicate (normalized so cross-source duplicates are removed)
     seen = set()
     final = []
+
     for n in news:
-        key = n["title"].lower()[:60]
-        if key not in seen:
-            seen.add(key)
-            final.append(n)
+        # 🔹 NEW: normalize title by stripping non-alphanumeric characters
+        norm_title = re.sub(r"[^a-z0-9]+", "", n["title"].lower())
+        key = norm_title[:80]  # wider window than 60 chars
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        final.append(n)
 
     # Sort by latest
     final.sort(key=lambda x: x["pubDate"], reverse=True)
 
     return {"data": final[:50]}
+
 
 
 
