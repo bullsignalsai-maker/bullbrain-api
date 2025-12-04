@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import gdown
+import re
 
 app = FastAPI()
 
@@ -2898,6 +2899,8 @@ def portfolio_ai_insight(
 
 
 
+import re  # make sure this is at top of main.py
+
 # ---------------------------------------------------------------
 # Astra Chat Request Models
 # ---------------------------------------------------------------
@@ -2925,18 +2928,98 @@ class AstraChatRequest(BaseModel):
 
 
 # ---------------------------------------------------------------
-# ASTRA CHAT — Portfolio AI Analyst (BullBrain v2 + Grok)
+# Helper: lightweight market sentiment for a symbol
+# ---------------------------------------------------------------
+def astra_symbol_sentiment(symbol: str) -> Dict[str, Any]:
+    """
+    Lightweight, resilient sentiment block for a single symbol.
+    Uses:
+      - Daily candles (Polygon) for price/vol move
+      - Last close vs prev close
+    Keeps it simple, two lines max for Astra to use.
+    """
+    symbol = symbol.upper()
+    sentiment = {
+        "symbol": symbol,
+        "price_comment": "",
+        "volume_comment": "",
+        "summary": "",
+    }
+
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles or len(candles) < 2:
+            sentiment["summary"] = f"{symbol} market sentiment could not be derived from recent price data."
+            return sentiment
+
+        # candles is list of OHLCV dicts sorted by date (you already use this)
+        last = candles[-1]
+        prev = candles[-2]
+
+        last_close = float(last.get("c", last.get("close", 0)))
+        prev_close = float(prev.get("c", prev.get("close", 0)))
+        last_vol = float(last.get("v", last.get("volume", 0)))
+
+        # 10-day average volume
+        recent = candles[-10:] if len(candles) >= 10 else candles
+        avg_vol = sum(float(c.get("v", c.get("volume", 0))) for c in recent) / max(
+            len(recent), 1
+        )
+
+        price_change_pct = (
+            ((last_close - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
+        )
+
+        if price_change_pct > 3:
+            price_comment = f"Price is up about {price_change_pct:.1f}% today."
+        elif price_change_pct < -3:
+            price_comment = f"Price is down about {price_change_pct:.1f}% today."
+        elif abs(price_change_pct) < 0.5:
+            price_comment = "Price is almost flat today."
+        else:
+            direction = "up" if price_change_pct > 0 else "down"
+            price_comment = f"Price is {direction} about {abs(price_change_pct):.1f}% today."
+
+        if avg_vol > 0:
+            vol_ratio = last_vol / avg_vol
+        else:
+            vol_ratio = 1.0
+
+        if vol_ratio > 1.3:
+            volume_comment = "Volume is higher than its recent average, so interest is elevated."
+        elif vol_ratio < 0.7:
+            volume_comment = "Volume is lower than usual, so moves may not be strongly confirmed."
+        else:
+            volume_comment = "Volume is close to its recent average."
+
+        summary = f"{price_comment} {volume_comment}"
+
+        sentiment["price_comment"] = price_comment
+        sentiment["volume_comment"] = volume_comment
+        sentiment["summary"] = summary.strip()
+        return sentiment
+
+    except Exception as e:
+        print(f"Astra sentiment error for {symbol}:", e)
+        sentiment["summary"] = f"{symbol} sentiment is unclear based on current data."
+        return sentiment
+
+
+
+# ---------------------------------------------------------------
+# ASTRA CHAT — Portfolio AI Analyst (BullBrain v2 + Grok + Sentiment)
 # ---------------------------------------------------------------
 @app.post("/astra-chat")
 def astra_chat(req: AstraChatRequest):
     """
-    Astra – portfolio AI analyst for BullSignalsAI.
+    Astra – Artificial Stock Trading & Risk Analyst for BullSignalsAI.
 
     Uses:
     - Live candles from Polygon
     - BullBrain v2 (48 features) per symbol
     - Allocation %, gain %, position value
     - Grok (XAI) for natural language answers
+    - Lightweight price/volume-based sentiment
 
     Works for both:
     - Predefined questions (question_id)
@@ -2956,9 +3039,9 @@ def astra_chat(req: AstraChatRequest):
 
     # 2) Resolve question (chips or custom text)
     q_map = {
-        "overview": "Give a concise, user-friendly overview of how my portfolio is doing.",
+        "overview": "Give a concise overview of how my portfolio is doing.",
         "risk_exposure": "Explain my overall risk exposure and concentration.",
-        "overweight": "Which stocks are overweight or underweight, and what should I do?",
+        "overweight": "Which stocks are overweight or underweight, and what should I consider doing?",
         "worst": "Which positions need my urgent attention and why?",
         "ai_suggestions": "Give me AI-driven suggestions on how to optimize this portfolio.",
     }
@@ -2972,6 +3055,8 @@ def astra_chat(req: AstraChatRequest):
 
     if not base_question:
         base_question = "Give a clear, practical analysis of this portfolio."
+
+    question_id = req.question_id or ""
 
     # 3) Sort positions by allocation (focus on biggest ones first)
     positions_sorted = sorted(
@@ -3032,11 +3117,11 @@ def astra_chat(req: AstraChatRequest):
             sma5 = feature_dict.get("sma5", 0)
             sma20 = feature_dict.get("sma20", 0)
             if sma5 > sma20:
-                pattern = "Short-term Momentum"
+                pattern = "Short-term momentum"
             elif sma5 < sma20:
-                pattern = "Reversal Risk"
+                pattern = "Reversal risk"
             else:
-                pattern = "Sideways Consolidation"
+                pattern = "Sideways consolidation"
 
             # Over/under-weight (vs equal-weight baseline)
             equal_weight = 100.0 / max(len(req.positions), 1)
@@ -3136,7 +3221,71 @@ def astra_chat(req: AstraChatRequest):
     else:
         portfolio_risk_label = "Balanced to Moderate"
 
+    # 6) Hybrid sentiment selection
+    portfolio_symbols = [p["symbol"] for p in per_symbol_analysis]
+    sentiment_targets: List[str] = []
+
+    # a) For predefined questions, pick a small, meaningful set of symbols
+    if question_id == "overview":
+        # focus on largest holding + top gainer + worst loser
+        if per_symbol_analysis:
+            sentiment_targets.append(per_symbol_analysis[0]["symbol"])
+        if top_gainer:
+            sentiment_targets.append(top_gainer["symbol"])
+        if worst_loser:
+            sentiment_targets.append(worst_loser["symbol"])
+
+    elif question_id == "risk_exposure":
+        # high risk concentration names
+        sentiment_targets.extend([p["symbol"] for p in high_risk_names])
+
+    elif question_id == "overweight":
+        overweight = [
+            p for p in per_symbol_analysis if "Overweight" in p["weight_flag"]
+        ]
+        sentiment_targets.extend([p["symbol"] for p in overweight[:4]])
+
+    elif question_id == "worst":
+        if worst_loser:
+            sentiment_targets.append(worst_loser["symbol"])
+
+    elif question_id == "ai_suggestions":
+        overweight = [
+            p for p in per_symbol_analysis if "Overweight" in p["weight_flag"]
+        ]
+        if top_gainer:
+            sentiment_targets.append(top_gainer["symbol"])
+        if worst_loser:
+            sentiment_targets.append(worst_loser["symbol"])
+        sentiment_targets.extend([p["symbol"] for p in overweight[:3]])
+
+    # b) For custom questions, detect mentioned tickers
+    else:
+        upper_q = base_question.upper()
+        mentioned = []
+        for sym in portfolio_symbols:
+            if re.search(rf"\b{re.escape(sym)}\b", upper_q):
+                mentioned.append(sym)
+
+        if mentioned:
+            sentiment_targets.extend(mentioned[:5])
+
+    # remove duplicates while preserving order
+    seen = set()
+    uniq_targets = []
+    for s in sentiment_targets:
+        if s and s not in seen:
+            seen.add(s)
+            uniq_targets.append(s)
+
+    sentiment_map: Dict[str, Any] = {}
+    for sym in uniq_targets:
+        sentiment_map[sym] = astra_symbol_sentiment(sym)
+
+    # 7) Build analysis object
     analysis_obj = {
+        "question": base_question,
+        "question_id": question_id,
         "total_value": round(req.total_value, 2),
         "total_gain": round(req.total_gain, 2),
         "today_gain": round(req.today_gain, 2),
@@ -3148,79 +3297,85 @@ def astra_chat(req: AstraChatRequest):
         "high_risk_concentrations": high_risk_names,
         "per_symbol": per_symbol_analysis,
         "bullbrain_failed_symbols": bullbrain_failures,
+        "sentiment": sentiment_map,
     }
 
-    # 6) Build LLM prompt for Grok
+    # 8) Build LLM prompt for Grok (Astra)
     system_prompt = (
-        "You are Astra, a professional AI portfolio analyst inside a mobile app "
-        "called BullSignalsAI. The user is a retail investor. "
-        "You MUST be clear, calm, and practical. No financial jargon. "
-        "Never mention that you are calling external APIs or models. "
-        "Speak in 2–5 short paragraphs plus 1–3 bullet lists if helpful. "
-        "Always reference tickers by symbol (e.g., AAPL, TSLA). "
-        "Include gentle risk reminders but DO NOT give explicit investment advice "
-        "like 'buy' or 'sell'; instead say 'consider reducing exposure' or "
-        "'consider increasing exposure'."
+        "You are Astra, an expert AI portfolio analyst inside a mobile app "
+        "called BullSignalsAI. The user is a retail investor.\n"
+        "You must be clear, calm, and practical.\n"
+        "Use real numbers from the JSON (values, percentages, tickers, shares).\n"
+        "Do not invent numbers. If a value is missing, simply say it is not available.\n"
+        "Do NOT use markdown, bullet symbols, asterisks, or headings.\n"
+        "Write in plain text with short paragraphs.\n"
+        "Tailor your answer to the specific question. Do not repeat the same template every time.\n"
+        "Avoid financial jargon. Do not say buy or sell; instead say things like "
+        "consider reducing exposure or consider increasing exposure.\n"
     )
 
     user_prompt = (
         f"User question: {base_question}\n\n"
         "Here is their portfolio and AI analysis as JSON. "
-        "Use it as ground truth and do NOT invent numbers.\n\n"
+        "This includes BullBrain v2 outputs and a small sentiment block for some symbols.\n\n"
         f"{json.dumps(analysis_obj, indent=2)}\n\n"
-        "Now answer the user's question using this data only. "
-        "Focus on:\n"
-        "1) Overall portfolio health (trend, return, bullish probability)\n"
-        "2) Risk exposure and concentration\n"
-        "3) Which positions stand out positively or negatively and why\n"
-        "4) Any overweight / underweight imbalances and what to 'consider'\n"
-        "5) A concise closing summary in one sentence.\n"
+        "Now answer the user's question using this data only.\n"
+        "Use the following style:\n"
+        "- If the question is about the whole portfolio (overview, risk, suggestions), "
+        "talk about total value, total gain or loss, overall return percent, "
+        "and mention 2–3 key tickers with their allocation and gain or loss.\n"
+        "- If the question is about a specific stock, focus on that ticker's allocation, "
+        "gain or loss, BullBrain signal, probability_up and expected_move_pct, "
+        "plus the sentiment summary for that ticker if available.\n"
+        "- For overweight or underweight questions, mention which tickers are flagged as overweight "
+        "or underweight and what the user could consider doing.\n"
+        "- Keep the answer concise. Usually 1 to 3 short paragraphs are enough.\n"
+        "- Always close with one short sentence reminding the user that this is AI-driven insight, "
+        "not personal financial advice.\n"
     )
 
     llm_answer = astra_llm_answer(system_prompt, user_prompt)
     used_llm = llm_answer is not None
 
-    # 7) Fallback answer if Grok fails
+    # 9) Fallback answer if Grok fails
     if not llm_answer:
         lines = []
         lines.append(
-            f"Your portfolio is currently valued at ${req.total_value:,.2f} "
-            f"with an overall return of {overall_return_pct:+.2f}%."
+            f"Your portfolio is currently valued at about ${req.total_value:,.2f} "
+            f"with an overall return of approximately {overall_return_pct:+.2f} percent."
         )
         lines.append(
-            f"Across your largest positions, BullBrain sees an average "
-            f"bullish probability of about {weighted_prob_up:.1f}%."
+            f"Across your largest positions, BullBrain sees an average bullish probability "
+            f"of around {weighted_prob_up:.1f} percent."
         )
-        lines.append(f"Risk level: {portfolio_risk_label}.")
+        lines.append(f"Risk level is classified as {portfolio_risk_label}.")
 
         if top_gainer:
             lines.append(
-                f"Top contributor: {top_gainer['symbol']} "
-                f"with an unrealized gain of ${top_gainer['unrealized_gain']:,.2f} "
-                f"({top_gainer['gain_pct']:+.1f}%)."
+                f"Your main positive contributor right now is {top_gainer['symbol']}, "
+                f"with an unrealized gain of about ${top_gainer['unrealized_gain']:,.2f} "
+                f"and a change of roughly {top_gainer['gain_pct']:+.1f} percent."
             )
         if worst_loser:
             lines.append(
-                f"Largest drag: {worst_loser['symbol']} "
-                f"at ${worst_loser['unrealized_gain']:,.2f} "
-                f"({worst_loser['gain_pct']:+.1f}%)."
+                f"The biggest drag is {worst_loser['symbol']}, "
+                f"at about ${worst_loser['unrealized_gain']:,.2f} "
+                f"and {worst_loser['gain_pct']:+.1f} percent."
             )
 
-        if high_risk_names:
-            risk_syms = ", ".join(p["symbol"] for p in high_risk_names)
-            lines.append(
-                f"Astra flags higher risk concentration in: {risk_syms}. "
-                "Consider whether each of these still fits your risk tolerance."
-            )
+        if sentiment_map:
+            # Use first sentiment as example
+            s_sym, s_val = next(iter(sentiment_map.items()))
+            if s_val.get("summary"):
+                lines.append(f"For example, {s_sym}: {s_val['summary']}")
 
         lines.append(
-            "As always, these are AI-driven insights, not investment advice. "
-            "Use them alongside your own research and goals."
+            "Treat this as AI-supported analysis to guide your thinking, not as personal financial advice."
         )
 
         llm_answer = " ".join(lines)
 
-    # 8) Return structured response
+    # 10) Return structured response
     return {
         "answer": llm_answer,
         "used_llm": used_llm,
