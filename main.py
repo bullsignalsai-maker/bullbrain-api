@@ -2299,130 +2299,6 @@ def macro_watch():
         return {"data": [], "error": str(e)}
 
 
-@app.get("/earnings")
-def earnings():
-    """
-    Curated upcoming earnings for the next 7 days.
-    Normalizes:
-      - date / weekday
-      - time → BMO / AMC / DUR
-      - EPS estimate
-      - Revenue estimate (B / M format string)
-    """
-    try:
-        today = datetime.date.today()
-        next_week = today + datetime.timedelta(days=7)
-
-        url = (
-            "https://financialmodelingprep.com/api/v3/earning_calendar"
-            f"?from={today}&to={next_week}&apikey={FMP_API_KEY}"
-        )
-
-        raw = requests.get(url, timeout=10).json()
-        if not isinstance(raw, list):
-            return {"data": []}
-
-        def to_display_time(raw_time: str) -> str:
-            if not raw_time:
-                return ""
-            t = raw_time.lower()
-            if t in ("bmo", "before market open"):
-                return "BMO"
-            if t in ("amc", "after market close"):
-                return "AMC"
-            if t in ("dmh", "during market hours", "dmt"):
-                return "DUR"
-            return ""
-
-        def format_revenue(n):
-            if n is None:
-                return None
-            try:
-                val = float(n)
-            except Exception:
-                return None
-            if val >= 1e9:
-                return f"{val/1e9:.1f}B"
-            if val >= 1e6:
-                return f"{val/1e6:.1f}M"
-            return f"{val:.0f}"
-
-        items = []
-        for row in raw:
-            try:
-                symbol = (row.get("symbol") or "").upper()
-                if not symbol:
-                    continue
-
-                date_str = row.get("date") or row.get("dateReported")
-                if not date_str:
-                    continue
-
-                # parse date safely
-                try:
-                    dt = datetime.datetime.fromisoformat(date_str[:10])
-                except Exception:
-                    # fallback: assume YYYY-MM-DD
-                    try:
-                        dt = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d")
-                    except Exception:
-                        dt = datetime.datetime.utcnow()
-
-                weekday = dt.strftime("%a")  # Mon, Tue, ...
-
-                raw_time = row.get("time") or row.get("timeZone")
-                display_time = to_display_time(raw_time)
-
-                eps_est = (
-                    row.get("epsEstimated")
-                    or row.get("epsEstimate")
-                    or row.get("eps")
-                    or None
-                )
-                try:
-                    eps_est = round(float(eps_est), 2) if eps_est is not None else None
-                except Exception:
-                    eps_est = None
-
-                rev_est_raw = (
-                    row.get("revenueEstimated")
-                    or row.get("revenueEstimate")
-                    or row.get("revenue")
-                    or None
-                )
-                rev_est = format_revenue(rev_est_raw)
-
-                company = (
-                    row.get("name")
-                    or row.get("company")
-                    or row.get("companyName")
-                    or ""
-                )
-
-                items.append(
-                    {
-                        "symbol": symbol,
-                        "company": company,
-                        "date": dt.strftime("%Y-%m-%d"),
-                        "weekday": weekday,
-                        "time": display_time,  # BMO / AMC / DUR / ""
-                        "eps_estimate": eps_est,
-                        "revenue_estimate": rev_est,
-                    }
-                )
-            except Exception:
-                continue
-
-        # sort by date then symbol
-        items.sort(key=lambda x: (x["date"], x["symbol"]))
-
-        # limit to ~25 for speed
-        return {"data": items[:25]}
-    except Exception as e:
-        return {"data": [], "error": str(e)}
-
-
-
 @app.get("/stats/live")
 def live_stats():
     try:
@@ -2752,6 +2628,7 @@ def generate_premium_highlights(max_items: int = 18):
     except Exception as e:
         print("generate_premium_highlights error:", e)
         return {"bullish": [], "neutral": [], "bearish": []}
+
 @app.get("/market-pulse")
 def market_pulse():
     """
@@ -2760,7 +2637,6 @@ def market_pulse():
       - risk_level: Low / Moderate / High
       - highlights: flat list (for quick display)
       - highlights_grouped: {bullish, neutral, bearish}
-      - upcoming_earnings: curated next-7-days earnings
     """
     try:
         # 1) Base live stats (VIX + S&P change)
@@ -2792,12 +2668,6 @@ def market_pulse():
         else:
             risk_level = "Moderate Risk"
 
-        # 4) Upcoming earnings
-        earnings_resp = earnings()
-        upcoming_earnings = []
-        if isinstance(earnings_resp, dict):
-            upcoming_earnings = earnings_resp.get("data", [])
-
         # 5) Premium highlights from market_news
         grouped = generate_premium_highlights(max_items=18)
         bullish = grouped.get("bullish", [])
@@ -2815,7 +2685,6 @@ def market_pulse():
             "risk_level": risk_level,
             "highlights": flat_highlights,            # for simple list UIs
             "highlights_grouped": grouped,            # for Bullish / Neutral / Bearish blocks
-            "upcoming_earnings": upcoming_earnings,
             "updated_at": datetime.datetime.utcnow().isoformat(),
         }
     except Exception as e:
@@ -2832,7 +2701,7 @@ def market_pulse():
                 "neutral": [],
                 "bearish": [],
             },
-            "upcoming_earnings": [],
+        
             "error": str(e),
         }
 
