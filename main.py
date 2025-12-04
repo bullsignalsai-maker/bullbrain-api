@@ -2301,17 +2301,126 @@ def macro_watch():
 
 @app.get("/earnings")
 def earnings():
+    """
+    Curated upcoming earnings for the next 7 days.
+    Normalizes:
+      - date / weekday
+      - time → BMO / AMC / DUR
+      - EPS estimate
+      - Revenue estimate (B / M format string)
+    """
     try:
         today = datetime.date.today()
         next_week = today + datetime.timedelta(days=7)
+
         url = (
             "https://financialmodelingprep.com/api/v3/earning_calendar"
             f"?from={today}&to={next_week}&apikey={FMP_API_KEY}"
         )
-        data = requests.get(url, timeout=10).json()
-        return {"data": data[:20] if isinstance(data, list) else []}
+
+        raw = requests.get(url, timeout=10).json()
+        if not isinstance(raw, list):
+            return {"data": []}
+
+        def to_display_time(raw_time: str) -> str:
+            if not raw_time:
+                return ""
+            t = raw_time.lower()
+            if t in ("bmo", "before market open"):
+                return "BMO"
+            if t in ("amc", "after market close"):
+                return "AMC"
+            if t in ("dmh", "during market hours", "dmt"):
+                return "DUR"
+            return ""
+
+        def format_revenue(n):
+            if n is None:
+                return None
+            try:
+                val = float(n)
+            except Exception:
+                return None
+            if val >= 1e9:
+                return f"{val/1e9:.1f}B"
+            if val >= 1e6:
+                return f"{val/1e6:.1f}M"
+            return f"{val:.0f}"
+
+        items = []
+        for row in raw:
+            try:
+                symbol = (row.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+
+                date_str = row.get("date") or row.get("dateReported")
+                if not date_str:
+                    continue
+
+                # parse date safely
+                try:
+                    dt = datetime.datetime.fromisoformat(date_str[:10])
+                except Exception:
+                    # fallback: assume YYYY-MM-DD
+                    try:
+                        dt = datetime.datetime.strptime(date_str[:10], "%Y-%m-%d")
+                    except Exception:
+                        dt = datetime.datetime.utcnow()
+
+                weekday = dt.strftime("%a")  # Mon, Tue, ...
+
+                raw_time = row.get("time") or row.get("timeZone")
+                display_time = to_display_time(raw_time)
+
+                eps_est = (
+                    row.get("epsEstimated")
+                    or row.get("epsEstimate")
+                    or row.get("eps")
+                    or None
+                )
+                try:
+                    eps_est = round(float(eps_est), 2) if eps_est is not None else None
+                except Exception:
+                    eps_est = None
+
+                rev_est_raw = (
+                    row.get("revenueEstimated")
+                    or row.get("revenueEstimate")
+                    or row.get("revenue")
+                    or None
+                )
+                rev_est = format_revenue(rev_est_raw)
+
+                company = (
+                    row.get("name")
+                    or row.get("company")
+                    or row.get("companyName")
+                    or ""
+                )
+
+                items.append(
+                    {
+                        "symbol": symbol,
+                        "company": company,
+                        "date": dt.strftime("%Y-%m-%d"),
+                        "weekday": weekday,
+                        "time": display_time,  # BMO / AMC / DUR / ""
+                        "eps_estimate": eps_est,
+                        "revenue_estimate": rev_est,
+                    }
+                )
+            except Exception:
+                continue
+
+        # sort by date then symbol
+        items.sort(key=lambda x: (x["date"], x["symbol"]))
+
+        # limit to ~25 for speed
+        return {"data": items[:25]}
     except Exception as e:
         return {"data": [], "error": str(e)}
+
 
 
 @app.get("/stats/live")
@@ -2555,6 +2664,177 @@ def get_symbol_news(symbol: str, limit: int = 8):
         print("get_symbol_news error:", e)
         return []
 
+def generate_premium_highlights(max_items: int = 18):
+    """
+    Build curated market highlights from /market-news.
+    Returns grouped lists: bullish / neutral / bearish.
+    Each item is a single display string: "📈 Title (AAPL)".
+    """
+    try:
+        resp = market_news()
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+        if not isinstance(data, list):
+            return {"bullish": [], "neutral": [], "bearish": []}
+
+        bullish_words = [
+            "gain", "gains", "rise", "rises", "soar", "soars",
+            "beat", "beats", "growth", "surge", "surges",
+            "optimism", "rebound", "rebounds", "strong",
+            "rally", "record high", "expands", "up", "advance",
+            "higher", "jumps", "spikes"
+        ]
+
+        bearish_words = [
+            "drop", "drops", "fall", "falls", "slip", "plunge", "plunges",
+            "loss", "losses", "slowdown", "decline", "declines",
+            "cut", "cuts", "layoff", "layoffs", "weak",
+            "selloff", "tumbles", "down", "pressure",
+            "warning", "downgrade", "guidance cut"
+        ]
+
+        bullish = []
+        neutral = []
+        bearish = []
+
+        for n in data[:50]:
+            title = (n.get("title") or "").strip()
+            if not title:
+                continue
+
+            lower = title.lower()
+
+            # extra guard against question/clickbait titles
+            if "?" in title:
+                continue
+
+            # sentiment detection
+            is_bull = any(w in lower for w in bullish_words)
+            is_bear = any(w in lower for w in bearish_words)
+
+            tag = "⚖️"
+            sentiment = "neutral"
+            if is_bull and not is_bear:
+                tag = "📈"
+                sentiment = "bullish"
+            elif is_bear:
+                tag = "📉"
+                sentiment = "bearish"
+
+            ticker = n.get("ticker")
+            line_title = title
+
+            # shorten ultra-long titles
+            if len(line_title) > 140:
+                line_title = line_title[:137].rstrip() + "…"
+
+            line = f"{tag} {line_title}"
+            if ticker:
+                line = f"{line} ({ticker})"
+
+            if sentiment == "bullish":
+                bullish.append(line)
+            elif sentiment == "bearish":
+                bearish.append(line)
+            else:
+                neutral.append(line)
+
+        # Trim and balance
+        bullish = bullish[: max_items // 2]               # Up to half bullish
+        bearish = bearish[: max_items // 3]               # Some bearish
+        remaining = max_items - len(bullish) - len(bearish)
+        neutral = neutral[: max(0, remaining)]            # Fill remaining with neutral
+
+        return {
+            "bullish": bullish,
+            "neutral": neutral,
+            "bearish": bearish,
+        }
+    except Exception as e:
+        print("generate_premium_highlights error:", e)
+        return {"bullish": [], "neutral": [], "bearish": []}
+@app.get("/market-pulse")
+def market_pulse():
+    """
+    Single endpoint for Market tab:
+      - mood: fearGreed, vix, sp500_change
+      - risk_level: Low / Moderate / High
+      - highlights: flat list (for quick display)
+      - highlights_grouped: {bullish, neutral, bearish}
+      - upcoming_earnings: curated next-7-days earnings
+    """
+    try:
+        # 1) Base live stats (VIX + S&P change)
+        live = live_stats()
+        if not isinstance(live, dict):
+            live = {}
+
+        vix = float(live.get("vix", 15.0))
+        sp_change = float(live.get("sp500_change", 0.0))
+        fearGreed = live.get("fearGreed") or {"value": 50, "label": "Neutral"}
+
+        # 2) Optional extra mood from /market-mood (Fear & Greed API)
+        try:
+            mood_resp = market_mood()
+            if isinstance(mood_resp, dict):
+                mood_data = mood_resp.get("data") or {}
+                fg2 = mood_data.get("fearGreed")
+                if fg2:
+                    fearGreed = fg2
+        except Exception:
+            pass
+
+        # 3) Risk level logic (same idea as frontend)
+        fg_val = int(fearGreed.get("value", 50))
+        if vix < 15 and fg_val > 60:
+            risk_level = "Low Risk"
+        elif vix > 20 or fg_val < 30:
+            risk_level = "High Risk"
+        else:
+            risk_level = "Moderate Risk"
+
+        # 4) Upcoming earnings
+        earnings_resp = earnings()
+        upcoming_earnings = []
+        if isinstance(earnings_resp, dict):
+            upcoming_earnings = earnings_resp.get("data", [])
+
+        # 5) Premium highlights from market_news
+        grouped = generate_premium_highlights(max_items=18)
+        bullish = grouped.get("bullish", [])
+        neutral = grouped.get("neutral", [])
+        bearish = grouped.get("bearish", [])
+
+        flat_highlights = bullish + neutral + bearish
+
+        return {
+            "mood": {
+                "fearGreed": fearGreed,
+                "vix": round(vix, 2),
+                "sp500_change": round(sp_change, 2),
+            },
+            "risk_level": risk_level,
+            "highlights": flat_highlights,            # for simple list UIs
+            "highlights_grouped": grouped,            # for Bullish / Neutral / Bearish blocks
+            "upcoming_earnings": upcoming_earnings,
+            "updated_at": datetime.datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return {
+            "mood": {
+                "fearGreed": {"value": 50, "label": "Neutral"},
+                "vix": 15.0,
+                "sp500_change": 0.0,
+            },
+            "risk_level": "Moderate Risk",
+            "highlights": [],
+            "highlights_grouped": {
+                "bullish": [],
+                "neutral": [],
+                "bearish": [],
+            },
+            "upcoming_earnings": [],
+            "error": str(e),
+        }
 
 # --------------------------------------------------------------------
 # SEARCH + WATCHLIST
