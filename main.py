@@ -2383,6 +2383,7 @@ def market_mood():
 @app.get("/market-news")
 def market_news():
     import feedparser
+    import re
     from sp500_list_optimized import extract_ticker, detect_category, SP500_SET
 
     FEEDS = [
@@ -2397,33 +2398,39 @@ def market_news():
     ]
 
     HARD_KEYWORDS = [
-        "earnings","revenue","profit","loss","beat","miss",
-        "upgrade","downgrade","guidance","forecast","price target",
-        "ipo","merger","acquisition","buyback","m&a",
-        "dividend","split",
-        "index","s&p","nasdaq","dow","futures","volatility","vix",
-        "treasury","yields","bonds",
-        "fed","inflation","cpi","ppi","jobs report","payrolls",
-        "interest rate","recession"
+        "earnings", "revenue", "profit", "loss", "beat", "miss",
+        "upgrade", "downgrade", "guidance", "forecast", "price target",
+        "ipo", "merger", "acquisition", "buyback", "m&a",
+        "dividend", "split",
+        "index", "s&p", "nasdaq", "dow", "futures", "volatility", "vix",
+        "treasury", "yields", "bonds",
+        "fed", "inflation", "cpi", "ppi", "jobs report", "payrolls",
+        "interest rate", "recession"
     ]
 
     BLOCK_KEYWORDS = [
-        "why ","how to","ways to","personal","story","advice",
-        "holiday","thanksgiving","shopping","consumer","family",
-        "relationship","career","anxiety","parents","children",
-        "human interest","what to know","guide","interview","q&a",
-        "asks","said in","told","my story","journey","how i","i made","i lost",
-        "my portfolio","my wife","my husband","my family","lesson","regret","wish i","net worth",
-        "millionaire","billionaire","divorce","baby","died","health","cancer","lawsuit","arrested",
-        "jail","prison","crime","fraud","scam","ponzi","opinion","think","believe","prediction",
-        "will hit","target price","bullish on","bearish on","love this","hate this","meme","joke",
-        "lol","lmao","diamond hands","paper hands","to the moon","yolo","fomo","fud","reddit",
-        "wallstreetbets","wsb","ada","stories",
-        "nft","defi","web3","metaverse","politics",
-        "election","war","ukraine","russia","weather","storm","hurricane","celebrity","movie",
-        "tv show","netflix show","disney+","recipe","diet","fitness","gym","travel","vacation",
-        "dating","relationship","sex","reddit","clickbait","you won't believe","shocking","my life"
-            ]
+        "why ", "how to", "ways to", "personal", "story", "advice",
+        "holiday", "thanksgiving", "shopping", "consumer", "family",
+        "relationship", "career", "anxiety", "parents", "children",
+        "human interest", "what to know", "guide", "interview", "q&a",
+        "asks", "said in", "told", "my story", "journey", "how i",
+        "i made", "i lost", "my portfolio", "my wife", "my husband",
+        "my family", "lesson", "regret", "wish i", "net worth",
+        "millionaire", "billionaire", "divorce", "baby", "died",
+        "health", "cancer", "lawsuit", "arrested", "jail", "prison",
+        "crime", "fraud", "scam", "ponzi", "opinion", "think",
+        "believe", "prediction", "will hit", "target price",
+        "bullish on", "bearish on", "love this", "hate this",
+        "meme", "joke", "lol", "lmao", "diamond hands",
+        "paper hands", "to the moon", "yolo", "fomo", "fud", "reddit",
+        "wallstreetbets", "wsb", "ada", "stories",
+        "nft", "defi", "web3", "metaverse", "politics",
+        "election", "war", "ukraine", "russia", "weather", "storm",
+        "hurricane", "celebrity", "movie", "tv show", "netflix show",
+        "disney+", "recipe", "diet", "fitness", "gym", "travel",
+        "vacation", "dating", "sex", "clickbait", "you won't believe",
+        "shocking", "my life"
+    ]
 
     news = []
 
@@ -2432,14 +2439,23 @@ def market_news():
             feed = feedparser.parse(url)
 
             for e in feed.entries[:25]:
+                # -------------------
+                # Extract data
+                # -------------------
                 title = getattr(e, "title", "") or ""
                 summary = getattr(e, "summary", "") or ""
-                text_combined = (title + " " + summary).lower()
-                                title = getattr(e, "title", "") or ""
-                summary = getattr(e, "summary", "") or ""
 
-                # 🔹 NEW: Hard filter out question-style / clickbait titles
+                # Remove garbage summary formatting
+                clean_summary = summary.replace("<p>", "").replace("</p>", "")
+                clean_summary = clean_summary.strip()
+
+                # Normalize for filtering
                 lower_title = title.lower()
+                text_combined = (title + " " + summary).lower()
+
+                # -------------------
+                # Filter out question-style titles
+                # -------------------
                 if (
                     "?" in title
                     or lower_title.startswith(("why ", "how ", "what ", "should ", "is ", "can "))
@@ -2447,74 +2463,75 @@ def market_news():
                 ):
                     continue
 
-                text_combined = (title + " " + summary).lower()
-
-
-                # 1️⃣ HARD FILTER → Must contain a stock-related keyword
+                # -------------------
+                # Must contain a financial keyword
+                # -------------------
                 if not any(k in text_combined for k in HARD_KEYWORDS):
                     continue
 
-                # 2️⃣ BLOCK lifestyle / personal / irrelevant content
+                # -------------------
+                # Block irrelevant/lifestyle content
+                # -------------------
                 if any(b in text_combined for b in BLOCK_KEYWORDS):
                     continue
 
-                # 3️⃣ Detect ticker and allow only S&P500 (UPPERCASE text)
-                full_text_upper = (title + " " + summary).upper()  # 🔹 NEW
-                ticker = extract_ticker(full_text_upper)           # 🔹 CHANGED
+                # -------------------
+                # Ticker extraction (UPPERCASE)
+                # -------------------
+                full_upper = (title + " " + summary).upper()
+                ticker = extract_ticker(full_upper)
+
                 if not ticker or ticker not in SP500_SET:
                     continue
 
-                # 4️⃣ Title length filter
+                # Minimal title quality
                 if len(title.split()) < 5:
                     continue
 
-                 # 5️⃣ Category detection (use same uppercase combined text)
-                category = detect_category(full_text_upper)  # 🔹 CHANGED
+                # -------------------
+                # Category detection
+                # -------------------
+                category = detect_category(full_upper)
 
+                # Date
                 published = getattr(e, "published", None)
                 if not published:
                     published = datetime.datetime.utcnow().isoformat()
 
                 source = getattr(getattr(e, "source", {}), "title", "News")
 
-                clean_summary = summary.replace("<p>", "").replace("</p>", "")[:220] + "..."
-
-                news.append({
-                    "title": title,
-                    "summary": clean_summary,
-                    "link": getattr(e, "link", ""),
-                    "pubDate": published,
-                    "source": source,
-                    "ticker": ticker,
-                    "category": category,
-                })
+                news.append(
+                    {
+                        "title": title,
+                        "summary": clean_summary[:220] + "...",
+                        "link": getattr(e, "link", ""),
+                        "pubDate": published,
+                        "source": source,
+                        "ticker": ticker,
+                        "category": category,
+                    }
+                )
 
         except Exception as ex:
             print("RSS error:", ex)
 
-        # Deduplicate (normalized so cross-source duplicates are removed)
+    # --------------------------
+    # DEDUPE (normalized titles)
+    # --------------------------
     seen = set()
     final = []
 
     for n in news:
-        # 🔹 NEW: normalize title by stripping non-alphanumeric characters
-        norm_title = re.sub(r"[^a-z0-9]+", "", n["title"].lower())
-        key = norm_title[:80]  # wider window than 60 chars
-
-        if key in seen:
+        norm = re.sub(r"[^a-z0-9]+", "", n["title"].lower())[:80]
+        if norm in seen:
             continue
-
-        seen.add(key)
+        seen.add(norm)
         final.append(n)
 
-    # Sort by latest
+    # Sort newest first
     final.sort(key=lambda x: x["pubDate"], reverse=True)
 
     return {"data": final[:50]}
-
-
-
-
 
 
 def get_symbol_news(symbol: str, limit: int = 8):
