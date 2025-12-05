@@ -2629,80 +2629,158 @@ def generate_premium_highlights(max_items: int = 18):
         print("generate_premium_highlights error:", e)
         return {"bullish": [], "neutral": [], "bearish": []}
 
+# ---------------------------------------------------------
+#  MARKET PULSE — ALWAYS RETURNS PREMIUM HIGHLIGHTS
+# ---------------------------------------------------------
 @app.get("/market-pulse")
 def market_pulse():
-    """
-    Single endpoint for Market tab:
-      - mood: fearGreed, vix, sp500_change
-      - risk_level: Low / Moderate / High
-      - highlights: flat list (for quick display)
-      - highlights_grouped: {bullish, neutral, bearish}
-    """
     try:
-        # 1) Base live stats (VIX + S&P change)
-        live = live_stats()
-        if not isinstance(live, dict):
-            live = {}
-
-        vix = float(live.get("vix", 15.0))
-        sp_change = float(live.get("sp500_change", 0.0))
-        fearGreed = live.get("fearGreed") or {"value": 50, "label": "Neutral"}
-
-        # 2) Optional extra mood from /market-mood (Fear & Greed API)
+        # -------------------------------------------------
+        # 1. Load Market Mood (fear/greed, vix, sp500 change)
+        # -------------------------------------------------
         try:
-            mood_resp = market_mood()
-            if isinstance(mood_resp, dict):
-                mood_data = mood_resp.get("data") or {}
-                fg2 = mood_data.get("fearGreed")
-                if fg2:
-                    fearGreed = fg2
-        except Exception:
-            pass
+            mood_res = live_stats()   # Reuse your existing function
+            mood = mood_res
+        except:
+            mood = {
+                "fearGreed": {"value": 50, "label": "Neutral"},
+                "vix": 15.0,
+                "sp500_change": 0.0,
+            }
 
-        # 3) Risk level logic (same idea as frontend)
-        fg_val = int(fearGreed.get("value", 50))
-        if vix < 15 and fg_val > 60:
+        # Determine risk level
+        vg = mood["vix"]
+        fg = mood["fearGreed"]["value"]
+        if vg < 15 and fg > 60:
             risk_level = "Low Risk"
-        elif vix > 20 or fg_val < 30:
+        elif vg > 20 or fg < 30:
             risk_level = "High Risk"
         else:
             risk_level = "Moderate Risk"
 
-        # 5) Premium highlights from market_news
-        grouped = generate_premium_highlights(max_items=18)
-        bullish = grouped.get("bullish", [])
-        neutral = grouped.get("neutral", [])
-        bearish = grouped.get("bearish", [])
+        # -------------------------------------------------
+        # 2. Fetch 50 headlines from your FREE market-news
+        # -------------------------------------------------
+        try:
+            news_json = market_news()   # your existing endpoint
+            raw_news = news_json.get("data", [])[:50]
+        except:
+            raw_news = []
 
-        flat_highlights = bullish + neutral + bearish
+        # -------------------------------------------------
+        # 3. Sentiment logic
+        # -------------------------------------------------
+        def categorize_sentiment(title: str):
+            t = title.lower()
 
-        return {
-            "mood": {
-                "fearGreed": fearGreed,
-                "vix": round(vix, 2),
-                "sp500_change": round(sp_change, 2),
-            },
+            bullish_kw = [
+                "rise", "rises", "up", "gain", "gains", "higher", "soar",
+                "soars", "jump", "jumps", "climb", "climbs", "surge",
+                "surges", "beat", "beats", "strong", "rebound", "record",
+                "optimism", "advance", "improve", "expands",
+            ]
+
+            bearish_kw = [
+                "fall", "falls", "down", "drop", "drops", "lower", "decline",
+                "declines", "sink", "sinks", "loss", "miss", "weak", 
+                "slowdown", "selloff", "pressure", "tumbles", "plunge",
+                "cuts guidance", "warns",
+            ]
+
+            if any(k in t for k in bullish_kw):
+                return "bullish"
+            if any(k in t for k in bearish_kw):
+                return "bearish"
+            return "neutral"
+
+        # -------------------------------------------------
+        # 4. Clean + dedupe headlines
+        # -------------------------------------------------
+        cleaned = []
+        seen = set()
+
+        for n in raw_news:
+            title = (n.get("title") or "").strip()
+            if not title or len(title) < 10:
+                continue
+
+            # Remove multi-sentence junk
+            short = title.split(".")[0].strip()
+
+            if len(short) < 10:
+                continue
+
+            key = short.lower().replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+
+            cleaned.append(short)
+
+        # -------------------------------------------------
+        # 5. Group sentiment
+        # -------------------------------------------------
+        groups = {"bullish": [], "neutral": [], "bearish": []}
+
+        for t in cleaned:
+            s = categorize_sentiment(t)
+            icon = "📈" if s == "bullish" else "📉" if s == "bearish" else "⚖️"
+            groups[s].append(f"{icon} {t}")
+
+        # -------------------------------------------------
+        # 6. Guarantee 5 per sentiment category
+        # -------------------------------------------------
+        def ensure_minimum(group_name):
+            group = groups[group_name]
+            if len(group) >= 5:
+                return group[:5]
+
+            needed = 5 - len(group)
+            # borrow from all groups combined
+            fallback = (
+                groups["bullish"]
+                + groups["neutral"]
+                + groups["bearish"]
+            )
+            fallback = [x for x in fallback if x not in group][:needed]
+
+            return (group + fallback)[:5]
+
+        final_groups = {
+            "bullish": ensure_minimum("bullish"),
+            "neutral": ensure_minimum("neutral"),
+            "bearish": ensure_minimum("bearish"),
+        }
+
+        # -------------------------------------------------
+        # 7. Build final pulse response
+        # -------------------------------------------------
+        final_pulse = {
+            "mood": mood,
             "risk_level": risk_level,
-            "highlights": flat_highlights,            # for simple list UIs
-            "highlights_grouped": grouped,            # for Bullish / Neutral / Bearish blocks
+            "highlights": (
+                final_groups["bullish"]
+                + final_groups["neutral"]
+                + final_groups["bearish"]
+            ),
+            "highlights_grouped": final_groups,
             "updated_at": datetime.datetime.utcnow().isoformat(),
         }
+
+        return final_pulse
+
     except Exception as e:
         return {
             "mood": {
                 "fearGreed": {"value": 50, "label": "Neutral"},
-                "vix": 15.0,
-                "sp500_change": 0.0,
+                "vix": 15,
+                "sp500_change": 0,
             },
             "risk_level": "Moderate Risk",
             "highlights": [],
-            "highlights_grouped": {
-                "bullish": [],
-                "neutral": [],
-                "bearish": [],
-            },
-        
+            "highlights_grouped": {"bullish": [], "neutral": [], "bearish": []},
             "error": str(e),
+            "updated_at": datetime.datetime.utcnow().isoformat(),
         }
 
 # --------------------------------------------------------------------
