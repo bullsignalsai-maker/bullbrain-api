@@ -3526,27 +3526,57 @@ def _get_market_overview_quick():
 @app.get("/market-pulse")
 def market_pulse():
     try:
-        # 1) Get cleaned financial news from our own /market-news logic
-        resp = market_news()
-        news_list = resp.get("data", []) if isinstance(resp, dict) else []
+        # 1) Always fetch FRESH news (no cache)
+        news_resp = market_news()
+        news_list = news_resp.get("data", []) if isinstance(news_resp, dict) else []
+
+        # Safety
         if not isinstance(news_list, list):
             news_list = []
 
-        # 2) Build sentiment-based highlights from titles
-        titles = [n.get("title", "") for n in news_list[:60] if n.get("title")]
+        # Ensure sorted by pubDate (newest first)
+        try:
+            news_list.sort(key=lambda x: x.get("pubDate", ""), reverse=True)
+        except:
+            pass
+
+        # 2) Build sentiment from TOP 80 fresh items
+        titles = [n.get("title", "") for n in news_list[:80] if n.get("title")]
         analyzed = _analyze_headline_sentiment_py(titles)
 
-        bullish_raw = [x["title"] for x in analyzed if x["tag"] == "📈"]
-        bearish_raw = [x["title"] for x in analyzed if x["tag"] == "📉"]
-        neutral_raw = [x["title"] for x in analyzed if x["tag"] == "⚖️"]
+        bullish_raw = [a["title"] for a in analyzed if a["tag"] == "📈"]
+        bearish_raw = [a["title"] for a in analyzed if a["tag"] == "📉"]
+        neutral_raw = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
 
         bullish = _ensure_five(bullish_raw, "bullish")
         neutral = _ensure_five(neutral_raw, "neutral")
         bearish = _ensure_five(bearish_raw, "bearish")
 
-        # 3) Quick market overview (SPY, VIX, synthetic Fear & Greed)
+        # 3) Quick SPY/VIX overview
         overview = _get_market_overview_quick()
 
+        # 4) Group news by date
+        grouped = {"today": [], "yesterday": [], "week": [], "older": []}
+        today = datetime.datetime.utcnow().date()
+        yesterday = today - datetime.timedelta(days=1)
+        week_ago = today - datetime.timedelta(days=7)
+
+        for n in news_list:
+            try:
+                d = datetime.datetime.fromisoformat(n["pubDate"]).date()
+            except:
+                continue
+
+            if d == today:
+                grouped["today"].append(n)
+            elif d == yesterday:
+                grouped["yesterday"].append(n)
+            elif d >= week_ago:
+                grouped["week"].append(n)
+            else:
+                grouped["older"].append(n)
+
+        # 5) Return clean structure
         return {
             "market_overview": overview,
             "highlights_grouped": {
@@ -3554,13 +3584,12 @@ def market_pulse():
                 "neutral": neutral,
                 "bearish": bearish,
             },
-            "news": news_list[:50],  # reuse the exact objects from /market-news
+            "news_grouped": grouped,
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
 
     except Exception as e:
         print("market_pulse error:", e)
-        # Safe fallback
         fallback_overview = _get_market_overview_quick()
         return {
             "market_overview": fallback_overview,
@@ -3569,6 +3598,6 @@ def market_pulse():
                 "neutral": [],
                 "bearish": [],
             },
-            "news": [],
+            "news_grouped": {"today": [], "yesterday": [], "week": [], "older": []},
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
