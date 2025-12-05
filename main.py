@@ -2635,152 +2635,135 @@ def generate_premium_highlights(max_items: int = 18):
 @app.get("/market-pulse")
 def market_pulse():
     try:
-        # -------------------------------------------------
-        # 1. Load Market Mood (fear/greed, vix, sp500 change)
-        # -------------------------------------------------
+        # --------------------------------------------------------------
+        # 1. FETCH MARKET NEWS (raw headlines for highlights)
+        # --------------------------------------------------------------
         try:
-            mood_res = live_stats()   # Reuse your existing function
-            mood = mood_res
+            news = fetch_market_news()  # <-- Your /market-news logic
         except:
-            mood = {
-                "fearGreed": {"value": 50, "label": "Neutral"},
-                "vix": 15.0,
-                "sp500_change": 0.0,
-            }
+            news = []
 
-        # Determine risk level
-        vg = mood["vix"]
-        fg = mood["fearGreed"]["value"]
-        if vg < 15 and fg > 60:
-            risk_level = "Low Risk"
-        elif vg > 20 or fg < 30:
-            risk_level = "High Risk"
-        else:
-            risk_level = "Moderate Risk"
+        # Dedupe raw news FIRST
+        seen_raw = set()
+        clean_news = []
+        for n in news:
+            key = (n.get("title", "").lower().strip())
+            if key and key not in seen_raw:
+                seen_raw.add(key)
+                clean_news.append(n)
 
-        # -------------------------------------------------
-        # 2. Fetch 50 headlines from your FREE market-news
-        # -------------------------------------------------
-        try:
-            news_json = market_news()   # your existing endpoint
-            raw_news = news_json.get("data", [])[:50]
-        except:
-            raw_news = []
+        # --------------------------------------------------------------
+        # 2. CLEAN HEADLINES WITHOUT CUTTING CONTENT
+        # --------------------------------------------------------------
+        def clean_title(t):
+            if not t:
+                return ""
+            t = re.sub(r'<.*?>', '', t)          # remove HTML
+            t = t.encode("ascii", errors="ignore").decode()  # remove emojis
+            t = t.replace("&apos;", "'").replace("&quot;", "")
+            t = t.replace("&#39;", "'").replace("&amp;", "&")
+            t = re.sub(r"\s+", " ", t)
+            return t.strip().rstrip(".,;")
 
-        # -------------------------------------------------
-        # 3. Sentiment logic
-        # -------------------------------------------------
-        def categorize_sentiment(title: str):
-            t = title.lower()
+        cleaned = []
+        for n in clean_news:
+            title = clean_title(n.get("title", ""))
+            if len(title) < 40:   # too short → skip
+                continue
+            cleaned.append(title)
 
-            bullish_kw = [
-                "rise", "rises", "up", "gain", "gains", "higher", "soar",
-                "soars", "jump", "jumps", "climb", "climbs", "surge",
-                "surges", "beat", "beats", "strong", "rebound", "record",
-                "optimism", "advance", "improve", "expands",
-            ]
+        # --------------------------------------------------------------
+        # 3. SENTIMENT CLASSIFICATION (Option A Conservative)
+        # --------------------------------------------------------------
+        bullish_words = [
+            "soar", "soars", "surge", "surges", "gain", "gains", "record",
+            "beats", "beat", "jumps", "strong", "growth", "rally", "upgrade",
+            "raises guidance", "raises forecast"
+        ]
 
-            bearish_kw = [
-                "fall", "falls", "down", "drop", "drops", "lower", "decline",
-                "declines", "sink", "sinks", "loss", "miss", "weak", 
-                "slowdown", "selloff", "pressure", "tumbles", "plunge",
-                "cuts guidance", "warns",
-            ]
+        bearish_words = [
+            "fall", "falls", "plunge", "plunges", "slump", "slumps",
+            "weak", "miss", "cuts forecast", "downgrade", "downgrades",
+            "cuts guidance", "drop", "drops"
+        ]
 
-            if any(k in t for k in bullish_kw):
+        def classify_sentiment(t):
+            lt = t.lower()
+            if any(w in lt for w in bullish_words):
                 return "bullish"
-            if any(k in t for k in bearish_kw):
+            if any(w in lt for w in bearish_words):
                 return "bearish"
             return "neutral"
 
-        # -------------------------------------------------
-        # 4. Clean + dedupe headlines
-        # -------------------------------------------------
-        cleaned = []
-        seen = set()
-
-        for n in raw_news:
-            title = (n.get("title") or "").strip()
-            if not title or len(title) < 10:
-                continue
-
-            # Remove multi-sentence junk
-            short = title.split(".")[0].strip()
-
-            if len(short) < 10:
-                continue
-
-            key = short.lower().replace(" ", "")
-            if key in seen:
-                continue
-            seen.add(key)
-
-            cleaned.append(short)
-
-        # -------------------------------------------------
-        # 5. Group sentiment
-        # -------------------------------------------------
-        groups = {"bullish": [], "neutral": [], "bearish": []}
+        sentiment_map = {
+            "bullish": [],
+            "neutral": [],
+            "bearish": []
+        }
 
         for t in cleaned:
-            s = categorize_sentiment(t)
-            icon = "📈" if s == "bullish" else "📉" if s == "bearish" else "⚖️"
-            groups[s].append(f"{icon} {t}")
+            group = classify_sentiment(t)
+            sentiment_map[group].append(t)
 
-        # -------------------------------------------------
-        # 6. Guarantee 5 per sentiment category
-        # -------------------------------------------------
-        def ensure_minimum(group_name):
-            group = groups[group_name]
-            if len(group) >= 5:
-                return group[:5]
+        # --------------------------------------------------------------
+        # 4. STRICT REMOVE MARKET NEWS OVERLAP
+        # --------------------------------------------------------------
+        news_titles_norm = set(k.lower().strip() for k in seen_raw)
 
-            needed = 5 - len(group)
-            # borrow from all groups combined
-            fallback = (
-                groups["bullish"]
-                + groups["neutral"]
-                + groups["bearish"]
-            )
-            fallback = [x for x in fallback if x not in group][:needed]
+        def remove_overlap(items):
+            out = []
+            for t in items:
+                norm = t.lower().strip()
+                if norm not in news_titles_norm:
+                    out.append(t)
+            return out
 
-            return (group + fallback)[:5]
+        sentiment_map["bullish"] = remove_overlap(sentiment_map["bullish"])
+        sentiment_map["neutral"] = remove_overlap(sentiment_map["neutral"])
+        sentiment_map["bearish"] = remove_overlap(sentiment_map["bearish"])
 
-        final_groups = {
-            "bullish": ensure_minimum("bullish"),
-            "neutral": ensure_minimum("neutral"),
-            "bearish": ensure_minimum("bearish"),
-        }
+        # --------------------------------------------------------------
+        # 5. LIMIT / PAD → EXACTLY 5 EACH
+        # --------------------------------------------------------------
+        def pad_or_limit(arr, need=5):
+            arr = list(dict.fromkeys(arr))  # dedupe
+            if len(arr) > need:
+                return arr[:need]
+            # pad using neutral content (fallback)
+            while len(arr) < need:
+                arr.append("Market Update Unavailable — Monitoring Market Conditions")
+            return arr
 
-        # -------------------------------------------------
-        # 7. Build final pulse response
-        # -------------------------------------------------
-        final_pulse = {
+        bullish_final = pad_or_limit(sentiment_map["bullish"], 5)
+        neutral_final = pad_or_limit(sentiment_map["neutral"], 5)
+        bearish_final = pad_or_limit(sentiment_map["bearish"], 5)
+
+        # --------------------------------------------------------------
+        # 6. MARKET MOOD (unchanged)
+        # --------------------------------------------------------------
+        live = live_stats()
+        mood = live if isinstance(live, dict) else {}
+
+        # --------------------------------------------------------------
+        # 7. FINAL RESPONSE
+        # --------------------------------------------------------------
+        return {
             "mood": mood,
-            "risk_level": risk_level,
-            "highlights": (
-                final_groups["bullish"]
-                + final_groups["neutral"]
-                + final_groups["bearish"]
-            ),
-            "highlights_grouped": final_groups,
-            "updated_at": datetime.datetime.utcnow().isoformat(),
+            "risk_level": compute_risk(mood),
+            "highlights_grouped": {
+                "bullish": [f"📈 {t}" for t in bullish_final],
+                "neutral": [f"⚖️ {t}" for t in neutral_final],
+                "bearish": [f"📉 {t}" for t in bearish_final],
+            },
+            "updated_at": datetime.datetime.utcnow().isoformat()
         }
-
-        return final_pulse
 
     except Exception as e:
         return {
-            "mood": {
-                "fearGreed": {"value": 50, "label": "Neutral"},
-                "vix": 15,
-                "sp500_change": 0,
-            },
+            "mood": {"fearGreed": {"value": 50, "label": "Neutral"}, "vix": 15, "sp500_change": 0},
             "risk_level": "Moderate Risk",
-            "highlights": [],
             "highlights_grouped": {"bullish": [], "neutral": [], "bearish": []},
-            "error": str(e),
-            "updated_at": datetime.datetime.utcnow().isoformat(),
+            "error": str(e)
         }
 
 # --------------------------------------------------------------------
