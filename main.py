@@ -2384,128 +2384,154 @@ def market_mood():
 def market_news():
     import feedparser
     import re
-    from sp500_list_optimized import extract_ticker, detect_category, SP500_SET
+    import datetime
+    from sp500_list_optimized import extract_ticker, detect_category
 
+    # ----------------------------------------------------------
+    # 1) FREE HIGH-QUALITY RSS SOURCES (VERY RELIABLE)
+    # ----------------------------------------------------------
     FEEDS = [
-        "https://www.benzinga.com/rss/stock-news.xml",
+        # High-volume US finance feeds
+        
         "https://seekingalpha.com/api/sa/combined/global_news.rss",
         "https://feeds.marketwatch.com/marketwatch/topstories/",
         "https://www.investing.com/rss/news.rss",
         "https://www.zacks.com/rss/news.xml",
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
-        "s=AAPL,TSLA,MSFT,NVDA,META,AMZN,GOOGL,AMD,INTC,JPM,BAC,GS"
-        "&region=US&lang=en-US",
+
+        # Yahoo Finance — extremely active
+        "https://finance.yahoo.com/rss/topstories",
+        "https://finance.yahoo.com/topic/earnings/rss",
+        "https://finance.yahoo.com/rss/tech",
+        "https://finance.yahoo.com/rss/pharma",
+
+        # CNBC (RSS mirrors)
+        "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+        "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "https://www.cnbc.com/id/10000664/device/rss/rss.html",
     ]
 
+    # ----------------------------------------------------------
+    # 2) FINANCIAL SIGNAL WORDS
+    # ----------------------------------------------------------
     HARD_KEYWORDS = [
         "earnings", "revenue", "profit", "loss", "beat", "miss",
-        "upgrade", "downgrade", "guidance", "forecast", "price target",
-        "ipo", "merger", "acquisition", "buyback", "m&a",
-        "dividend", "split",
-        "index", "s&p", "nasdaq", "dow", "futures", "volatility", "vix",
-        "treasury", "yields", "bonds",
-        "fed", "inflation", "cpi", "ppi", "jobs report", "payrolls",
-        "interest rate", "recession"
+        "upgrade", "downgrade", "guidance", "forecast",
+        "ipo", "merger", "acquisition", "m&a", "buyback", "dividend",
+        "index", "nasdaq", "dow", "s&p", "futures", "bond",
+        "treasury", "yield", "inflation", "cpi", "ppi", "jobs report",
+        "payrolls", "interest rate", "fed", "recession", "market"
     ]
 
+    # ----------------------------------------------------------
+    # 3) BLOCK NON-FINANCIAL, PERSONAL, OR CLICKBAIT STORIES
+    # ----------------------------------------------------------
     BLOCK_KEYWORDS = [
-        "why ", "how to", "ways to", "personal", "story", "advice",
-        "holiday", "thanksgiving", "shopping", "consumer", "family",
-        "relationship", "career", "anxiety", "parents", "children",
-        "human interest", "what to know", "guide", "interview", "q&a",
-        "asks", "said in", "told", "my story", "journey", "how i",
-        "i made", "i lost", "my portfolio", "my wife", "my husband",
-        "my family", "lesson", "regret", "wish i", "net worth",
-        "millionaire", "billionaire", "divorce", "baby", "died",
-        "health", "cancer", "lawsuit", "arrested", "jail", "prison",
-        "crime", "fraud", "scam", "ponzi", "opinion", "think",
-        "believe", "prediction", "will hit", "target price",
-        "bullish on", "bearish on", "love this", "hate this",
-        "meme", "joke", "lol", "lmao", "diamond hands",
-        "paper hands", "to the moon", "yolo", "fomo", "fud", "reddit",
-        "wallstreetbets", "wsb", "ada", "stories",
-        "nft", "defi", "web3", "metaverse", "politics",
-        "election", "war", "ukraine", "russia", "weather", "storm",
-        "hurricane", "celebrity", "movie", "tv show", "netflix show",
-        "disney+", "recipe", "diet", "fitness", "gym", "travel",
-        "vacation", "dating", "sex", "clickbait", "you won't believe",
-        "shocking", "my life","Here's","Why","How","What",
+        "why ", "how ", "what ", "should ", "could ", "would ",
+        "story", "my ", "wife", "husband", "family", "children",
+        "holiday", "thanksgiving", "gift", "shopping",
+        "personal", "opinion", "think", "believe",
+        "celebrity", "movie", "tv", "netflix", "disney",
+        "crime", "arrest", "murder", "lawsuit", "scam",
+        "nft", "crypto", "bitcoin", "dogecoin",
+        "recipe", "diet", "health", "cancer",
+        "war", "ukraine", "russia", "election",
+        "anxiety", "journey", "divorce",
+        "clickbait", "won't believe",
     ]
 
     news = []
 
+    # ----------------------------------------------------------
+    # FETCH & FILTER NEWS
+    # ----------------------------------------------------------
     for url in FEEDS:
         try:
             feed = feedparser.parse(url)
 
-            for e in feed.entries[:25]:
-                # -------------------
-                # Extract data
-                # -------------------
+            for e in feed.entries[:30]:
                 title = getattr(e, "title", "") or ""
                 summary = getattr(e, "summary", "") or ""
+                clean_summary = summary.replace("<p>", "").replace("</p>", "").strip()
 
-                # Remove garbage summary formatting
-                clean_summary = summary.replace("<p>", "").replace("</p>", "")
-                clean_summary = clean_summary.strip()
-
-                # Normalize for filtering
                 lower_title = title.lower()
                 text_combined = (title + " " + summary).lower()
 
-                # -------------------
-                # Filter out question-style titles
-                # -------------------
+                # -------------------------------
+                # FILTER 1: BLOCK QUESTIONS / OPINIONS
+                # -------------------------------
                 if (
                     "?" in title
-                    or lower_title.startswith(("why ", "how ", "what ", "should ", "is ", "can "))
-                    or " q&a" in lower_title
+                    or lower_title.startswith(("why ", "how ", "what ", "who ", "should "))
                 ):
                     continue
 
-                # -------------------
-                # Must contain a financial keyword
-                # -------------------
-                if not any(k in text_combined for k in HARD_KEYWORDS):
-                    continue
-
-                # -------------------
-                # Block irrelevant/lifestyle content
-                # -------------------
+                # -------------------------------
+                # FILTER 2: BLOCK LIFESTYLE / NON-FINANCIAL
+                # -------------------------------
                 if any(b in text_combined for b in BLOCK_KEYWORDS):
                     continue
 
-                # -------------------
-                # Ticker extraction (UPPERCASE)
-                # -------------------
+                # -------------------------------
+                # STEP 3: EXTRACT TICKER (OPTIONAL NOW)
+                # -------------------------------
                 full_upper = (title + " " + summary).upper()
-                ticker = extract_ticker(full_upper)
+                ticker = extract_ticker(full_upper)  # ANY ticker allowed now (NOT just S&P500)
 
-                if not ticker or ticker not in SP500_SET:
+                # -------------------------------
+                # FILTER 3: FINANCIAL-ONLY LOGIC (RELAXED)
+                # -------------------------------
+                allowed = False
+
+                # A) If ticker exists → ALWAYS ALLOWED
+                if ticker:
+                    allowed = True
+
+                # B) If financial keywords exist → allowed
+                elif any(k in text_combined for k in HARD_KEYWORDS):
+                    allowed = True
+
+                # C) Market / index / fed updates allowed
+                elif any(x in lower_title for x in ["market", "stocks", "futures", "dow", "nasdaq", "s&p", "fed"]):
+                    allowed = True
+
+                if not allowed:
                     continue
 
-                # Minimal title quality
-                if len(title.split()) < 5:
+                # -------------------------------
+                # FILTER 4: MIN TITLE QUALITY
+                # -------------------------------
+                if len(title.split()) < 4:
                     continue
 
-                # -------------------
-                # Category detection
-                # -------------------
+                # -------------------------------
+                # DETECT CATEGORY
+                # -------------------------------
                 category = detect_category(full_upper)
 
-                # Date
-                published = getattr(e, "published", None)
-                if not published:
-                    published = datetime.datetime.utcnow().isoformat()
+                # -------------------------------
+                # REAL SOURCE DETECTION
+                # -------------------------------
+                source = "News"
+                if hasattr(e, "source") and hasattr(e.source, "title"):
+                    source = e.source.title
+                elif hasattr(e, "author"):
+                    source = e.author
+                elif hasattr(feed, "feed") and "title" in feed.feed:
+                    source = feed.feed.title
 
-                source = getattr(getattr(e, "source", {}), "title", "News")
+                # -------------------------------
+                # DATE HANDLING
+                # -------------------------------
+                pub_date = getattr(e, "published", None)
+                if not pub_date:
+                    pub_date = datetime.datetime.utcnow().isoformat()
 
                 news.append(
                     {
                         "title": title,
                         "summary": clean_summary[:220] + "...",
                         "link": getattr(e, "link", ""),
-                        "pubDate": published,
+                        "pubDate": pub_date,
                         "source": source,
                         "ticker": ticker,
                         "category": category,
@@ -2515,14 +2541,14 @@ def market_news():
         except Exception as ex:
             print("RSS error:", ex)
 
-    # --------------------------
-    # DEDUPE (normalized titles)
-    # --------------------------
+    # ----------------------------------------------------------
+    # DEDUPE (normalize title)
+    # ----------------------------------------------------------
     seen = set()
     final = []
 
     for n in news:
-        norm = re.sub(r"[^a-z0-9]+", "", n["title"].lower())[:80]
+        norm = re.sub(r"[^a-z0-9]+", "", n["title"].lower())[:70]
         if norm in seen:
             continue
         seen.add(norm)
@@ -2531,30 +2557,8 @@ def market_news():
     # Sort newest first
     final.sort(key=lambda x: x["pubDate"], reverse=True)
 
-    return {"data": final[:50]}
-
-
-def get_symbol_news(symbol: str, limit: int = 8):
-    sym = symbol.upper()
-    try:
-        resp = market_news()
-        data = resp.get("data", []) if isinstance(resp, dict) else []
-        if not isinstance(data, list):
-            return []
-        filtered = []
-        for n in data:
-            title = (n.get("title") or "")
-            summary = (n.get("summary") or "")
-            text = (title + " " + summary).upper()
-            if sym in text:
-                filtered.append(n)
-        if not filtered:
-            return data[:limit]
-        return filtered[:limit]
-    except Exception as e:
-        print("get_symbol_news error:", e)
-        return []
-
+    # Return top 70 (feeds produce LOTS of news)
+    return {"data": final[:70]}
 
 # --------------------------------------------------------------------
 # SEARCH + WATCHLIST
