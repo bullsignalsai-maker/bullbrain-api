@@ -2299,6 +2299,21 @@ def macro_watch():
         return {"data": [], "error": str(e)}
 
 
+@app.get("/earnings")
+def earnings():
+    try:
+        today = datetime.date.today()
+        next_week = today + datetime.timedelta(days=7)
+        url = (
+            "https://financialmodelingprep.com/api/v3/earning_calendar"
+            f"?from={today}&to={next_week}&apikey={FMP_API_KEY}"
+        )
+        data = requests.get(url, timeout=10).json()
+        return {"data": data[:20] if isinstance(data, list) else []}
+    except Exception as e:
+        return {"data": [], "error": str(e)}
+
+
 @app.get("/stats/live")
 def live_stats():
     try:
@@ -2470,7 +2485,7 @@ def market_news():
                     continue
 
                 # Minimal title quality
-                if len(title.split()) < 10:
+                if len(title.split()) < 5:
                     continue
 
                 # -------------------
@@ -2539,243 +2554,6 @@ def get_symbol_news(symbol: str, limit: int = 8):
     except Exception as e:
         print("get_symbol_news error:", e)
         return []
-        
-
-def generate_premium_highlights():
-    """
-    Build curated market highlights from /market-news.
-    Returns grouped lists: bullish / neutral / bearish.
-    Each item is a clean title string (no emojis, no truncation).
-    Guarantees 5 per group using fallbacks if needed.
-    """
-    try:
-        resp = market_news()
-        data = resp.get("data", []) if isinstance(resp, dict) else []
-        if not isinstance(data, list):
-            data = []
-
-        # ---------------------------
-        # Clean + normalize helpers
-        # ---------------------------
-        def normalize_title(t: str) -> str:
-            if not t:
-                return ""
-            t = t.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')
-            t = t.replace("…", "...").strip()
-            return t
-
-        import re as _re
-
-        def norm_key(t: str) -> str:
-            return _re.sub(r"[^a-z0-9]+", "", t.lower())[:80]
-
-        # ---------------------------
-        # Sentiment keyword buckets
-        # ---------------------------
-        bullish_kw = [
-            "soar", "soars", "soared",
-            "rally", "rallies", "rallied",
-            "jump", "jumps", "jumped",
-            "spike", "spikes", "spiked",
-            "gain", "gains", "gained",
-            "surge", "surges", "surged",
-            "record high", "record highs",
-            "beats", "beat estimates", "beat expectations",
-            "strong", "strength", "growth", "expands",
-            "up", "higher", "improve", "improves", "improved",
-        ]
-
-        bearish_kw = [
-            "fall", "falls", "fell",
-            "drop", "drops", "dropped",
-            "slump", "slumps", "slumped",
-            "tumble", "tumbles", "tumbled",
-            "plunge", "plunges", "plunged",
-            "slip", "slips", "slipped",
-            "weak", "weakness",
-            "miss", "misses", "missed",
-            "downgrade", "downgrades", "downgraded",
-            "decline", "declines", "declined",
-            "pressure", "loss", "losses",
-            "cut guidance", "cuts guidance", "guidance cut",
-        ]
-
-        def classify_title(title: str) -> str:
-            t = title.lower()
-            is_bull = any(w in t for w in bullish_kw)
-            is_bear = any(w in t for w in bearish_kw)
-            if is_bull and not is_bear:
-                return "bullish"
-            if is_bear and not is_bull:
-                return "bearish"
-            return "neutral"
-
-        bullish: list[str] = []
-        neutral: list[str] = []
-        bearish: list[str] = []
-        seen_keys = set()
-
-        # ---------------------------
-        # Filter, dedupe, classify
-        # ---------------------------
-        for n in data[:80]:  # look at up to 80 fresh news items
-            raw_title = (n.get("title") or "").strip()
-            if not raw_title:
-                continue
-
-            title = normalize_title(raw_title)
-
-            # Minimum quality: at least 6 words and no question-style
-            if len(title.split()) < 6:
-                continue
-            if "?" in title:
-                continue
-
-            key = norm_key(title)
-            if not key or key in seen_keys:
-                continue
-            seen_keys.add(key)
-
-            sentiment = classify_title(title)
-            if sentiment == "bullish":
-                bullish.append(title)
-            elif sentiment == "bearish":
-                bearish.append(title)
-            else:
-                neutral.append(title)
-
-        # ---------------------------
-        # Fallback sentences (purely market-style)
-        # ---------------------------
-        fallback_sentences = {
-            "bullish": [
-                "Markets show improving breadth across key sectors",
-                "Investor risk appetite firms during early session",
-                "Equities strengthen as buying momentum builds",
-                "Positive flows support upside stability in major indices",
-                "Growth stocks continue to lead broader benchmarks",
-            ],
-            "neutral": [
-                "Markets remain steady as traders await fresh catalysts",
-                "Equities trade sideways amid balanced risk sentiment",
-                "Mixed sector rotation keeps headline indexes stable",
-                "Traders monitor macro signals for near-term direction",
-                "Volatility hovers near recent average levels",
-            ],
-            "bearish": [
-                "Market participants show caution amid macro uncertainty",
-                "Risk-off flows build as volatility edges higher",
-                "Selling pressure emerges in selective cyclical sectors",
-                "Equities pull back as recent momentum cools",
-                "Weakness appears across several risk-sensitive assets",
-            ],
-        }
-
-        def ensure_five(arr: list[str], bucket: str) -> list[str]:
-            """Guarantee exactly 5 items per bucket using fallback."""
-            if len(arr) >= 5:
-                return arr[:5]
-            needed = 5 - len(arr)
-            fallback = fallback_sentences[bucket][:needed]
-            return arr + fallback
-
-        final_groups = {
-            "bullish": ensure_five(bullish, "bullish"),
-            "neutral": ensure_five(neutral, "neutral"),
-            "bearish": ensure_five(bearish, "bearish"),
-        }
-
-        return final_groups
-
-    except Exception as e:
-        print("generate_premium_highlights error:", e)
-        # Hard fallback: 5 neutral-ish sentences for each bucket
-        fallback = {
-            "bullish": [
-                "Markets show improving breadth across key sectors",
-                "Investor risk appetite firms during early session",
-                "Equities strengthen as buying momentum builds",
-                "Positive flows support upside stability in major indices",
-                "Growth stocks continue to lead broader benchmarks",
-            ],
-            "neutral": [
-                "Markets remain steady as traders await fresh catalysts",
-                "Equities trade sideways amid balanced risk sentiment",
-                "Mixed sector rotation keeps headline indexes stable",
-                "Traders monitor macro signals for near-term direction",
-                "Volatility hovers near recent average levels",
-            ],
-            "bearish": [
-                "Market participants show caution amid macro uncertainty",
-                "Risk-off flows build as volatility edges higher",
-                "Selling pressure emerges in selective cyclical sectors",
-                "Equities pull back as recent momentum cools",
-                "Weakness appears across several risk-sensitive assets",
-            ],
-        }
-        return fallback
-
-
-# ---------------------------------------------------------
-#  MARKET PULSE — PREMIUM SENTIMENT HIGHLIGHTS (FINAL)
-# ---------------------------------------------------------
-@app.get("/market-pulse")
-def market_pulse():
-    try:
-        # 1) Market mood (fear/greed, vix, S&P 500)
-        try:
-            mood = live_stats()
-        except Exception:
-            mood = {
-                "fearGreed": {"value": 50, "label": "Neutral"},
-                "vix": 15.0,
-                "sp500_change": 0.0,
-            }
-
-        fg = mood.get("fearGreed", {}).get("value", 50)
-        vix = mood.get("vix", 15.0)
-
-        if vix < 15 and fg > 60:
-            risk_level = "Low Risk"
-        elif vix > 20 or fg < 30:
-            risk_level = "High Risk"
-        else:
-            risk_level = "Moderate Risk"
-
-        # 2) Generate premium highlights (5 bullish / 5 neutral / 5 bearish)
-        groups = generate_premium_highlights()  # plain titles, no emojis
-
-        bullish = groups.get("bullish", [])[:5]
-        neutral = groups.get("neutral", [])[:5]
-        bearish = groups.get("bearish", [])[:5]
-
-        # 3) Final response (15 total highlights)
-        return {
-            "mood": mood,
-            "risk_level": risk_level,
-            "highlights": bullish + neutral + bearish,
-            "highlights_grouped": {
-                "bullish": bullish,
-                "neutral": neutral,
-                "bearish": bearish,
-            },
-            "updated_at": datetime.datetime.utcnow().isoformat(),
-        }
-
-    except Exception as e:
-        return {
-            "mood": {
-                "fearGreed": {"value": 50, "label": "Neutral"},
-                "vix": 15,
-                "sp500_change": 0,
-            },
-            "risk_level": "Moderate Risk",
-            "highlights": [],
-            "highlights_grouped": {"bullish": [], "neutral": [], "bearish": []},
-            "error": str(e),
-            "updated_at": datetime.datetime.utcnow().isoformat(),
-        }
-
 
 
 # --------------------------------------------------------------------
