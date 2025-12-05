@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
+from urllib.parse import urlparse
 import os
 import requests
 import datetime
@@ -2380,6 +2381,207 @@ def market_mood():
             "error": str(e),
         }
 
+# -----------------------------------------
+# News cleanup helpers for /market-news
+# -----------------------------------------
+
+SOURCE_MAP = {
+    "cnbc.com": "CNBC",
+    "marketwatch.com": "MarketWatch",
+    "finance.yahoo.com": "Yahoo Finance",
+    "investing.com": "Investing.com",
+    "investors.com": "Investor's Business Daily",
+    "barrons.com": "Barron's",
+}
+
+# Tickers we KNOW are garbage from headlines (English words, etc.)
+NOISY_TICKERS = {
+    "A", "I", "U", "T", "ON", "UP", "DAY", "IT", "ARE", "HAS",
+    "FAST", "COST", "TECH"
+}
+
+
+def clean_summary(summary: str | None, title: str) -> str:
+    """
+    - Replace '...' or empty with title.
+    - Keep summary if it is non-trivial.
+    """
+    if not summary:
+        return title
+
+    s = summary.strip()
+    if not s or s == "..." or len(s) < 10:
+        return title
+
+    return s
+
+
+def normalize_source(source: str | None, link: str | None) -> str:
+    """
+    - Prefer explicit source if present.
+    - Else derive from URL domain and map to pretty name.
+    """
+    if source:
+        s = source.strip()
+        if s:
+            return s
+
+    if not link:
+        return "Unknown"
+
+    try:
+        domain = urlparse(link).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return SOURCE_MAP.get(domain, domain.split(":")[0].title())
+    except Exception:
+        return source or "Unknown"
+
+
+def is_valid_ticker(t: str | None) -> bool:
+    """
+    Basic sanity:
+    - 2–5 uppercase letters
+    - not in noisy list
+    """
+    if not t:
+        return False
+    t = t.strip().upper()
+    if not (2 <= len(t) <= 5):
+        return False
+    if not t.isalpha():
+        return False
+    if t in NOISY_TICKERS:
+        return False
+    return True
+
+
+def extract_ticker_from_title(title: str) -> str | None:
+    """
+    Patterns like: 'Micron Technology (MU) Falls Hard ...'
+    """
+    if not title:
+        return None
+    m = re.search(r"\(([A-Z]{1,5})\)", title)
+    if m:
+        return m.group(1)
+    return None
+
+
+def extract_ticker_from_url(link: str) -> str | None:
+    """
+    Yahoo / Zacks / others often have '-TICKER-' inside the slug:
+      .../lyondellbasell-lyb-loses-6-dividend-...
+      .../ulta-ulta-earnings-q3-2025.html
+    """
+    if not link:
+        return None
+    try:
+        path = urlparse(link).path
+        m = re.search(r"-([A-Z]{1,5})-", path)
+        if m:
+            return m.group(1)
+    except Exception:
+        return None
+    return None
+
+
+def clean_ticker(raw_ticker: str | None, title: str, link: str) -> str | None:
+    """
+    - Try existing ticker (if it passes validity)
+    - Else try from title (...) 
+    - Else try from URL slug (-TICKER-)
+    - Else None
+    """
+    if raw_ticker:
+        t = raw_ticker.strip().upper()
+        if is_valid_ticker(t):
+            return t
+
+    t = extract_ticker_from_title(title)
+    if is_valid_ticker(t):
+        return t
+
+    t = extract_ticker_from_url(link)
+    if is_valid_ticker(t):
+        return t
+
+    return None
+
+
+def normalize_category(raw_category: str | None, title: str) -> str:
+    """
+    Light normalization – keep your existing label if it's already good,
+    else infer a rough bucket.
+    """
+    allowed = {"Earnings", "Fed / Macro", "Tech / AI", "M&A", "Crypto", "General"}
+
+    if raw_category in allowed:
+        return raw_category
+
+    c = (raw_category or "").lower()
+    title_lower = (title or "").lower()
+    txt = f"{c} {title_lower}"
+
+    if any(k in txt for k in ["earnings", "q1", "q2", "q3", "q4", "results", "profit", "loss"]):
+        return "Earnings"
+    if any(k in txt for k in ["fed", "pce", "inflation", "rates", "treasury", "yields", "gdp", "jobs"]):
+        return "Fed / Macro"
+    if any(k in txt for k in ["ai", "semiconductor", "chip", "nvidia", "robotaxi", "cloud", "data center"]):
+        return "Tech / AI"
+    if any(k in txt for k in ["merger", "acquire", "acquisition", "takeover", "ipo", "spac"]):
+        return "M&A"
+    if any(k in txt for k in ["bitcoin", "crypto", "cryptocurrency", "ethereum", "ether", "token"]):
+        return "Crypto"
+
+    return "General"
+
+
+def clean_news_items(items: list[dict]) -> list[dict]:
+    """
+    Final sanitizer for /market-news:
+    - dedupe by (title, link)
+    - clean summary
+    - normalize source
+    - fix ticker
+    - normalize category
+    - sort newest -> oldest
+    """
+    seen = set()
+    cleaned: list[dict] = []
+
+    for item in items:
+        title = (item.get("title") or "").strip()
+        link = (item.get("link") or "").strip()
+        if not title or not link:
+            continue
+
+        key = (title, link)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        summary = clean_summary(item.get("summary"), title)
+        source = normalize_source(item.get("source"), link)
+        ticker = clean_ticker(item.get("ticker"), title, link)
+        category = normalize_category(item.get("category"), title)
+        pub_date = item.get("pubDate")
+
+        cleaned.append(
+            {
+                "title": title,
+                "summary": summary,
+                "link": link,
+                "pubDate": pub_date,
+                "source": source,
+                "ticker": ticker,
+                "category": category,
+            }
+        )
+
+    # pubDate is ISO string, so string sort works fine
+    cleaned.sort(key=lambda x: x.get("pubDate") or "", reverse=True)
+    return cleaned
 
 @app.get("/market-news")
 def market_news():
@@ -2418,17 +2620,49 @@ def market_news():
         "stocks", "market", "dow", "nasdaq", "s&p", "fed",
     ]
 
-    all_news = []
+    # -----------------------------------------
+    # Local helpers (summary / source / ticker)
+    # -----------------------------------------
+
+    NOISY_TICKERS = {
+        "A", "I", "U", "T", "ON", "UP", "DAY", "IT", "ARE", "HAS",
+        "FAST", "COST", "TECH"
+    }
+
+    def clean_summary(summary: str | None, title: str) -> str:
+        """
+        - If summary is missing, '...', or too tiny -> use title.
+        - Otherwise, trim to ~240 chars and add ellipsis if long.
+        """
+        if not summary:
+            return title
+
+        s = summary.strip()
+        if not s or s == "..." or len(s) < 10:
+            return title
+
+        if len(s) > 240:
+            return s[:240].rstrip() + "..."
+        return s
 
     def get_source_from_url(url: str):
         try:
             hostname = urlparse(url).hostname or ""
-            if "cnbc" in hostname: return "CNBC"
-            if "yahoo" in hostname: return "Yahoo Finance"
-            if "marketwatch" in hostname: return "MarketWatch"
-            if "zacks" in hostname: return "Zacks"
-            if "seekingalpha" in hostname: return "Seeking Alpha"
-            if "investing.com" in hostname: return "Investing.com"
+            hostname = hostname.lower()
+            if "cnbc" in hostname:
+                return "CNBC"
+            if "yahoo" in hostname:
+                return "Yahoo Finance"
+            if "marketwatch" in hostname:
+                return "MarketWatch"
+            if "zacks" in hostname:
+                return "Zacks"
+            if "seekingalpha" in hostname:
+                return "Seeking Alpha"
+            if "investing.com" in hostname:
+                return "Investing.com"
+            if "investors.com" in hostname:
+                return "Investor's Business Daily"
             return hostname.replace("www.", "")
         except:
             return "News"
@@ -2446,17 +2680,87 @@ def market_news():
             except:
                 return datetime.datetime.utcnow()
 
+    def is_valid_ticker(t: str | None) -> bool:
+        """
+        Basic sanity for tickers:
+        - 2–5 uppercase letters
+        - alphabetic
+        - not in noisy list of English words
+        """
+        if not t:
+            return False
+        t = t.strip().upper()
+        if not (2 <= len(t) <= 5):
+            return False
+        if not t.isalpha():
+            return False
+        if t in NOISY_TICKERS:
+            return False
+        return True
+
+    def extract_ticker_from_title_local(title: str) -> str | None:
+        """
+        Pattern like: 'Micron Technology (MU) Falls Hard ...'
+        """
+        if not title:
+            return None
+        m = re.search(r"\(([A-Z]{1,5})\)", title)
+        if m:
+            return m.group(1)
+        return None
+
+    def extract_ticker_from_url_local(link: str) -> str | None:
+        """
+        Patterns like: .../lyondellbasell-lyb-loses-6-dividend-...
+        """
+        if not link:
+            return None
+        try:
+            path = urlparse(link).path or ""
+            m = re.search(r"-([A-Z]{1,5})-", path)
+            if m:
+                return m.group(1)
+        except Exception:
+            return None
+        return None
+
+    def clean_ticker(raw_ticker: str | None, title: str, link: str) -> str | None:
+        """
+        - Use your existing extract_ticker output if valid.
+        - Else try from title '(XXXX)'.
+        - Else try from URL '-XXXX-'.
+        - Else None.
+        """
+        if is_valid_ticker(raw_ticker):
+            return raw_ticker.strip().upper()
+
+        t = extract_ticker_from_title_local(title.upper())
+        if is_valid_ticker(t):
+            return t
+
+        t = extract_ticker_from_url_local(link.upper())
+        if is_valid_ticker(t):
+            return t
+
+        return None
+
+    # -----------------------------------------
+    # Main RSS aggregation
+    # -----------------------------------------
+
+    all_news = []
+
     for url in FEEDS:
         try:
             feed = feedparser.parse(url)
             for e in feed.entries[:25]:
-                title = getattr(e, "title", "")
-                summary = getattr(e, "summary", "")
+                title = getattr(e, "title", "") or ""
+                summary_raw = getattr(e, "summary", "") or ""
 
                 if any(b in title.lower() for b in BLOCK_KEYWORDS):
                     continue
 
-                combined = (title + " " + summary).lower()
+                combined = (title + " " + summary_raw).lower()
 
                 allowed = (
                     any(k in combined for k in HARD_KEYWORDS)
@@ -2466,14 +2770,19 @@ def market_news():
                     continue
 
                 pub_date = parse_pubdate(e)
-                ticker = extract_ticker((title + " " + summary).upper())
-                category = detect_category((title + summary).upper())
-                source = get_source_from_url(getattr(e, "link", ""))
+                link_val = getattr(e, "link", "") or ""
+
+                raw_ticker = extract_ticker((title + " " + summary_raw).upper())
+                ticker = clean_ticker(raw_ticker, title, link_val)
+
+                category = detect_category((title + summary_raw).upper())
+                source = get_source_from_url(link_val)
+                summary = clean_summary(summary_raw, title)
 
                 all_news.append({
                     "title": title.strip(),
-                    "summary": summary.strip()[:240] + "...",
-                    "link": getattr(e, "link", ""),
+                    "summary": summary,
+                    "link": link_val,
                     "pubDate": pub_date.isoformat(),
                     "source": source,
                     "ticker": ticker,
@@ -2483,7 +2792,7 @@ def market_news():
         except Exception as ex:
             print("RSS error:", ex)
 
-    # NORMAL DEDUPE (not aggressive)
+    # NORMAL DEDUPE (not aggressive) – keep your logic
     seen = set()
     result = []
     for n in all_news:
