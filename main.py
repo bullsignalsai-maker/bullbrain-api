@@ -3828,14 +3828,10 @@ def _get_market_overview_quick():
 
     return overview
 
-
-# ---------------------------------------------------------
-# /market-pulse — Single source for MarketScreen
-# ---------------------------------------------------------
 @app.get("/market-pulse")
 def market_pulse():
     try:
-        # 1) Always fetch FRESH news (no cache)
+        # 1) Always fetch FRESH market news
         news_resp = market_news()
         news_list = news_resp.get("data", []) if isinstance(news_resp, dict) else []
 
@@ -3843,13 +3839,15 @@ def market_pulse():
         if not isinstance(news_list, list):
             news_list = []
 
-        # Ensure sorted by pubDate (newest first)
+        # SORT newest → oldest
         try:
             news_list.sort(key=lambda x: x.get("pubDate", ""), reverse=True)
         except:
             pass
 
-        # 2) Build sentiment from TOP 80 fresh items
+        # ----------------------------------------------------
+        # 2) Sentiment (dual method: ML + keyword fallback)
+        # ----------------------------------------------------
         titles = [n.get("title", "") for n in news_list[:80] if n.get("title")]
         analyzed = _analyze_headline_sentiment_py(titles)
 
@@ -3857,15 +3855,45 @@ def market_pulse():
         bearish_raw = [a["title"] for a in analyzed if a["tag"] == "📉"]
         neutral_raw = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
 
-        bullish = _ensure_five(bullish_raw, "bullish")
-        neutral = _ensure_five(neutral_raw, "neutral")
-        bearish = _ensure_five(bearish_raw, "bearish")
+        # Fallback: keyword sentiment for better live variation
+        for n in news_list[:80]:
+            title = n.get("title", "").lower()
+            if not title:
+                continue
+            if any(w in title for w in ["rises", "beats", "up", "strong", "record"]):
+                bullish_raw.append(n["title"])
+            elif any(w in title for w in ["falls", "drops", "down", "weak", "cuts"]):
+                bearish_raw.append(n["title"])
+            else:
+                neutral_raw.append(n["title"])
 
-        # 3) Quick SPY/VIX overview
+        # Only keep unique
+        bullish_raw = list(set(bullish_raw))
+        bearish_raw = list(set(bearish_raw))
+        neutral_raw = list(set(neutral_raw))
+
+        # 3) Highlights grouped (top 5 each)
+        bullish = bullish_raw[:5]
+        neutral = neutral_raw[:5]
+        bearish = bearish_raw[:5]
+
+        # 4) NEW: Numeric highlight summary
+        highlights_numeric = {
+            "bull": len(bullish_raw),
+            "bear": len(bearish_raw),
+            "neutral": len(neutral_raw),
+        }
+
+        # ----------------------------------------------------
+        # 5) Market overview
+        # ----------------------------------------------------
         overview = _get_market_overview_quick()
 
-        # 4) Group news by date
+        # ----------------------------------------------------
+        # 6) Grouped news by date
+        # ----------------------------------------------------
         grouped = {"today": [], "yesterday": [], "week": [], "older": []}
+
         today = datetime.datetime.utcnow().date()
         yesterday = today - datetime.timedelta(days=1)
         week_ago = today - datetime.timedelta(days=7)
@@ -3885,9 +3913,14 @@ def market_pulse():
             else:
                 grouped["older"].append(n)
 
-        # 5) Return clean structure
+        # Sort each group newest → oldest
+        for key in grouped:
+            grouped[key].sort(key=lambda x: x.get("pubDate", ""), reverse=True)
+
+        # FINAL RESPONSE
         return {
             "market_overview": overview,
+            "highlights_numeric": highlights_numeric,   # <── NEW
             "highlights_grouped": {
                 "bullish": bullish,
                 "neutral": neutral,
@@ -3902,6 +3935,7 @@ def market_pulse():
         fallback_overview = _get_market_overview_quick()
         return {
             "market_overview": fallback_overview,
+            "highlights_numeric": {"bull": 0, "bear": 0, "neutral": 0},
             "highlights_grouped": {
                 "bullish": [],
                 "neutral": [],
