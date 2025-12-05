@@ -2429,7 +2429,7 @@ def market_news():
         "hurricane", "celebrity", "movie", "tv show", "netflix show",
         "disney+", "recipe", "diet", "fitness", "gym", "travel",
         "vacation", "dating", "sex", "clickbait", "you won't believe",
-        "shocking", "my life"
+        "shocking", "my life","Here's","Why","How","What",
     ]
 
     news = []
