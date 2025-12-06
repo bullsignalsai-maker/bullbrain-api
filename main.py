@@ -3975,3 +3975,100 @@ def market_pulse():
             "news_grouped": {"today": [], "yesterday": [], "week": [], "older": []},
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
+
+@app.get("/market-hotlist")
+def market_hotlist(limit: int = 20):
+    """
+    Scan major tickers using BullBrainV2 and return the strongest bullish candidates.
+    """
+    try:
+        # Use your existing SP500 tickers list
+        from sp500_list_optimized import SP500_TICKERS
+        tickers = SP500_TICKERS[:200]   # scan top 200 for speed
+
+        results = []
+
+        for symbol in tickers:
+            try:
+                candles = fetch_daily_candles(symbol)
+                if not candles or len(candles) < 60:
+                    continue
+
+                # Build 48-feature vector
+                features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+                if features_vec is None:
+                    continue
+
+                # Model prediction
+                inference = bullbrain_infer(features_vec)
+                prob_up = float(inference.get("probability_up", 0.5))
+                signal = inference.get("signal", "NEUTRAL")
+
+                results.append({
+                    "symbol": symbol,
+                    "probability_up": prob_up,
+                    "signal": signal,
+                })
+
+            except Exception:
+                continue
+
+        # Sort by strongest bullish probability
+        hotlist = sorted(results, key=lambda x: x["probability_up"], reverse=True)
+
+        return {
+            "count": len(hotlist),
+            "hotlist": hotlist[:limit]
+        }
+
+    except Exception as e:
+        print("market_hotlist error:", e)
+        return {"count": 0, "hotlist": []}
+
+@app.get("/market-bearwatch")
+def market_bearwatch(limit: int = 20):
+    """
+    Scan major tickers using BullBrainV2 and return strongest bearish candidates.
+    """
+    try:
+        from sp500_list_optimized import SP500_TICKERS
+        tickers = SP500_TICKERS[:200]
+
+        results = []
+
+        for symbol in tickers:
+            try:
+                candles = fetch_daily_candles(symbol)
+                if not candles or len(candles) < 60:
+                    continue
+
+                features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+                if features_vec is None:
+                    continue
+
+                inference = bullbrain_infer(features_vec)
+                prob_up = float(inference.get("probability_up", 0.5))
+                signal = inference.get("signal", "NEUTRAL")
+
+                # bearish candidates = low prob_up + bearish signal keywords
+                if prob_up < 0.40 or ("BEAR" in signal.upper()):
+                    results.append({
+                        "symbol": symbol,
+                        "probability_up": prob_up,
+                        "signal": signal,
+                    })
+
+            except Exception:
+                continue
+
+        # Sort by lowest probability (most bearish)
+        bearlist = sorted(results, key=lambda x: x["probability_up"])
+
+        return {
+            "count": len(bearlist),
+            "bearwatch": bearlist[:limit]
+        }
+
+    except Exception as e:
+        print("market_bearwatch error:", e)
+        return {"count": 0, "bearwatch": []}
