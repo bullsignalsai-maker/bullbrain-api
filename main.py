@@ -3830,54 +3830,83 @@ def _get_market_overview_quick():
 
 @app.get("/market-pulse")
 def market_pulse():
+    import pytz
+    eastern = pytz.timezone("America/New_York")
+    utc = pytz.utc
+
     try:
-        # 1) Always fetch FRESH market news
+        # ----------------------------------------------------
+        # 1) ALWAYS FETCH FRESH NEWS
+        # ----------------------------------------------------
         news_resp = market_news()
-        news_list = news_resp.get("data", []) if isinstance(news_resp, dict) else []
+        raw_news = news_resp.get("data", []) if isinstance(news_resp, dict) else []
 
-        # Safety
-        if not isinstance(news_list, list):
-            news_list = []
+        if not isinstance(raw_news, list):
+            raw_news = []
 
-        # SORT newest → oldest
-        try:
-            news_list.sort(key=lambda x: x.get("pubDate", ""), reverse=True)
-        except:
-            pass
+        cleaned = []
 
         # ----------------------------------------------------
-        # 2) Sentiment (dual method: ML + keyword fallback)
+        # 2) Convert UTC → Eastern time
         # ----------------------------------------------------
-        titles = [n.get("title", "") for n in news_list[:80] if n.get("title")]
+        for n in raw_news:
+            try:
+                # Parse published date (UTC ISO)
+                dt_utc = datetime.datetime.fromisoformat(
+                    n["pubDate"].replace("Z", "")
+                ).replace(tzinfo=utc)
+
+                # Convert → Eastern
+                dt_et = dt_utc.astimezone(eastern)
+
+                n["pubDateET"] = dt_et.isoformat()
+                n["pubDateObj"] = dt_et
+
+                cleaned.append(n)
+
+            except:
+                continue
+
+        # ----------------------------------------------------
+        # 3) SORT LATEST → FIRST using ET
+        # ----------------------------------------------------
+        cleaned.sort(key=lambda x: x["pubDateObj"], reverse=True)
+
+        # ----------------------------------------------------
+        # 4) SENTIMENT — from latest 80 items
+        # ----------------------------------------------------
+        titles = [n.get("title", "") for n in cleaned[:80] if n.get("title")]
+
         analyzed = _analyze_headline_sentiment_py(titles)
 
         bullish_raw = [a["title"] for a in analyzed if a["tag"] == "📈"]
         bearish_raw = [a["title"] for a in analyzed if a["tag"] == "📉"]
         neutral_raw = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
 
-        # Fallback: keyword sentiment for better live variation
-        for n in news_list[:80]:
-            title = n.get("title", "").lower()
-            if not title:
+        # Fallback keyword method (adds variation)
+        for n in cleaned[:80]:
+            t = n.get("title", "").lower()
+            if not t:
                 continue
-            if any(w in title for w in ["rises", "beats", "up", "strong", "record"]):
+
+            if any(w in t for w in ["rises", "beats", "up", "strong", "record"]):
                 bullish_raw.append(n["title"])
-            elif any(w in title for w in ["falls", "drops", "down", "weak", "cuts"]):
+            elif any(w in t for w in ["falls", "drops", "down", "weak", "cuts"]):
                 bearish_raw.append(n["title"])
             else:
                 neutral_raw.append(n["title"])
 
-        # Only keep unique
+        # Unique
         bullish_raw = list(set(bullish_raw))
         bearish_raw = list(set(bearish_raw))
         neutral_raw = list(set(neutral_raw))
 
-        # 3) Highlights grouped (top 5 each)
+        # Top 5 each
         bullish = bullish_raw[:5]
         neutral = neutral_raw[:5]
         bearish = bearish_raw[:5]
 
-        # 4) NEW: Numeric highlight summary
+        # Numeric summary
         highlights_numeric = {
             "bull": len(bullish_raw),
             "bear": len(bearish_raw),
@@ -3885,42 +3914,44 @@ def market_pulse():
         }
 
         # ----------------------------------------------------
-        # 5) Market overview
+        # 5) MARKET OVERVIEW
         # ----------------------------------------------------
         overview = _get_market_overview_quick()
 
         # ----------------------------------------------------
-        # 6) Grouped news by date
+        # 6) GROUP NEWS BY DATE (ET)
         # ----------------------------------------------------
         grouped = {"today": [], "yesterday": [], "week": [], "older": []}
 
-        today = datetime.datetime.utcnow().date()
-        yesterday = today - datetime.timedelta(days=1)
-        week_ago = today - datetime.timedelta(days=7)
+        now_et = datetime.datetime.now(eastern)
+        today_et = now_et.date()
+        yesterday_et = today_et - datetime.timedelta(days=1)
+        week_ago_et = today_et - datetime.timedelta(days=7)
 
-        for n in news_list:
-            try:
-                d = datetime.datetime.fromisoformat(n["pubDate"]).date()
-            except:
-                continue
+        for n in cleaned:
+            d = n["pubDateObj"].date()
 
-            if d == today:
+            if d == today_et:
                 grouped["today"].append(n)
-            elif d == yesterday:
+            elif d == yesterday_et:
                 grouped["yesterday"].append(n)
-            elif d >= week_ago:
+            elif d >= week_ago_et:
                 grouped["week"].append(n)
             else:
                 grouped["older"].append(n)
 
-        # Sort each group newest → oldest
+        # ----------------------------------------------------
+        # 7) Sort grouped lists by ET timestamp
+        # ----------------------------------------------------
         for key in grouped:
-            grouped[key].sort(key=lambda x: x.get("pubDate", ""), reverse=True)
+            grouped[key].sort(key=lambda x: x["pubDateObj"], reverse=True)
 
+        # ----------------------------------------------------
         # FINAL RESPONSE
+        # ----------------------------------------------------
         return {
             "market_overview": overview,
-            "highlights_numeric": highlights_numeric,   # <── NEW
+            "highlights_numeric": highlights_numeric,
             "highlights_grouped": {
                 "bullish": bullish,
                 "neutral": neutral,
@@ -3932,9 +3963,9 @@ def market_pulse():
 
     except Exception as e:
         print("market_pulse error:", e)
-        fallback_overview = _get_market_overview_quick()
+        fb = _get_market_overview_quick()
         return {
-            "market_overview": fallback_overview,
+            "market_overview": fb,
             "highlights_numeric": {"bull": 0, "bear": 0, "neutral": 0},
             "highlights_grouped": {
                 "bullish": [],
