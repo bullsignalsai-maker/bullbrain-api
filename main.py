@@ -92,6 +92,12 @@ BULLBRAIN_FEATURES = [
     "volume_zscore_20",
     "trend_strength_20",
 ]
+TOP_LIQUID_TICKERS = [
+    "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AMD","NFLX","AVGO",
+    "JPM","BAC","XOM","CVX","UNH","WMT","HD","PG","LLY","V","MA","KO","PEP",
+    "MRK","ABBV","ORCL","INTC","CRM","COST","PYPL","QCOM","ADBE","TXN",
+    "NKE","PFE","T","VZ","NEE","UPS","UNP","GS","MS","BA","CAT","GE","IBM"
+]
 
 bullbrain_model: xgb.Booster | None = None
 cache: dict[str, dict] = {}
@@ -3979,16 +3985,10 @@ def market_pulse():
 @app.get("/market-hotlist")
 def market_hotlist():
     try:
-        # Load tickers from optimized module
-        try:
-            from sp500_list_optimized import SP500_SET
-            tickers = list(SP500_SET)
-            print("Loaded tickers:", len(tickers))
-        except Exception as e:
-            print("Ticker load error:", e)
-            return {"count": 0, "hotlist": []}
+        from sp500_list_optimized import SP500_SET
+        tickers = TOP_LIQUID_TICKERS
 
-        hot_results = []
+        results = []
 
         for symbol in tickers:
             try:
@@ -3998,44 +3998,39 @@ def market_hotlist():
 
                 features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
                 infer = bullbrain_infer(features_vec)
-                prob = float(infer.get("probability_up", 0.5))
 
-                if prob >= 0.60:  # bullish
-                    hot_results.append({
+                prob = float(infer.get("probability_up", 0.5))
+                signal = infer.get("signal", "N/A")
+
+                if prob >= 0.60:
+                    results.append({
                         "symbol": symbol,
-                        "prob_up": round(prob, 4),
-                        "signal": infer.get("signal", "N/A"),
+                        "prob_up": prob,
+                        "signal": signal,
                     })
 
             except Exception as e:
-                print(f"Hotlist error {symbol}:", e)
-                continue
+                print(f"Hotlist error for {symbol}: {e}")
 
-        # Sort strongest → weakest
-        hot_results.sort(key=lambda x: x["prob_up"], reverse=True)
+        # sort strongest → weakest
+        results.sort(key=lambda x: x["prob_up"], reverse=True)
 
+        print("🔥 Hotlist count:", len(results))
         return {
-            "count": len(hot_results),
-            "hotlist": hot_results[:20],
+            "count": len(results),
+            "hotlist": results
         }
 
     except Exception as e:
         print("market_hotlist error:", e)
         return {"count": 0, "hotlist": []}
 
+
 @app.get("/market-bearwatch")
 def market_bearwatch():
     try:
-        # Load tickers
-        try:
-            from sp500_list_optimized import SP500_SET
-            tickers = list(SP500_SET)
-            print("Loaded tickers:", len(tickers))
-        except Exception as e:
-            print("Ticker load error:", e)
-            return {"count": 0, "bearwatch": []}
-
-        bw_results = []
+        tickers = TOP_LIQUID_TICKERS
+        results = []
 
         for symbol in tickers:
             try:
@@ -4045,26 +4040,27 @@ def market_bearwatch():
 
                 features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
                 infer = bullbrain_infer(features_vec)
-                prob = float(infer.get("probability_up", 0.5))
 
-                # Bearish candidates
+                prob = float(infer.get("probability_up", 0.5))
+                signal = infer.get("signal", "N/A")
+
                 if prob <= 0.40:
-                    bw_results.append({
+                    results.append({
                         "symbol": symbol,
-                        "prob_up": round(prob, 4),
-                        "signal": infer.get("signal", "N/A"),
+                        "prob_up": prob,
+                        "signal": signal,
                     })
 
             except Exception as e:
-                print(f"BearWatch error {symbol}:", e)
-                continue
+                print(f"BearWatch error for {symbol}: {e}")
 
-        # Sort weakest → strongest
-        bw_results.sort(key=lambda x: x["prob_up"])
+        # sort weakest → strongest
+        results.sort(key=lambda x: x["prob_up"])
 
+        print("⚠️ BearWatch count:", len(results))
         return {
-            "count": len(bw_results),
-            "bearwatch": bw_results[:20],
+            "count": len(results),
+            "bearwatch": results
         }
 
     except Exception as e:
