@@ -3977,48 +3977,46 @@ def market_pulse():
         }
 
 @app.get("/market-hotlist")
-def market_hotlist(limit: int = 20):
-    """
-    Scan major tickers using BullBrainV2 and return the strongest bullish candidates.
-    """
+def market_hotlist():
     try:
-        # Use your existing SP500 tickers list
-        from sp500_list_optimized import SP500_TICKERS
-        tickers = SP500_TICKERS[:200]   # scan top 200 for speed
+        # Load tickers from optimized module
+        try:
+            from sp500_list_optimized import SP500_SET
+            tickers = list(SP500_SET)
+            print("Loaded tickers:", len(tickers))
+        except Exception as e:
+            print("Ticker load error:", e)
+            return {"count": 0, "hotlist": []}
 
-        results = []
+        hot_results = []
 
         for symbol in tickers:
             try:
                 candles = fetch_daily_candles(symbol)
-                if not candles or len(candles) < 60:
+                if not candles or len(candles) < 30:
                     continue
 
-                # Build 48-feature vector
-                features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-                if features_vec is None:
-                    continue
+                features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
+                infer = bullbrain_infer(features_vec)
+                prob = float(infer.get("probability_up", 0.5))
 
-                # Model prediction
-                inference = bullbrain_infer(features_vec)
-                prob_up = float(inference.get("probability_up", 0.5))
-                signal = inference.get("signal", "NEUTRAL")
+                if prob >= 0.60:  # bullish
+                    hot_results.append({
+                        "symbol": symbol,
+                        "prob_up": round(prob, 4),
+                        "signal": infer.get("signal", "N/A"),
+                    })
 
-                results.append({
-                    "symbol": symbol,
-                    "probability_up": prob_up,
-                    "signal": signal,
-                })
-
-            except Exception:
+            except Exception as e:
+                print(f"Hotlist error {symbol}:", e)
                 continue
 
-        # Sort by strongest bullish probability
-        hotlist = sorted(results, key=lambda x: x["probability_up"], reverse=True)
+        # Sort strongest → weakest
+        hot_results.sort(key=lambda x: x["prob_up"], reverse=True)
 
         return {
-            "count": len(hotlist),
-            "hotlist": hotlist[:limit]
+            "count": len(hot_results),
+            "hotlist": hot_results[:20],
         }
 
     except Exception as e:
@@ -4026,47 +4024,47 @@ def market_hotlist(limit: int = 20):
         return {"count": 0, "hotlist": []}
 
 @app.get("/market-bearwatch")
-def market_bearwatch(limit: int = 20):
-    """
-    Scan major tickers using BullBrainV2 and return strongest bearish candidates.
-    """
+def market_bearwatch():
     try:
-        from sp500_list_optimized import SP500_TICKERS
-        tickers = SP500_TICKERS[:200]
+        # Load tickers
+        try:
+            from sp500_list_optimized import SP500_SET
+            tickers = list(SP500_SET)
+            print("Loaded tickers:", len(tickers))
+        except Exception as e:
+            print("Ticker load error:", e)
+            return {"count": 0, "bearwatch": []}
 
-        results = []
+        bw_results = []
 
         for symbol in tickers:
             try:
                 candles = fetch_daily_candles(symbol)
-                if not candles or len(candles) < 60:
+                if not candles or len(candles) < 30:
                     continue
 
-                features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-                if features_vec is None:
-                    continue
+                features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
+                infer = bullbrain_infer(features_vec)
+                prob = float(infer.get("probability_up", 0.5))
 
-                inference = bullbrain_infer(features_vec)
-                prob_up = float(inference.get("probability_up", 0.5))
-                signal = inference.get("signal", "NEUTRAL")
-
-                # bearish candidates = low prob_up + bearish signal keywords
-                if prob_up < 0.40 or ("BEAR" in signal.upper()):
-                    results.append({
+                # Bearish candidates
+                if prob <= 0.40:
+                    bw_results.append({
                         "symbol": symbol,
-                        "probability_up": prob_up,
-                        "signal": signal,
+                        "prob_up": round(prob, 4),
+                        "signal": infer.get("signal", "N/A"),
                     })
 
-            except Exception:
+            except Exception as e:
+                print(f"BearWatch error {symbol}:", e)
                 continue
 
-        # Sort by lowest probability (most bearish)
-        bearlist = sorted(results, key=lambda x: x["probability_up"])
+        # Sort weakest → strongest
+        bw_results.sort(key=lambda x: x["prob_up"])
 
         return {
-            "count": len(bearlist),
-            "bearwatch": bearlist[:limit]
+            "count": len(bw_results),
+            "bearwatch": bw_results[:20],
         }
 
     except Exception as e:
