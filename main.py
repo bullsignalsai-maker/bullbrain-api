@@ -3982,90 +3982,103 @@ def market_pulse():
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
 
+# ---------------------------------------------------------
+# /market-hotlist — Top 15 strongest bullish tickers
+# ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
-    try:
-        from sp500_list_optimized import SP500_SET
-        tickers = TOP_LIQUID_TICKERS
+    from symbols_clean import REAL_TICKERS
 
-        results = []
+    results = []
 
-        for symbol in tickers:
-            try:
-                candles = fetch_daily_candles(symbol)
-                if not candles or len(candles) < 30:
-                    continue
+    for sym in REAL_TICKERS:
+        try:
+            infer = bullbrain_infer_single(sym)
+            if not infer:
+                continue
 
-                features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-                infer = bullbrain_infer(features_vec)
+            prob_up = float(infer.get("probability_up", 0))
+            prob_down = float(infer.get("probability_down", 0))
 
-                prob = float(infer.get("probability_up", 0.5))
-                signal = infer.get("signal", "N/A")
+            results.append({
+                "symbol": sym,
+                "prob_up": prob_up,
+                "prob_down": prob_down,
+                "signal": infer.get("signal"),
+                "confidence": infer.get("confidence"),
+            })
 
-                if prob >= 0.60:
-                    results.append({
-                        "symbol": symbol,
-                        "prob_up": prob,
-                        "signal": signal,
-                    })
+        except Exception as e:
+            print(f"hotlist error {sym}:", e)
 
-            except Exception as e:
-                print(f"Hotlist error for {symbol}: {e}")
+    # Sort by highest bullish probability
+    results.sort(key=lambda x: x["prob_up"], reverse=True)
 
-        # sort strongest → weakest
-        results.sort(key=lambda x: x["prob_up"], reverse=True)
+    # Return Top 15
+    top15 = results[:15]
 
-        print("🔥 Hotlist count:", len(results))
-        return {
-            "count": len(results),
-            "hotlist": results
-        }
-
-    except Exception as e:
-        print("market_hotlist error:", e)
-        return {"count": 0, "hotlist": []}
+    return {
+        "count": len(top15),
+        "hotlist": top15
+    }
 
 
+
+# ---------------------------------------------------------
+# /market-bearwatch — Top 15 strongest bearish tickers
+# ---------------------------------------------------------
 @app.get("/market-bearwatch")
 def market_bearwatch():
+    from symbols_clean import REAL_TICKERS
+
+    results = []
+
+    for sym in REAL_TICKERS:
+        try:
+            infer = bullbrain_infer_single(sym)
+            if not infer:
+                continue
+
+            prob_up = float(infer.get("probability_up", 0))
+            prob_down = float(infer.get("probability_down", 0))
+
+            results.append({
+                "symbol": sym,
+                "prob_up": prob_up,
+                "prob_down": prob_down,
+                "signal": infer.get("signal"),
+                "confidence": infer.get("confidence"),
+            })
+
+        except Exception as e:
+            print(f"bearwatch error {sym}:", e)
+
+    # Sort by highest bearish probability
+    results.sort(key=lambda x: x["prob_down"], reverse=True)
+
+    # Return Top 15
+    top15 = results[:15]
+
+    return {
+        "count": len(top15),
+        "bearwatch": top15
+    }
+
+
+
+def bullbrain_infer_single(symbol: str):
     try:
-        tickers = TOP_LIQUID_TICKERS
-        results = []
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return None
 
-        for symbol in tickers:
-            try:
-                candles = fetch_daily_candles(symbol)
-                if not candles or len(candles) < 30:
-                    continue
-
-                features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-                infer = bullbrain_infer(features_vec)
-
-                prob = float(infer.get("probability_up", 0.5))
-                signal = infer.get("signal", "N/A")
-
-                if prob <= 0.40:
-                    results.append({
-                        "symbol": symbol,
-                        "prob_up": prob,
-                        "signal": signal,
-                    })
-
-            except Exception as e:
-                print(f"BearWatch error for {symbol}: {e}")
-
-        # sort weakest → strongest
-        results.sort(key=lambda x: x["prob_up"])
-
-        print("⚠️ BearWatch count:", len(results))
-        return {
-            "count": len(results),
-            "bearwatch": results
-        }
+        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+        return bullbrain_infer(features_vec)
 
     except Exception as e:
-        print("market_bearwatch error:", e)
-        return {"count": 0, "bearwatch": []}
+        print("bullbrain_infer_single error:", symbol, e)
+        return None
+
 
 
 @app.get("/debug-bullbrain/{symbol}")
