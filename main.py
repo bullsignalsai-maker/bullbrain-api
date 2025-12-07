@@ -4066,3 +4066,22 @@ def market_bearwatch():
     except Exception as e:
         print("market_bearwatch error:", e)
         return {"count": 0, "bearwatch": []}
+
+
+@app.get("/debug-bullbrain/{symbol}")
+def debug_bullbrain(symbol: str):
+    try:
+        sym = symbol.upper()
+        candles = fetch_daily_candles(sym)
+
+        features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
+        infer = bullbrain_infer(features_vec)
+
+        return {
+            "symbol": sym,
+            "features_shape": len(features_vec),
+            "infer": infer,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
