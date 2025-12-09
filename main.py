@@ -13,6 +13,7 @@ import xgboost as xgb
 import gdown
 import re
 import math
+from symbols_clean import REAL_TICKERS
 
 app = FastAPI()
 
@@ -3983,15 +3984,46 @@ def market_pulse():
         }
 
 # ---------------------------------------------------------
+# Save market AI cache (global, not per-user)
+# ---------------------------------------------------------
+def save_to_firestore_market_cache(doc_id, data):
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+
+        # Firestore init (safe)
+        if not firebase_admin._apps:
+            cred = credentials.ApplicationDefault()
+            firebase_admin.initialize_app(cred)
+
+        db = firestore.client()
+
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        doc_ref.set(data, merge=True)
+
+        print(f"🔥 Saved to Firestore AI Cache: {doc_id}")
+
+    except Exception as e:
+        print("Firestore save_to_firestore_market_cache error:", e)
+
+
+
+# ---------------------------------------------------------
 # /market-hotlist — Top 15 strongest bullish tickers
 # ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
     from symbols_clean import REAL_TICKERS
+    import datetime
 
     results = []
 
-    for sym in REAL_TICKERS:
+    # -------------------------
+    # Only scan Top 15 (FAST!)
+    # -------------------------
+    tickers_to_scan = REAL_TICKERS[:15]
+
+    for sym in tickers_to_scan:
         try:
             infer = bullbrain_infer_single(sym)
             if not infer:
@@ -4002,8 +4034,8 @@ def market_hotlist():
 
             results.append({
                 "symbol": sym,
-                "prob_up": prob_up,
-                "prob_down": prob_down,
+                "prob_up": round(prob_up, 4),
+                "prob_down": round(prob_down, 4),
                 "signal": infer.get("signal"),
                 "confidence": infer.get("confidence"),
             })
@@ -4011,16 +4043,29 @@ def market_hotlist():
         except Exception as e:
             print(f"hotlist error {sym}:", e)
 
-    # Sort by highest bullish probability
+    # Sort strongest bullish first
     results.sort(key=lambda x: x["prob_up"], reverse=True)
-
-    # Return Top 15
     top15 = results[:15]
+
+    # ---------------------------
+    # FIRESTORE CACHE SAVE
+    # ---------------------------
+    try:
+        cache_data = {
+            "count": len(top15),
+            "hotlist": top15,
+            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        # Save to global AI cache
+        save_to_firestore_market_cache("market_hotlist", cache_data)
+    except Exception as e:
+        print("Firestore cache save failed (hotlist):", e)
 
     return {
         "count": len(top15),
         "hotlist": top15
     }
+
 
 
 
@@ -4030,10 +4075,16 @@ def market_hotlist():
 @app.get("/market-bearwatch")
 def market_bearwatch():
     from symbols_clean import REAL_TICKERS
+    import datetime
 
     results = []
 
-    for sym in REAL_TICKERS:
+    # -------------------------
+    # Only scan Top 15 (FAST!)
+    # -------------------------
+    tickers_to_scan = REAL_TICKERS[:15]
+
+    for sym in tickers_to_scan:
         try:
             infer = bullbrain_infer_single(sym)
             if not infer:
@@ -4044,8 +4095,8 @@ def market_bearwatch():
 
             results.append({
                 "symbol": sym,
-                "prob_up": prob_up,
-                "prob_down": prob_down,
+                "prob_up": round(prob_up, 4),
+                "prob_down": round(prob_down, 4),
                 "signal": infer.get("signal"),
                 "confidence": infer.get("confidence"),
             })
@@ -4053,11 +4104,22 @@ def market_bearwatch():
         except Exception as e:
             print(f"bearwatch error {sym}:", e)
 
-    # Sort by highest bearish probability
+    # Sort strongest bearish first
     results.sort(key=lambda x: x["prob_down"], reverse=True)
-
-    # Return Top 15
     top15 = results[:15]
+
+    # ---------------------------
+    # FIRESTORE CACHE SAVE
+    # ---------------------------
+    try:
+        cache_data = {
+            "count": len(top15),
+            "bearwatch": top15,
+            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        save_to_firestore_market_cache("market_bearwatch", cache_data)
+    except Exception as e:
+        print("Firestore cache save failed (bearwatch):", e)
 
     return {
         "count": len(top15),
