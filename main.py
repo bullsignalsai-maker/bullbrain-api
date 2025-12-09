@@ -4056,10 +4056,14 @@ def save_to_firestore_market_cache(doc_id, data):
         if not firebase_admin._apps:
             init_firebase_admin()
 
+        # MUST create fresh Firestore client each time
+        db = firestore.client()
+
         doc_ref = db.collection("bullsignals_ai").document(doc_id)
         doc_ref.set(data, merge=True)
 
         print(f"🔥 Saved to Firestore AI Cache: {doc_id}")
+
     except Exception as e:
         print("save_to_firestore_market_cache error:", e)
 
