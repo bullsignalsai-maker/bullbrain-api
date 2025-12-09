@@ -4107,14 +4107,14 @@ def read_market_cache(doc_id):
 
 
 # ---------------------------------------------------------
-# /market-hotlist — Top 15 strongest bullish tickers
+# /market-hotlist — Top 5 BUY candidates (Bullish)
 # ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
     from symbols_clean import REAL_TICKERS
     import datetime
 
-    # 1) Try returning cached first
+    # Try cache first
     cache = read_market_cache("market_hotlist")
     if cache:
         return {
@@ -4124,7 +4124,7 @@ def market_hotlist():
 
     results = []
 
-    # 2) Full scan (ALL SP500 tickers)
+    # Full SP500 scan
     for sym in REAL_TICKERS:
         try:
             infer = bullbrain_infer_single(sym)
@@ -4132,47 +4132,63 @@ def market_hotlist():
                 continue
 
             prob_up = float(infer.get("probability_up", 0))
-            prob_down = float(infer.get("probability_down", 0))
+            prob_down = 1 - prob_up
+
+            # ----- OPTION B CLASSIFICATION -----
+            if prob_up >= 0.52:
+                signal = "BUY"
+            elif prob_up >= 0.48:
+                signal = "HOLD"
+            else:
+                signal = "SELL"
 
             results.append({
                 "symbol": sym,
                 "prob_up": round(prob_up, 4),
                 "prob_down": round(prob_down, 4),
-                "signal": infer.get("signal"),
-                "confidence": infer.get("confidence"),
+                "signal": signal,
+                "confidence": round(max(prob_up, prob_down) * 100, 2),
             })
 
         except Exception as e:
             print(f"hotlist error {sym}:", e)
 
-    # 3) Sort strongest bullish
-    results.sort(key=lambda x: x["prob_up"], reverse=True)
-    top15 = results[:15]
+    # Filter BUYs only
+    buys = [r for r in results if r["signal"] == "BUY"]
 
-    # 4) Save to Firestore
+    # If not enough BUYs → fallback to high prob_up
+    if len(buys) < 5:
+        sorted_all = sorted(results, key=lambda x: x["prob_up"], reverse=True)
+        while len(buys) < 5 and sorted_all:
+            next_item = sorted_all.pop(0)
+            if next_item not in buys:
+                buys.append(next_item)
+
+    # Final top 5 BUY picks
+    top5 = sorted(buys, key=lambda x: x["prob_up"], reverse=True)[:5]
+
+    # Save cache
     try:
-        cache_data = {
-            "count": len(top15),
-            "hotlist": top15,
+        save_to_firestore_market_cache("market_hotlist", {
+            "count": len(top5),
+            "hotlist": top5,
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-        save_to_firestore_market_cache("market_hotlist", cache_data)
+        })
     except Exception as e:
         print("🔥 Cache save failed (hotlist):", e)
 
-    return {"count": len(top15), "hotlist": top15}
-
+    return {"count": len(top5), "hotlist": top5}
 
 
 # ---------------------------------------------------------
-# /market-bearwatch — Top 15 strongest bearish tickers
+# /market-bearwatch — Top 5 SELL candidates (Bearish)
 # ---------------------------------------------------------
 @app.get("/market-bearwatch")
 def market_bearwatch():
     from symbols_clean import REAL_TICKERS
     import datetime
 
-    # 1) Use cached version if available
+    # Check cache
     cache = read_market_cache("market_bearwatch")
     if cache:
         return {
@@ -4182,7 +4198,7 @@ def market_bearwatch():
 
     results = []
 
-    # 2) FULL SCAN of SP500
+    # Scan SP500
     for sym in REAL_TICKERS:
         try:
             infer = bullbrain_infer_single(sym)
@@ -4190,32 +4206,49 @@ def market_bearwatch():
                 continue
 
             prob_up = float(infer.get("probability_up", 0))
-            prob_down = float(infer.get("probability_down", 0))
+            prob_down = 1 - prob_up
+
+            # ----- OPTION B CLASSIFICATION -----
+            if prob_up >= 0.52:
+                signal = "BUY"
+            elif prob_up >= 0.48:
+                signal = "HOLD"
+            else:
+                signal = "SELL"
 
             results.append({
                 "symbol": sym,
                 "prob_up": round(prob_up, 4),
                 "prob_down": round(prob_down, 4),
-                "signal": infer.get("signal"),
-                "confidence": infer.get("confidence"),
+                "signal": signal,
+                "confidence": round(max(prob_up, prob_down) * 100, 2),
             })
 
         except Exception as e:
             print(f"bearwatch error {sym}:", e)
 
-    # 3) Sort strongest bearish
-    results.sort(key=lambda x: x["prob_down"], reverse=True)
-    top15 = results[:15]
+    # Filter SELLs only
+    sells = [r for r in results if r["signal"] == "SELL"]
 
-    # 4) Save to Firestore
+    # If too few SELLs → fallback to high prob_down
+    if len(sells) < 5:
+        sorted_all = sorted(results, key=lambda x: x["prob_down"], reverse=True)
+        while len(sells) < 5 and sorted_all:
+            next_item = sorted_all.pop(0)
+            if next_item not in sells:
+                sells.append(next_item)
+
+    # Final top 5 bearish picks
+    top5 = sorted(sells, key=lambda x: x["prob_down"], reverse=True)[:5]
+
+    # Save cache
     try:
-        cache_data = {
-            "count": len(top15),
-            "bearwatch": top15,
+        save_to_firestore_market_cache("market_bearwatch", {
+            "count": len(top5),
+            "bearwatch": top5,
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-        save_to_firestore_market_cache("market_bearwatch", cache_data)
+        })
     except Exception as e:
         print("🔥 Cache save failed (bearwatch):", e)
 
-    return {"count": len(top15), "bearwatch": top15}
+    return {"count": len(top5), "bearwatch": top5}
