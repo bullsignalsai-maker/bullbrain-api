@@ -14,6 +14,8 @@ import gdown
 import re
 import math
 from symbols_clean import REAL_TICKERS
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 app = FastAPI()
 
@@ -4015,21 +4017,61 @@ def debug_bullbrain(symbol: str):
 
     except Exception as e:
         return {"error": str(e)}
-        
+
+
+
+def init_firebase_admin():
+    """Initialize Firebase Admin exactly once using JSON from environment."""
+    if firebase_admin._apps:
+        return firebase_admin._apps[0]
+
+    firebase_json = os.getenv("FIREBASE_ADMIN_JSON")
+
+    if not firebase_json:
+        print("❌ FIREBASE_ADMIN_JSON is missing!")
+        return None
+
+    try:
+        cred_dict = json.loads(firebase_json)
+
+        cred = credentials.Certificate(cred_dict)
+        app = firebase_admin.initialize_app(cred)
+        print("🔥 Firebase Admin initialized")
+        return app
+    except Exception as e:
+        print("❌ Firebase Admin init failed:", e)
+        return None
+
+# Initialize immediately
+init_firebase_admin()
+db = firestore.client()
+
+
+# ---------------------------------------------------------
+# Save market AI cache (global Firestore)
+# ---------------------------------------------------------
+def save_to_firestore_market_cache(doc_id, data):
+    try:
+        # Ensure Firebase Admin is initialized
+        if not firebase_admin._apps:
+            init_firebase_admin()
+
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        doc_ref.set(data, merge=True)
+
+        print(f"🔥 Saved to Firestore AI Cache: {doc_id}")
+    except Exception as e:
+        print("save_to_firestore_market_cache error:", e)
+
 # ---------------------------------------------------------
 # Read market AI cache (global Firestore)
 # ---------------------------------------------------------
 def read_market_cache(doc_id):
     try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
-
-        # safe init
+        # ensure Firebase initialized
         if not firebase_admin._apps:
-            cred = credentials.ApplicationDefault()
-            firebase_admin.initialize_app(cred)
+            init_firebase_admin()
 
-        db = firestore.client()
         doc_ref = db.collection("bullsignals_ai").document(doc_id)
         snap = doc_ref.get()
 
@@ -4041,16 +4083,17 @@ def read_market_cache(doc_id):
         if not updated:
             return None
 
-        # Check cache age
-        age_minutes = (datetime.datetime.utcnow() -
-                       datetime.datetime.fromisoformat(updated.replace("Z",""))
-                       ).total_seconds() / 60
+        # Check cache age in minutes
+        age_minutes = (
+            datetime.datetime.utcnow() -
+            datetime.datetime.fromisoformat(updated.replace("Z", ""))
+        ).total_seconds() / 60
 
         if age_minutes <= 5:
             print(f"💾 Using cached {doc_id} ({age_minutes:.1f} min old)")
             return data
 
-        print(f"⏳ Cache expired ({age_minutes:.1f} min). Will recompute.")
+        print(f"⏳ Cache expired ({age_minutes:.1f} min). Recomputing...")
         return None
 
     except Exception as e:
