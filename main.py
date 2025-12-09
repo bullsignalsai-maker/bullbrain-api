@@ -3982,6 +3982,40 @@ def market_pulse():
             "news_grouped": {"today": [], "yesterday": [], "week": [], "older": []},
             "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
         }
+
+def bullbrain_infer_single(symbol: str):
+    try:
+        candles = fetch_daily_candles(symbol)
+        if not candles:
+            return None
+
+        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+        return bullbrain_infer(features_vec)
+
+    except Exception as e:
+        print("bullbrain_infer_single error:", symbol, e)
+        return None
+
+
+
+@app.get("/debug-bullbrain/{symbol}")
+def debug_bullbrain(symbol: str):
+    try:
+        sym = symbol.upper()
+        candles = fetch_daily_candles(sym)
+
+        features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
+        infer = bullbrain_infer(features_vec)
+
+        return {
+            "symbol": sym,
+            "features_shape": len(features_vec),
+            "infer": infer,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+        
 # ---------------------------------------------------------
 # Read market AI cache (global Firestore)
 # ---------------------------------------------------------
