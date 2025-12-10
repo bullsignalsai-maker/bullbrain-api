@@ -4052,32 +4052,26 @@ db = firestore.client()
 # ---------------------------------------------------------
 def save_to_firestore_market_cache(doc_id, data):
     try:
-        # Ensure Firebase Admin is initialized
         if not firebase_admin._apps:
             init_firebase_admin()
 
-        # MUST create fresh Firestore client each time
-        db = firestore.client()
+        ref = db.collection("bullsignals_ai").document(doc_id)
+        ref.set(data, merge=True)
 
-        doc_ref = db.collection("bullsignals_ai").document(doc_id)
-        doc_ref.set(data, merge=True)
-
-        print(f"🔥 Saved to Firestore AI Cache: {doc_id}")
-
+        print(f"🔥 Saved AI Market Cache: {doc_id}")
     except Exception as e:
         print("save_to_firestore_market_cache error:", e)
 
 # ---------------------------------------------------------
-# Read market AI cache (global Firestore)
+# Read market AI cache (valid for 15 minutes)
 # ---------------------------------------------------------
 def read_market_cache(doc_id):
     try:
-        # ensure Firebase initialized
         if not firebase_admin._apps:
             init_firebase_admin()
 
-        doc_ref = db.collection("bullsignals_ai").document(doc_id)
-        snap = doc_ref.get()
+        ref = db.collection("bullsignals_ai").document(doc_id)
+        snap = ref.get()
 
         if not snap.exists:
             return None
@@ -4087,170 +4081,146 @@ def read_market_cache(doc_id):
         if not updated:
             return None
 
-        # Check cache age in minutes
         age_minutes = (
             datetime.datetime.utcnow() -
             datetime.datetime.fromisoformat(updated.replace("Z", ""))
         ).total_seconds() / 60
 
-        if age_minutes <= 5:
+        if age_minutes <= 15:      # ← NEW 15 min TTL
             print(f"💾 Using cached {doc_id} ({age_minutes:.1f} min old)")
             return data
 
-        print(f"⏳ Cache expired ({age_minutes:.1f} min). Recomputing...")
+        print(f"⏳ Cache expired ({age_minutes:.1f} min). Recomputing…")
         return None
 
     except Exception as e:
         print("read_market_cache error:", e)
         return None
-
-
-def classify_bullbrain_signal(prob_up: float, prob_down: float) -> str:
-    """
-    Our unified label logic:
-
-    - BUY:      strong or weak buy (prob_up clearly favoured)
-    - HOLD:     near 50/50
-    - SELL:     everything else
-    """
-    # Strong or weak BUY
-    if prob_up >= 0.55 or prob_up > prob_down * 0.95:
-        return "BUY"
-
-    # Very close = HOLD
-    if abs(prob_up - prob_down) < 0.02:
-        return "HOLD"
-
-    # Otherwise SELL
-    return "SELL"
-
 # ---------------------------------------------------------
-# /market-hotlist — Top 5 BUY (strong or weak)
+# /market-hotlist — Only BUY (5 tickers guaranteed)
 # ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
     from symbols_clean import REAL_TICKERS
     import datetime
 
-    # 1) Try cached first
+    # 1) Return cached first
     cache = read_market_cache("market_hotlist")
     if cache:
-        return {
-            "count": cache.get("count", 0),
-            "hotlist": cache.get("hotlist", [])
-        }
+        return {"count": cache["count"], "hotlist": cache["hotlist"]}
 
-    results = []
+    strong_buys = []
+    weak_buys = []
 
-    # 2) Full scan of all SP500 tickers
+    # 2) FULL SCAN for BUY signals
     for sym in REAL_TICKERS:
         try:
             infer = bullbrain_infer_single(sym)
             if not infer:
                 continue
 
-            prob_up = float(infer.get("probability_up", 0))
-            prob_down = float(infer.get("probability_down", 0))
+            up = float(infer.get("probability_up", 0))
+            down = float(infer.get("probability_down", 0))
 
-            # Our override label
-            sig = classify_bullbrain_signal(prob_up, prob_down)
-
-            # 🔒 Hotlist MUST be BUY only
-            if sig != "BUY":
-                continue
-
-            results.append({
+            row = {
                 "symbol": sym,
-                "prob_up": round(prob_up, 4),
-                "prob_down": round(prob_down, 4),
-                "signal": "BUY",  # force label to BUY only
-                "confidence": infer.get("confidence"),
-            })
+                "prob_up": round(up, 4),
+                "prob_down": round(down, 4),
+                "signal": "BUY",          # force BUY label
+                "confidence": infer.get("confidence", 0),
+            }
+
+            if up > down:
+                strong_buys.append(row)
+            elif up >= down - 0.05:
+                weak_buys.append(row)
 
         except Exception as e:
             print(f"hotlist error {sym}:", e)
 
-    # 3) Sort strongest BUY first
-    results.sort(key=lambda x: x["prob_up"], reverse=True)
+    # Sort by highest bullish confidence
+    strong_buys.sort(key=lambda x: x["prob_up"], reverse=True)
+    weak_buys.sort(key=lambda x: x["prob_up"], reverse=True)
 
-    # Only top 5 BUYs (if we have fewer than 5, that’s fine)
-    top5 = results[:5]
+    # 3) Guarantee 5 results
+    final_list = strong_buys[:5]
+    if len(final_list) < 5:
+        final_list += weak_buys[: 5 - len(final_list)]
 
     # 4) Save to Firestore
-    try:
-        cache_data = {
-            "count": len(top5),
-            "hotlist": top5,
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-        save_to_firestore_market_cache("market_hotlist", cache_data)
-    except Exception as e:
-        print("🔥 Cache save failed (hotlist):", e)
+    cache_data = {
+        "count": len(final_list),
+        "hotlist": final_list,
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    save_to_firestore_market_cache("market_hotlist", cache_data)
 
-    return {"count": len(top5), "hotlist": top5}
-
-
+    return cache_data
 
 # ---------------------------------------------------------
-# /market-bearwatch — Top 5 SELL + HOLD
+# /market-bearwatch — SELL / HOLD (5 tickers guaranteed)
 # ---------------------------------------------------------
 @app.get("/market-bearwatch")
 def market_bearwatch():
     from symbols_clean import REAL_TICKERS
     import datetime
 
-    # 1) Use cached version if available
+    # 1) Return cached first
     cache = read_market_cache("market_bearwatch")
     if cache:
-        return {
-            "count": cache.get("count", 0),
-            "bearwatch": cache.get("bearwatch", [])
-        }
+        return {"count": cache["count"], "bearwatch": cache["bearwatch"]}
 
-    results = []
+    sells = []
+    holds = []
 
-    # 2) Full SP500 scan
+    # 2) FULL SCAN SP500
     for sym in REAL_TICKERS:
         try:
             infer = bullbrain_infer_single(sym)
             if not infer:
                 continue
 
-            prob_up = float(infer.get("probability_up", 0))
-            prob_down = float(infer.get("probability_down", 0))
+            up = float(infer.get("probability_up", 0))
+            down = float(infer.get("probability_down", 0))
 
-            sig = classify_bullbrain_signal(prob_up, prob_down)
-
-            # 🔒 Bearwatch only cares about SELL + HOLD
-            if sig not in ["SELL", "HOLD"]:
-                continue
-
-            results.append({
-                "symbol": sym,
-                "prob_up": round(prob_up, 4),
-                "prob_down": round(prob_down, 4),
-                "signal": sig,  # SELL or HOLD
-                "confidence": infer.get("confidence"),
-            })
+            # classify
+            if down > up:
+                signal = "SELL"
+                sells.append({
+                    "symbol": sym,
+                    "prob_up": round(up, 4),
+                    "prob_down": round(down, 4),
+                    "signal": signal,
+                    "confidence": infer.get("confidence", 0),
+                })
+            elif abs(up - down) <= 0.03:
+                signal = "HOLD"
+                holds.append({
+                    "symbol": sym,
+                    "prob_up": round(up, 4),
+                    "prob_down": round(down, 4),
+                    "signal": signal,
+                    "confidence": infer.get("confidence", 0),
+                })
 
         except Exception as e:
             print(f"bearwatch error {sym}:", e)
 
-    # 3) Strongest bearish first (higher prob_down)
-    results.sort(key=lambda x: x["prob_down"], reverse=True)
+    # Sort SELL first (descending bearish strength)
+    sells.sort(key=lambda x: x["prob_down"], reverse=True)
+    holds.sort(key=lambda x: x["prob_down"], reverse=True)
 
-    # Top 5 (if we only have 2–3, that’s OK)
-    top5 = results[:5]
+    # 3) Guarantee 5 entries
+    final_list = sells[:5]
+    if len(final_list) < 5:
+        final_list += holds[: 5 - len(final_list)]
 
-    # 4) Save to Firestore
-    try:
-        cache_data = {
-            "count": len(top5),
-            "bearwatch": top5,
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-        save_to_firestore_market_cache("market_bearwatch", cache_data)
-    except Exception as e:
-        print("🔥 Cache save failed (bearwatch):", e)
+    # 4) Save into Firestore
+    cache_data = {
+        "count": len(final_list),
+        "bearwatch": final_list,
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    save_to_firestore_market_cache("market_bearwatch", cache_data)
 
-    return {"count": len(top5), "bearwatch": top5}
+    return cache_data
