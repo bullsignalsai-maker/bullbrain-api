@@ -4,56 +4,72 @@
 #
 # This script is meant to be called by Render Cron:
 #   Command:  python market_cron.py
-#   Schedule: */15 * * * *
+#   Schedule: */15 * * * 1-5   (weekdays, every 15 mins)
 # ---------------------------------------------------------
 
-import os
-import json
 import datetime
 import time
 
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import firestore
 
-from symbols_clean import REAL_TICKERS
-from main import fetch_daily_candles, compute_bullbrain_features, bullbrain_infer
+# IMPORTANT: reuse backend logic from main.py
+import main as backend
+from symbols_clean import REAL_TICKERS  # your full SP500 (or 492) ticker list
 
 
 # ---------------------------------------------------------
-# Firebase Admin init (standalone for cron process)
+# Helpers to reuse backend's logging + model + firestore
 # ---------------------------------------------------------
-def init_firebase_admin():
-    if firebase_admin._apps:
-        return firebase_admin._apps[0]
+def log(msg: str) -> None:
+    backend.log(f"[cron] {msg}")
 
-    firebase_json = os.getenv("FIREBASE_ADMIN_JSON")
-    if not firebase_json:
-        raise RuntimeError("FIREBASE_ADMIN_JSON is missing in environment")
 
-    cred_dict = json.loads(firebase_json)
-    cred = credentials.Certificate(cred_dict)
-    app = firebase_admin.initialize_app(cred)
-    print("🔥 [cron] Firebase Admin initialized")
-    return app
+def ensure_bullbrain_loaded():
+    """
+    Make sure BullBrain model is loaded for this cron process.
+    Reuses backend.load_bullbrain_model and backend.bullbrain_model.
+    """
+    if backend.bullbrain_model is not None:
+        return
+
+    log("Loading BullBrain model for cron process…")
+    try:
+        backend.bullbrain_model = backend.load_bullbrain_model()
+        log("BullBrain model loaded successfully in cron")
+    except Exception as e:
+        log(f"Failed to load BullBrain model in cron: {e}")
+        raise
 
 
 def get_db():
+    """
+    Reuse backend's Firebase Admin initialization and Firestore client.
+    """
+    # Ensure Firebase is initialized (backend.init_firebase_admin already
+    # knows how to read FIREBASE_ADMIN_JSON from environment)
     if not firebase_admin._apps:
-        init_firebase_admin()
-    return firestore.client()
+        backend.init_firebase_admin()
+    return backend.db
 
 
 # ---------------------------------------------------------
-# BullBrain single-symbol helper (reuses your main logic)
+# BullBrain single-symbol helper (reuses backend logic)
 # ---------------------------------------------------------
 def bullbrain_infer_single(symbol: str):
+    """
+    Use the same candles + feature pipeline and BullBrain inference
+    used in your main FastAPI backend.
+    """
     try:
-        candles = fetch_daily_candles(symbol)
+        candles = backend.fetch_daily_candles(symbol)
         if not candles:
             return None
 
-        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-        infer = bullbrain_infer(features_vec)
+        features_vec, feature_dict, last_close = backend.compute_bullbrain_features(
+            candles
+        )
+        infer = backend.bullbrain_infer(features_vec)
         return infer
     except Exception as e:
         print("[cron] bullbrain_infer_single error:", symbol, e)
@@ -68,10 +84,14 @@ def classify_signal(prob_up: float, prob_down: float):
     Classify into STRONG_BUY / BUY / STRONG_SELL / SELL / HOLD.
 
     Option B + weak buy/sell rule:
-      - BUY if prob_up >= 0.55 and prob_up > prob_down + 0.05
-      - STRONG_BUY if prob_up >= 0.60 and prob_up > prob_down + 0.08
-      - SELL / STRONG_SELL with symmetric rules for prob_down
-      - else HOLD
+
+      - STRONG_BUY: prob_up   >= 0.60 AND prob_up   > prob_down + 0.08
+      - BUY:        prob_up   >= 0.55 AND prob_up   > prob_down + 0.05
+
+      - STRONG_SELL: prob_down >= 0.60 AND prob_down > prob_up + 0.08
+      - SELL:        prob_down >= 0.55 AND prob_down > prob_up + 0.05
+
+      - Else: HOLD
     """
     edge_up = prob_up - prob_down
     edge_down = prob_down - prob_up
@@ -88,6 +108,7 @@ def classify_signal(prob_up: float, prob_down: float):
     if prob_down >= 0.55 and edge_down >= 0.05:
         return "SELL"
 
+    # Otherwise sideways / uncertain
     return "HOLD"
 
 
@@ -164,16 +185,19 @@ def build_bear_explanations(symbol, prob_up, prob_down, kind: str):
 # Main scan: build top 5 Hotlist + top 5 BearWatch
 # ---------------------------------------------------------
 def compute_hotlist_and_bearwatch():
+    # Make sure model is loaded once per cron run
+    ensure_bullbrain_loaded()
+
     buy_candidates = []
     bear_candidates = []
 
     total = len(REAL_TICKERS)
-    print(f"🔍 [cron] Scanning {total} tickers with BullBrain...")
+    log(f"Scanning {total} tickers with BullBrain...")
 
     for i, sym in enumerate(REAL_TICKERS, start=1):
         sym = sym.upper()
         if i % 50 == 0:
-            print(f"  ...processed {i}/{total}")
+            log(f"...processed {i}/{total}")
 
         infer = bullbrain_infer_single(sym)
         if not infer:
@@ -204,22 +228,23 @@ def compute_hotlist_and_bearwatch():
         }
 
         if kind in ("STRONG_BUY", "BUY"):
+            # ✅ BUYS go only into Hotlist
             short, risk = build_buy_explanations(sym, prob_up, prob_down, kind)
             item = {
                 **base_item,
-                "signal": "BUY",
-                "kind": kind,
+                "signal": "BUY",         # label is always BUY in Hotlist
+                "kind": kind,            # STRONG_BUY or BUY
                 "explanation_short": short,
                 "explanation_risk": risk,
             }
             buy_candidates.append(item)
         else:
-            # SELL or HOLD bucket for BearWatch
+            # ✅ SELL / STRONG_SELL / HOLD go into BearWatch bucket
             short, risk = build_bear_explanations(sym, prob_up, prob_down, kind)
             signal_label = "SELL" if kind in ("STRONG_SELL", "SELL") else "HOLD"
             item = {
                 **base_item,
-                "signal": signal_label,
+                "signal": signal_label,  # SELL or HOLD
                 "kind": kind,
                 "explanation_short": short,
                 "explanation_risk": risk,
@@ -233,9 +258,8 @@ def compute_hotlist_and_bearwatch():
     buy_candidates.sort(key=lambda x: x["prob_up"], reverse=True)
     hotlist = buy_candidates[:5]
 
-    # Fallback: if fewer than 5 BUYS, top "mild edge" HOLDs (>0.52 up) become WATCHLIST_BUY
+    # Fallback: if fewer than 5 BUYS, add mildly bullish HOLDs as WATCHLIST_BUY
     if len(hotlist) < 5:
-        # Find HOLDs that are slightly bullish
         mild_candidates = [
             b for b in bear_candidates
             if b["kind"] == "HOLD" and b["prob_up"] > 0.52
@@ -253,7 +277,7 @@ def compute_hotlist_and_bearwatch():
                 "prob_up": prob_up,
                 "prob_down": prob_down,
                 "confidence": extra["confidence"],
-                "signal": "BUY",
+                "signal": "BUY",              # still labeled BUY for UI
                 "kind": "WATCHLIST_BUY",
                 "explanation_short": short,
                 "explanation_risk": risk,
@@ -270,10 +294,11 @@ def compute_hotlist_and_bearwatch():
     bear_candidates.sort(key=lambda x: x["prob_down"], reverse=True)
     bearwatch = bear_candidates[:5]
 
-    print(f"✅ [cron] Built Hotlist: {len(hotlist)} tickers")
-    print(f"✅ [cron] Built BearWatch: {len(bearwatch)} tickers")
+    log(f"Built Hotlist: {len(hotlist)} tickers")
+    log(f"Built BearWatch: {len(bearwatch)} tickers")
 
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    # Use timezone-aware UTC now
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
     hotlist_doc = {
         "count": len(hotlist),
@@ -298,26 +323,26 @@ def save_docs_to_firestore(hotlist_doc, bearwatch_doc):
     col = db.collection("bullsignals_ai")
 
     col.document("market_hotlist").set(hotlist_doc, merge=True)
-    print("💾 [cron] Saved bullsignals_ai/market_hotlist")
+    log("Saved bullsignals_ai/market_hotlist")
 
     col.document("market_bearwatch").set(bearwatch_doc, merge=True)
-    print("💾 [cron] Saved bullsignals_ai/market_bearwatch")
+    log("Saved bullsignals_ai/market_bearwatch")
 
 
 # ---------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------
 def main():
-    started = datetime.datetime.utcnow().isoformat() + "Z"
-    print(f"\n⏱️ [cron] BullBrain market scan started at {started}")
+    started = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    log(f"BullBrain market scan started at {started}")
 
     try:
         hotlist_doc, bearwatch_doc = compute_hotlist_and_bearwatch()
         save_docs_to_firestore(hotlist_doc, bearwatch_doc)
-        finished = datetime.datetime.utcnow().isoformat() + "Z"
-        print(f"🎉 [cron] Completed BullBrain market scan at {finished}")
+        finished = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        log(f"Completed BullBrain market scan at {finished}")
     except Exception as e:
-        print("❌ [cron] Fatal error in market_cron:", e)
+        log(f"Fatal error in market_cron: {e}")
 
 
 if __name__ == "__main__":
