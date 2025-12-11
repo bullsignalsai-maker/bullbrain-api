@@ -4020,20 +4020,25 @@ def debug_bullbrain(symbol: str):
 
 
 
+# ---------------------------------------------------------
+# Firebase Admin init (shared by API + Cron)
+# ---------------------------------------------------------
 def init_firebase_admin():
-    """Initialize Firebase Admin exactly once using JSON from environment."""
+    """
+    Initialize Firebase Admin exactly once using FIREBASE_ADMIN_JSON.
+    This is safe to call from both main API and cron scripts.
+    """
     if firebase_admin._apps:
+        # Already initialized
         return firebase_admin._apps[0]
 
     firebase_json = os.getenv("FIREBASE_ADMIN_JSON")
-
     if not firebase_json:
         print("❌ FIREBASE_ADMIN_JSON is missing!")
         return None
 
     try:
         cred_dict = json.loads(firebase_json)
-
         cred = credentials.Certificate(cred_dict)
         app = firebase_admin.initialize_app(cred)
         print("🔥 Firebase Admin initialized")
@@ -4042,185 +4047,135 @@ def init_firebase_admin():
         print("❌ Firebase Admin init failed:", e)
         return None
 
-# Initialize immediately
+
+# Initialize immediately for API process
 init_firebase_admin()
 db = firestore.client()
 
 
 # ---------------------------------------------------------
-# Save market AI cache (global Firestore)
+# Generic helpers: save/read market AI cache (Firestore)
 # ---------------------------------------------------------
-def save_to_firestore_market_cache(doc_id, data):
+def save_to_firestore_market_cache(doc_id: str, data: dict):
+    """
+    Save a document into bullsignals_ai/<doc_id>.
+    Used by cron script OR any backend batch job.
+    """
     try:
         if not firebase_admin._apps:
             init_firebase_admin()
 
-        ref = db.collection("bullsignals_ai").document(doc_id)
-        ref.set(data, merge=True)
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        doc_ref.set(data, merge=True)
 
         print(f"🔥 Saved AI Market Cache: {doc_id}")
     except Exception as e:
         print("save_to_firestore_market_cache error:", e)
 
-# ---------------------------------------------------------
-# Read market AI cache (valid for 15 minutes)
-# ---------------------------------------------------------
-def read_market_cache(doc_id):
+
+def read_market_cache(doc_id: str):
+    """
+    Read a document from bullsignals_ai/<doc_id>.
+    API endpoints use this to return cached Hotlist/BearWatch.
+    No recompute, no TTL logic here — cron keeps it fresh.
+    """
     try:
         if not firebase_admin._apps:
             init_firebase_admin()
 
-        ref = db.collection("bullsignals_ai").document(doc_id)
-        snap = ref.get()
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        snap = doc_ref.get()
 
         if not snap.exists:
+            print(f"⚠️ No Firestore cache for {doc_id}")
             return None
 
         data = snap.to_dict()
-        updated = data.get("updated_at")
-        if not updated:
-            return None
-
-        age_minutes = (
-            datetime.datetime.utcnow() -
-            datetime.datetime.fromisoformat(updated.replace("Z", ""))
-        ).total_seconds() / 60
-
-        if age_minutes <= 15:      # ← NEW 15 min TTL
-            print(f"💾 Using cached {doc_id} ({age_minutes:.1f} min old)")
-            return data
-
-        print(f"⏳ Cache expired ({age_minutes:.1f} min). Recomputing…")
-        return None
-
+        return data
     except Exception as e:
         print("read_market_cache error:", e)
         return None
+
+
 # ---------------------------------------------------------
-# /market-hotlist — Only BUY (5 tickers guaranteed)
+# /market-hotlist — READ-ONLY view of Firestore cache
 # ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
-    from symbols_clean import REAL_TICKERS
-    import datetime
+    """
+    Returns the last precomputed Hotlist from Firestore.
 
-    # 1) Return cached first
-    cache = read_market_cache("market_hotlist")
-    if cache:
-        return {"count": cache["count"], "hotlist": cache["hotlist"]}
-
-    strong_buys = []
-    weak_buys = []
-
-    # 2) FULL SCAN for BUY signals
-    for sym in REAL_TICKERS:
-        try:
-            infer = bullbrain_infer_single(sym)
-            if not infer:
-                continue
-
-            up = float(infer.get("probability_up", 0))
-            down = float(infer.get("probability_down", 0))
-
-            row = {
-                "symbol": sym,
-                "prob_up": round(up, 4),
-                "prob_down": round(down, 4),
-                "signal": "BUY",          # force BUY label
-                "confidence": infer.get("confidence", 0),
-            }
-
-            if up > down:
-                strong_buys.append(row)
-            elif up >= down - 0.05:
-                weak_buys.append(row)
-
-        except Exception as e:
-            print(f"hotlist error {sym}:", e)
-
-    # Sort by highest bullish confidence
-    strong_buys.sort(key=lambda x: x["prob_up"], reverse=True)
-    weak_buys.sort(key=lambda x: x["prob_up"], reverse=True)
-
-    # 3) Guarantee 5 results
-    final_list = strong_buys[:5]
-    if len(final_list) < 5:
-        final_list += weak_buys[: 5 - len(final_list)]
-
-    # 4) Save to Firestore
-    cache_data = {
-        "count": len(final_list),
-        "hotlist": final_list,
-        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    Document shape (in bullsignals_ai/market_hotlist):
+    {
+        "count": 5,
+        "hotlist": [
+            {
+                "symbol": "KO",
+                "prob_up": 0.6123,
+                "prob_down": 0.3877,
+                "signal": "BUY",
+                "kind": "STRONG_BUY" | "BUY" | "WATCHLIST_BUY",
+                "confidence": 61.23,
+                "explanation_short": "...",
+                "explanation_risk": "..."
+            },
+            ...
+        ],
+        "updated_at": "2025-12-10T03:15:00Z"
     }
-    save_to_firestore_market_cache("market_hotlist", cache_data)
+    """
+    cache = read_market_cache("market_hotlist")
+    if not cache:
+        return {
+            "count": 0,
+            "hotlist": [],
+            "updated_at": None,
+        }
 
-    return cache_data
+    return {
+        "count": cache.get("count", len(cache.get("hotlist", []))),
+        "hotlist": cache.get("hotlist", []),
+        "updated_at": cache.get("updated_at"),
+    }
+
 
 # ---------------------------------------------------------
-# /market-bearwatch — SELL / HOLD (5 tickers guaranteed)
+# /market-bearwatch — READ-ONLY view of Firestore cache
 # ---------------------------------------------------------
 @app.get("/market-bearwatch")
 def market_bearwatch():
-    from symbols_clean import REAL_TICKERS
-    import datetime
+    """
+    Returns the last precomputed BearWatch from Firestore.
 
-    # 1) Return cached first
-    cache = read_market_cache("market_bearwatch")
-    if cache:
-        return {"count": cache["count"], "bearwatch": cache["bearwatch"]}
-
-    sells = []
-    holds = []
-
-    # 2) FULL SCAN SP500
-    for sym in REAL_TICKERS:
-        try:
-            infer = bullbrain_infer_single(sym)
-            if not infer:
-                continue
-
-            up = float(infer.get("probability_up", 0))
-            down = float(infer.get("probability_down", 0))
-
-            # classify
-            if down > up:
-                signal = "SELL"
-                sells.append({
-                    "symbol": sym,
-                    "prob_up": round(up, 4),
-                    "prob_down": round(down, 4),
-                    "signal": signal,
-                    "confidence": infer.get("confidence", 0),
-                })
-            elif abs(up - down) <= 0.03:
-                signal = "HOLD"
-                holds.append({
-                    "symbol": sym,
-                    "prob_up": round(up, 4),
-                    "prob_down": round(down, 4),
-                    "signal": signal,
-                    "confidence": infer.get("confidence", 0),
-                })
-
-        except Exception as e:
-            print(f"bearwatch error {sym}:", e)
-
-    # Sort SELL first (descending bearish strength)
-    sells.sort(key=lambda x: x["prob_down"], reverse=True)
-    holds.sort(key=lambda x: x["prob_down"], reverse=True)
-
-    # 3) Guarantee 5 entries
-    final_list = sells[:5]
-    if len(final_list) < 5:
-        final_list += holds[: 5 - len(final_list)]
-
-    # 4) Save into Firestore
-    cache_data = {
-        "count": len(final_list),
-        "bearwatch": final_list,
-        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    Document shape (in bullsignals_ai/market_bearwatch):
+    {
+        "count": 5,
+        "bearwatch": [
+            {
+                "symbol": "VZ",
+                "prob_up": 0.287,
+                "prob_down": 0.713,
+                "signal": "SELL" | "HOLD",
+                "kind": "STRONG_SELL" | "SELL" | "HOLD",
+                "confidence": 71.3,
+                "explanation_short": "...",
+                "explanation_risk": "..."
+            },
+            ...
+        ],
+        "updated_at": "2025-12-10T03:15:00Z"
     }
-    save_to_firestore_market_cache("market_bearwatch", cache_data)
+    """
+    cache = read_market_cache("market_bearwatch")
+    if not cache:
+        return {
+            "count": 0,
+            "bearwatch": [],
+            "updated_at": None,
+        }
 
-    return cache_data
+    return {
+        "count": cache.get("count", len(cache.get("bearwatch", []))),
+        "bearwatch": cache.get("bearwatch", []),
+        "updated_at": cache.get("updated_at"),
+    }
