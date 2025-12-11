@@ -85,7 +85,7 @@ REAL_TICKERS = [
     "XEL", "XOM", "XYL", "ZBH", "ZBRA", "ZTS"
 ]
 
-TICKER_NAME_MAP = {
+COMPANY_NAMES = {
     "A": "Agilent Technologies, Inc.",
 "AAPL": "Apple Inc.",
 "ABBV": "AbbVie Inc.",
@@ -594,4 +594,4 @@ def get_company_name(symbol: str) -> str:
         return ""
 
     sym = str(symbol).upper().strip()
-    return TICKER_NAME_MAP.get(sym, sym)
+    return COMPANY_NAMES.get(sym, sym)
