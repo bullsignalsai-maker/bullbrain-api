@@ -1,0 +1,3 @@
+REAL_TICKERS = [
+    "AAPL", "TSLA", "MSFT", "NVDA", "GOOGL", "META"
+]
