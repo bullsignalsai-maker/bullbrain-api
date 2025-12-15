@@ -464,8 +464,8 @@ def compute_market_pulse():
       - Highlights (bullish / neutral / bearish) — 5 each
       - News grouped by time buckets
     """
-    eastern = backend.pytz.timezone("America/New_York")
-    utc = backend.pytz.utc
+    eastern = pytz.timezone("America/New_York")
+    utc = pytz.utc
 
     news_resp = backend.market_news()
     raw_news = news_resp.get("data", []) if isinstance(news_resp, dict) else []

@@ -3839,8 +3839,12 @@ def _get_market_overview_quick():
 
 @app.get("/market-pulse")
 def market_pulse():
+    """
+    Firestore read-only endpoint.
+    Cron job is the single writer.
+    """
     try:
-        db = db = firestore.client()
+        db = firestore.client()
         doc = db.collection("bullsignals_ai").document("market_pulse").get()
 
         if not doc.exists:
@@ -3895,18 +3899,7 @@ def market_overview():
         return {}
 
 
-def bullbrain_infer_single(symbol: str):
-    try:
-        candles = fetch_daily_candles(symbol)
-        if not candles:
-            return None
 
-        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-        return bullbrain_infer(features_vec)
-
-    except Exception as e:
-        print("bullbrain_infer_single error:", symbol, e)
-        return None
 
 
 
