@@ -3839,151 +3839,61 @@ def _get_market_overview_quick():
 
 @app.get("/market-pulse")
 def market_pulse():
-    import pytz
-    eastern = pytz.timezone("America/New_York")
-    utc = pytz.utc
-
     try:
-        # ----------------------------------------------------
-        # 1) ALWAYS FETCH FRESH NEWS
-        # ----------------------------------------------------
-        news_resp = market_news()
-        raw_news = news_resp.get("data", []) if isinstance(news_resp, dict) else []
+        db = db = firestore.client()
+        doc = db.collection("bullsignals_ai").document("market_pulse").get()
 
-        if not isinstance(raw_news, list):
-            raw_news = []
+        if not doc.exists:
+            return {
+                "highlights_grouped": {
+                    "bullish": [],
+                    "neutral": [],
+                    "bearish": [],
+                },
+                "news_grouped": {
+                    "today": [],
+                    "yesterday": [],
+                    "week": [],
+                    "older": [],
+                },
+                "updated_at": None,
+            }
 
-        cleaned = []
-
-        # ----------------------------------------------------
-        # 2) Convert UTC → Eastern time
-        # ----------------------------------------------------
-        for n in raw_news:
-            try:
-                # Parse published date (UTC ISO)
-                dt_utc = datetime.datetime.fromisoformat(
-                    n["pubDate"].replace("Z", "")
-                ).replace(tzinfo=utc)
-
-                # Convert → Eastern
-                dt_et = dt_utc.astimezone(eastern)
-
-                n["pubDateET"] = dt_et.isoformat()
-                n["pubDateObj"] = dt_et
-
-                cleaned.append(n)
-
-            except:
-                continue
-
-        # ----------------------------------------------------
-        # 3) SORT LATEST → FIRST using ET
-        # ----------------------------------------------------
-        cleaned.sort(key=lambda x: x["pubDateObj"], reverse=True)
-
-        # ----------------------------------------------------
-        # 4) SENTIMENT — from latest 80 items
-        # ----------------------------------------------------
-        titles = [n.get("title", "") for n in cleaned[:80] if n.get("title")]
-
-        analyzed = _analyze_headline_sentiment_py(titles)
-
-        bullish_raw = [a["title"] for a in analyzed if a["tag"] == "📈"]
-        bearish_raw = [a["title"] for a in analyzed if a["tag"] == "📉"]
-        neutral_raw = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
-
-        # Fallback keyword method (adds variation)
-        for n in cleaned[:80]:
-            t = n.get("title", "").lower()
-            if not t:
-                continue
-
-            if any(w in t for w in ["rises", "beats", "up", "strong", "record"]):
-                bullish_raw.append(n["title"])
-            elif any(w in t for w in ["falls", "drops", "down", "weak", "cuts"]):
-                bearish_raw.append(n["title"])
-            else:
-                neutral_raw.append(n["title"])
-
-        # Unique
-        bullish_raw = list(set(bullish_raw))
-        bearish_raw = list(set(bearish_raw))
-        neutral_raw = list(set(neutral_raw))
-
-        # Top 5 each
-        bullish = bullish_raw[:5]
-        neutral = neutral_raw[:5]
-        bearish = bearish_raw[:5]
-
-        # Numeric summary
-        highlights_numeric = {
-            "bull": len(bullish_raw),
-            "bear": len(bearish_raw),
-            "neutral": len(neutral_raw),
-        }
-
-        # ----------------------------------------------------
-        # 5) MARKET OVERVIEW
-        # ----------------------------------------------------
-        overview = _get_market_overview_quick()
-
-        # ----------------------------------------------------
-        # 6) GROUP NEWS BY DATE (ET)
-        # ----------------------------------------------------
-        grouped = {"today": [], "yesterday": [], "week": [], "older": []}
-
-        now_et = datetime.datetime.now(eastern)
-        today_et = now_et.date()
-        yesterday_et = today_et - datetime.timedelta(days=1)
-        week_ago_et = today_et - datetime.timedelta(days=7)
-
-        for n in cleaned:
-            d = n["pubDateObj"].date()
-
-            if d == today_et:
-                grouped["today"].append(n)
-            elif d == yesterday_et:
-                grouped["yesterday"].append(n)
-            elif d >= week_ago_et:
-                grouped["week"].append(n)
-            else:
-                grouped["older"].append(n)
-
-        # ----------------------------------------------------
-        # 7) Sort grouped lists by ET timestamp
-        # ----------------------------------------------------
-        for key in grouped:
-            grouped[key].sort(key=lambda x: x["pubDateObj"], reverse=True)
-
-        # ----------------------------------------------------
-        # FINAL RESPONSE
-        # ----------------------------------------------------
-        return {
-            "market_overview": overview,
-            "highlights_numeric": highlights_numeric,
-            "highlights_grouped": {
-                "bullish": bullish,
-                "neutral": neutral,
-                "bearish": bearish,
-            },
-            "news_grouped": grouped,
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
+        return doc.to_dict()
 
     except Exception as e:
-        print("market_pulse error:", e)
-        fb = _get_market_overview_quick()
+        backend.log(f"[market-pulse] Firestore read error: {e}")
         return {
-            "market_overview": fb,
-            "highlights_numeric": {"bull": 0, "bear": 0, "neutral": 0},
             "highlights_grouped": {
                 "bullish": [],
                 "neutral": [],
                 "bearish": [],
             },
-            "news_grouped": {"today": [], "yesterday": [], "week": [], "older": []},
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "news_grouped": {
+                "today": [],
+                "yesterday": [],
+                "week": [],
+                "older": [],
+            },
+            "updated_at": None,
         }
+
+
+@app.get("/market-overview")
+def market_overview():
+    try:
+        db = firestore.client()
+        doc = db.collection("bullsignals_ai").document("market_overview_live").get()
+
+        if not doc.exists:
+            return {}
+
+        return doc.to_dict()
+
+    except Exception as e:
+        backend.log(f"[market-overview] Firestore read error: {e}")
+        return {}
+
 
 def bullbrain_infer_single(symbol: str):
     try:
