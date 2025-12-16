@@ -1,30 +1,15 @@
-# backend/stockdetail_cron.py
-"""
-BullSignalsAI — StockDetail Cron (Firestore Precompute)
+# backend/stockdetail_builder.py
 
-Purpose:
-- Precompute /stockdetail payloads (quote, candles, bullbrain v2, technical,
-  news, grok, hybrid, smartPattern)
-- Store into Firestore so the mobile UI loads instantly
-"""
-
-import os
-import time
-import traceback
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from google.cloud import firestore
+from backend.schema_versions import (
+    STOCKDETAIL_SCHEMA_VERSION,
+    TTL_STOCKDETAIL_SECONDS,
+)
 
-# ----------------------------
-# Schema & Firestore helpers
-# ----------------------------
-from backend.schema_versions import STOCKDETAIL_SCHEMA_VERSION
-from backend.firestore_paths import stockdetail_doc_ref
-
-# ----------------------------
-# Reuse existing backend logic
-# ----------------------------
+# We import from main.py because those functions already exist there.
+# This is OK because main.py already defines them earlier in the file.
 from main import (
     backend_fetch_quote,
     fetch_daily_candles,
@@ -40,31 +25,15 @@ from main import (
     BULLBRAIN_VERSION,
 )
 
-# ----------------------------
-# Config
-# ----------------------------
-DEFAULT_LIMIT_CANDLES = int(os.getenv("STOCKDETAIL_LIMIT_CANDLES", "180"))
-DEFAULT_TTL_MINUTES = int(os.getenv("STOCKDETAIL_TTL_MINUTES", "15"))
-MAX_SYMBOLS_PER_RUN = int(os.getenv("STOCKDETAIL_MAX_SYMBOLS", "120"))
-
-# Example:
-# STOCKDETAIL_UNIVERSE="AAPL,TSLA,NVDA,MSFT"
-STOCKDETAIL_UNIVERSE = os.getenv("STOCKDETAIL_UNIVERSE", "").strip()
+DEFAULT_LIMIT_CANDLES = 180
 
 
-# ----------------------------
-# Time helpers
-# ----------------------------
 def utcnow() -> datetime.datetime:
     return datetime.datetime.utcnow()
 
 
 def iso(dt: datetime.datetime) -> str:
     return dt.replace(microsecond=0).isoformat() + "Z"
-
-
-def compute_expires_at_ts(now: datetime.datetime) -> int:
-    return int(now.timestamp()) + DEFAULT_TTL_MINUTES * 60
 
 
 def safe_float(x) -> Optional[float]:
@@ -74,10 +43,7 @@ def safe_float(x) -> Optional[float]:
         return None
 
 
-# ----------------------------
-# Builders
-# ----------------------------
-def build_candles_payload(symbol: str, candles: dict) -> Optional[dict]:
+def build_candles_payload(symbol: str, candles: dict, limit_candles: int = DEFAULT_LIMIT_CANDLES) -> Optional[dict]:
     if not candles:
         return None
 
@@ -92,13 +58,14 @@ def build_candles_payload(symbol: str, candles: dict) -> Optional[dict]:
     if n == 0:
         return None
 
-    use_n = min(DEFAULT_LIMIT_CANDLES, n)
+    use_n = min(limit_candles, n)
     start = n - use_n
 
     items = []
     for i in range(start, n):
-        if i < len(ts_list) and ts_list[i]:
-            dt = datetime.datetime.utcfromtimestamp(ts_list[i] / 1000.0)
+        t_raw = ts_list[i] if i < len(ts_list) and ts_list[i] else None
+        if t_raw:
+            dt = datetime.datetime.utcfromtimestamp(t_raw / 1000.0).replace(microsecond=0)
         else:
             dt = utcnow() - datetime.timedelta(days=(n - 1 - i))
 
@@ -137,11 +104,11 @@ def build_bullbrain_block(candles: dict):
         "probabilities": class_probs,
         "raw": {"prob_up": prob_up, "prob_down": 1.0 - prob_up},
     }
-
     return bullbrain, feature_dict, float(last_close), prob_up
 
 
 def build_smart_pattern_safe(symbol: str, candles: dict) -> Dict[str, Any]:
+    raw = None
     try:
         raw = scan_smart_pattern_history(symbol, candles)
     except Exception:
@@ -172,16 +139,13 @@ def build_smart_pattern_safe(symbol: str, candles: dict) -> Dict[str, Any]:
             if hist and hist.get("samples"):
                 dates = hist["samples"][:5]
 
-    return {
-        "smartPattern": safe,
-        "patternDates": dates,
-        "patternStats": raw,
-    }
+    return {"smartPattern": safe, "patternDates": dates, "patternStats": raw}
 
 
-def build_stockdetail_payload(symbol: str, force_grok: bool = False) -> Dict[str, Any]:
-    now = utcnow()
+def build_stockdetail_payload(symbol: str, force_grok: bool = False, limit_candles: int = DEFAULT_LIMIT_CANDLES) -> Dict[str, Any]:
     symbol = symbol.upper()
+    now = utcnow()
+    expires_at_ts = int(now.timestamp()) + TTL_STOCKDETAIL_SECONDS
 
     quote = backend_fetch_quote(symbol)
     candles = fetch_daily_candles(symbol)
@@ -195,15 +159,13 @@ def build_stockdetail_payload(symbol: str, force_grok: bool = False) -> Dict[str
     if feature_dict is not None and last_close is not None:
         technical = build_technical_snapshot(symbol, feature_dict, last_close)
 
-    candles_payload = build_candles_payload(symbol, candles)
+    candles_payload = build_candles_payload(symbol, candles, limit_candles=limit_candles)
 
     news = get_symbol_news(symbol, limit=8)
     grok = get_stockdetail_grok(symbol, quote, technical, force=force_grok)
     grok_prob_up = grok.get("prob_up")
 
-    hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
-        bull_prob_up, grok_prob_up
-    )
+    hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(bull_prob_up, grok_prob_up)
 
     sp = build_smart_pattern_safe(symbol, candles)
 
@@ -212,7 +174,7 @@ def build_stockdetail_payload(symbol: str, force_grok: bool = False) -> Dict[str
         "schemaVersion": STOCKDETAIL_SCHEMA_VERSION,
         "asOf": iso(now),
         "computedAt": iso(now),
-        "expiresAt": compute_expires_at_ts(now),
+        "expiresAt": expires_at_ts,  # epoch seconds (fast TTL check)
 
         "quote": quote,
         "price": last_close,
@@ -222,6 +184,7 @@ def build_stockdetail_payload(symbol: str, force_grok: bool = False) -> Dict[str
         "candles": candles_payload,
         "news": news,
         "grok": grok,
+
         "hybridProbUp": hybrid_p,
         "hybridSignal": hybrid_signal,
         "hybridScore": hybrid_conf,
@@ -230,62 +193,3 @@ def build_stockdetail_payload(symbol: str, force_grok: bool = False) -> Dict[str
         "patternDates": sp["patternDates"],
         "patternStats": sp["patternStats"],
     }
-
-
-# ----------------------------
-# Cron runner
-# ----------------------------
-def should_skip(existing: dict, force: bool) -> bool:
-    if force or not existing:
-        return False
-    try:
-        return existing.get("expiresAt", 0) > int(time.time())
-    except Exception:
-        return False
-
-
-def get_universe() -> List[str]:
-    if not STOCKDETAIL_UNIVERSE:
-        return []
-    syms = [s.strip().upper() for s in STOCKDETAIL_UNIVERSE.split(",") if s.strip()]
-    return list(dict.fromkeys(syms))[:MAX_SYMBOLS_PER_RUN]
-
-
-def run(force: bool = False, force_grok: bool = False):
-    db = firestore.Client()
-    symbols = get_universe()
-
-    if not symbols:
-        print("⚠️ No symbols to process (STOCKDETAIL_UNIVERSE empty)")
-        return
-
-    print(f"🚀 StockDetail cron | symbols={len(symbols)} ttl={DEFAULT_TTL_MINUTES}m")
-
-    for i, symbol in enumerate(symbols, 1):
-        t0 = time.time()
-        try:
-            ref = stockdetail_doc_ref(symbol)
-            snap = ref.get()
-            existing = snap.to_dict() if snap.exists else None
-
-            if should_skip(existing, force):
-                print(f"⏭️ [{i}/{len(symbols)}] {symbol} skip (fresh)")
-                continue
-
-            payload = build_stockdetail_payload(symbol, force_grok)
-            ref.set(payload, merge=True)
-
-            ms = int((time.time() - t0) * 1000)
-            print(f"✅ [{i}/{len(symbols)}] {symbol} updated ({ms}ms)")
-
-        except Exception as e:
-            print(f"❌ [{i}/{len(symbols)}] {symbol} failed: {e}")
-            traceback.print_exc()
-
-    print("✅ StockDetail cron finished")
-
-
-if __name__ == "__main__":
-    force = os.getenv("STOCKDETAIL_FORCE", "false").lower() == "true"
-    force_grok = os.getenv("STOCKDETAIL_FORCE_GROK", "false").lower() == "true"
-    run(force=force, force_grok=force_grok)

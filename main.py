@@ -1957,6 +1957,9 @@ def get_technical(symbol: str):
     except Exception as e:
         print("get_technical error:", e)
         return {"symbol": symbol, "error": str(e)}
+
+        
+
 # --------------------------------------------------------------------
 # STOCKDETAIL — FIRESTORE-FIRST (OPTIMIZED)
 # --------------------------------------------------------------------
@@ -1964,70 +1967,46 @@ import time
 import datetime
 from fastapi import HTTPException
 
-from backend.firestore_paths import stockdetail_doc_ref
 from backend.schema_versions import STOCKDETAIL_SCHEMA_VERSION
+from backend.firestore_paths import stockdetail_doc_ref, get_db
+from backend.stockdetail_builder import build_stockdetail_payload
 
-# Reuse the SAME builder used by cron
-from backend.stockdetail_cron import build_stockdetail_payload
 
-
-# --------------------------------------------------------------------
-# STOCKDETAIL ENDPOINT
-# --------------------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def stockdetail(symbol: str, force: bool = False):
-    """
-    Firestore-first Stock Detail endpoint.
-
-    - Reads precomputed payload from Firestore
-    - Falls back to compute ONLY if expired or forced
-    - UI should never call with force=true
-    """
     symbol = symbol.upper()
     now_ts = int(time.time())
 
     try:
-        # ------------------------------------------------------------
-        # 1️⃣ FAST PATH — Firestore
-        # ------------------------------------------------------------
-        doc_ref = stockdetail_doc_ref(symbol)
-        snap = doc_ref.get()
+        db = get_db()
+        ref = stockdetail_doc_ref(symbol, db=db)
+        snap = ref.get()
 
+        # ✅ Fast path: serve cache if fresh
         if snap.exists and not force:
             cached = snap.to_dict()
-
-            # TTL check (epoch seconds)
             expires_at = cached.get("expiresAt")
             if expires_at and expires_at > now_ts:
                 return cached
 
-        # ------------------------------------------------------------
-        # 2️⃣ SLOW PATH — Recompute (rare)
-        # ------------------------------------------------------------
-        # NOTE:
-        # This uses the SAME function as cron
-        # No logic duplication allowed here
+        # ✅ Slow path: compute (rare)
         payload = build_stockdetail_payload(
             symbol=symbol,
             force_grok=force,  # only true for admin/debug
         )
 
-        # Safety: enforce schema + timestamps
+        # enforce schema safety
         payload["schemaVersion"] = STOCKDETAIL_SCHEMA_VERSION
-        payload["asOf"] = datetime.datetime.utcnow().replace(
-            microsecond=0
-        ).isoformat() + "Z"
+        payload["asOf"] = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-        # ------------------------------------------------------------
-        # 3️⃣ Write-through cache
-        # ------------------------------------------------------------
-        doc_ref.set(payload, merge=True)
-
+        # write-through cache
+        ref.set(payload, merge=True)
         return payload
 
     except Exception as e:
         print("stockdetail error:", e)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # --------------------------------------------------------------------
