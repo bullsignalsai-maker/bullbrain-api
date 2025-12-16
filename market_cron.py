@@ -25,6 +25,34 @@ import main as backend
 from symbols_clean import REAL_TICKERS, COMPANY_NAMES
 
 
+MARKET_KEYWORDS = [
+    "stock", "stocks", "market", "markets", "futures",
+    "s&p", "dow", "nasdaq", "indexes",
+    "fed", "rates", "yields", "inflation", "cpi", "jobs",
+    "earnings", "guidance", "sectors",
+    "tech stocks", "financial stocks", "banks"
+]
+
+EXCLUDE_KEYWORDS = [
+    "death", "killed", "homicide", "crime",
+    "relationship", "couples", "psychologist",
+    "celebrity", "actor", "actress",
+    "obamacare", "health insurance",
+    "marijuana", "cannabis",
+    "weather", "earthquake"
+]
+
+ALLOWED_SOURCES = {
+    "CNBC",
+    "MarketWatch",
+    "Bloomberg",
+    "Reuters",
+    "WSJ",
+    "Investing.com",
+    "Yahoo",
+}
+
+
 # ---------------------------------------------------------
 # Logging helper
 # ---------------------------------------------------------
@@ -96,6 +124,27 @@ def classify_signal(prob_up: float, prob_down: float) -> str:
         return "SELL"
 
     return "HOLD"
+
+
+# ---------------------------------------------------------
+# Market Pulse – highlight filter
+# ---------------------------------------------------------
+def is_market_highlight(item: dict) -> bool:
+    title = (item.get("title") or "").lower()
+    source = item.get("source")
+
+    if not title or source not in ALLOWED_SOURCES:
+        return False
+
+    # Hard exclusions
+    if any(bad in title for bad in EXCLUDE_KEYWORDS):
+        return False
+
+    # Must contain at least one market keyword
+    if any(good in title for good in MARKET_KEYWORDS):
+        return True
+
+    return False
 
 
 # ---------------------------------------------------------
@@ -455,6 +504,7 @@ def compute_market_overview():
         }
 
 
+
 # =========================================================
 # 🆕 MARKET HIGHLIGHTS + NEWS (FIRESTORE)
 # =========================================================
@@ -467,43 +517,76 @@ def compute_market_pulse():
     eastern = pytz.timezone("America/New_York")
     utc = pytz.utc
 
+    # -----------------------------------------------------
+    # 1) Fetch raw news (unchanged)
+    # -----------------------------------------------------
     news_resp = backend.market_news()
     raw_news = news_resp.get("data", []) if isinstance(news_resp, dict) else []
 
     cleaned = []
 
+    # -----------------------------------------------------
+    # 2) Normalize timestamps (unchanged)
+    # -----------------------------------------------------
     for n in raw_news:
         try:
             dt_utc = datetime.datetime.fromisoformat(
                 n["pubDate"].replace("Z", "")
             ).replace(tzinfo=utc)
+
             dt_et = dt_utc.astimezone(eastern)
 
             n["pubDateET"] = dt_et.isoformat()
             n["pubDateObj"] = dt_et
             cleaned.append(n)
+
         except Exception:
             continue
 
     cleaned.sort(key=lambda x: x["pubDateObj"], reverse=True)
 
-    titles = [n.get("title", "") for n in cleaned[:80] if n.get("title")]
+    # -----------------------------------------------------
+    # 3) 🔒 FILTER: ONLY REAL US MARKET HEADLINES (NEW)
+    # -----------------------------------------------------
+    market_news = [
+        n for n in cleaned
+        if is_market_highlight(n)
+    ]
+
+    # -----------------------------------------------------
+    # 4) SENTIMENT (ONLY ON MARKET NEWS)
+    # -----------------------------------------------------
+    titles = [
+        n.get("title", "")
+        for n in market_news[:80]
+        if n.get("title")
+    ]
+
     analyzed = backend._analyze_headline_sentiment_py(titles)
 
     bullish = [a["title"] for a in analyzed if a["tag"] == "📈"]
     bearish = [a["title"] for a in analyzed if a["tag"] == "📉"]
     neutral = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
 
+    # Ensure exactly 5 each (existing fallback logic)
     bullish = backend._ensure_five(bullish, "bullish")
     neutral = backend._ensure_five(neutral, "neutral")
     bearish = backend._ensure_five(bearish, "bearish")
 
+    # -----------------------------------------------------
+    # 5) NEWS GROUPING (UNCHANGED — uses FULL cleaned list)
+    # -----------------------------------------------------
     now_et = datetime.datetime.now(eastern)
     today = now_et.date()
     yesterday = today - datetime.timedelta(days=1)
     week_ago = today - datetime.timedelta(days=7)
 
-    grouped = {"today": [], "yesterday": [], "week": [], "older": []}
+    grouped = {
+        "today": [],
+        "yesterday": [],
+        "week": [],
+        "older": [],
+    }
 
     for n in cleaned:
         d = n["pubDateObj"].date()
@@ -519,6 +602,9 @@ def compute_market_pulse():
     for k in grouped:
         grouped[k].sort(key=lambda x: x["pubDateObj"], reverse=True)
 
+    # -----------------------------------------------------
+    # 6) FINAL DOCUMENT (SCHEMA UNCHANGED)
+    # -----------------------------------------------------
     return {
         "highlights_grouped": {
             "bullish": bullish,
