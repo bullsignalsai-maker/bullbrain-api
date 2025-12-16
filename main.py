@@ -16,6 +16,15 @@ import math
 from symbols_clean import REAL_TICKERS
 import firebase_admin
 from firebase_admin import credentials, firestore
+import time
+import datetime
+from fastapi import HTTPException
+
+from google.cloud import firestore
+
+from backend.schema_versions import STOCKDETAIL_SCHEMA_VERSION
+from backend.firestore_paths import stockdetail_doc_ref
+from backend.stockdetail_builder import build_stockdetail_payload
 
 app = FastAPI()
 
@@ -1959,54 +1968,63 @@ def get_technical(symbol: str):
         return {"symbol": symbol, "error": str(e)}
 
         
-
 # --------------------------------------------------------------------
 # STOCKDETAIL — FIRESTORE-FIRST (OPTIMIZED)
 # --------------------------------------------------------------------
-import time
-import datetime
-from fastapi import HTTPException
-
-from backend.schema_versions import STOCKDETAIL_SCHEMA_VERSION
-from backend.firestore_paths import stockdetail_doc_ref, get_db
-from backend.stockdetail_builder import build_stockdetail_payload
-
-
 @app.get("/stockdetail/{symbol}")
 def stockdetail(symbol: str, force: bool = False):
+    """
+    Firestore-first stock detail endpoint
+
+    Flow:
+    1) Return cached Firestore doc if fresh
+    2) Else compute via builder
+    3) Save back to Firestore
+    """
+
     symbol = symbol.upper()
-    now_ts = int(time.time())
+    now = datetime.datetime.utcnow()
 
     try:
-        db = get_db()
-        ref = stockdetail_doc_ref(symbol, db=db)
-        snap = ref.get()
+        db = firestore.Client()
+        doc_ref = stockdetail_doc_ref(db, symbol)
+        snap = doc_ref.get()
 
-        # ✅ Fast path: serve cache if fresh
+        # --------------------------------------------------
+        # 1️⃣ FAST PATH — Firestore cache
+        # --------------------------------------------------
         if snap.exists and not force:
             cached = snap.to_dict()
             expires_at = cached.get("expiresAt")
-            if expires_at and expires_at > now_ts:
-                return cached
 
-        # ✅ Slow path: compute (rare)
+            if expires_at:
+                exp = datetime.datetime.fromisoformat(
+                    expires_at.replace("Z", "+00:00")
+                )
+                if exp > now:
+                    return cached
+
+        # --------------------------------------------------
+        # 2️⃣ BUILD FRESH PAYLOAD
+        # --------------------------------------------------
         payload = build_stockdetail_payload(
             symbol=symbol,
-            force_grok=force,  # only true for admin/debug
+            force_grok=force,
         )
 
-        # enforce schema safety
-        payload["schemaVersion"] = STOCKDETAIL_SCHEMA_VERSION
-        payload["asOf"] = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        # --------------------------------------------------
+        # 3️⃣ SAVE TO FIRESTORE
+        # --------------------------------------------------
+        doc_ref.set(payload, merge=True)
 
-        # write-through cache
-        ref.set(payload, merge=True)
         return payload
 
     except Exception as e:
-        print("stockdetail error:", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        print("❌ stockdetail error:", e)
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
 
 
 # --------------------------------------------------------------------
