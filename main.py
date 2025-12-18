@@ -16,15 +16,6 @@ import math
 from symbols_clean import REAL_TICKERS
 import firebase_admin
 from firebase_admin import credentials, firestore
-import time
-import datetime
-from fastapi import HTTPException
-
-from google.cloud import firestore
-
-from backend.schema_versions import STOCKDETAIL_SCHEMA_VERSION
-from backend.firestore_paths import stockdetail_doc_ref
-from backend.stockdetail_builder import build_stockdetail_payload
 
 app = FastAPI()
 
@@ -1967,65 +1958,171 @@ def get_technical(symbol: str):
         print("get_technical error:", e)
         return {"symbol": symbol, "error": str(e)}
 
-        
 # --------------------------------------------------------------------
-# STOCKDETAIL — FIRESTORE-FIRST (OPTIMIZED)
+# STOCKDETAIL SUPER ENDPOINT
 # --------------------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
-def stockdetail(symbol: str, force: bool = False):
-    """
-    Firestore-first stock detail endpoint
-
-    Flow:
-    1) Return cached Firestore doc if fresh
-    2) Else compute via builder
-    3) Save back to Firestore
-    """
-
+def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
     symbol = symbol.upper()
-    now = datetime.datetime.utcnow()
-
     try:
-        db = firestore.Client()
-        doc_ref = stockdetail_doc_ref(db, symbol)
-        snap = doc_ref.get()
+        quote = backend_fetch_quote(symbol)
+        candles = fetch_daily_candles(symbol)
 
-        # --------------------------------------------------
-        # 1️⃣ FAST PATH — Firestore cache
-        # --------------------------------------------------
-        if snap.exists and not force:
-            cached = snap.to_dict()
-            expires_at = cached.get("expiresAt")
+        feature_dict = None
+        last_close = None
+        bullbrain_block = None
+        bull_prob_up = None
 
-            if expires_at:
-                exp = datetime.datetime.fromisoformat(
-                    expires_at.replace("Z", "+00:00")
-                )
-                if exp > now:
-                    return cached
+        # BULLBRAIN
+        if candles and bullbrain_model is not None:
+            features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
+            inference = bullbrain_infer(features_vec)
+            prob_up = float(
+                inference.get("probability_up") or inference.get("raw_output") or 0.5
+            )
+            bull_prob_up = prob_up
+            class_probs = _class_probs_from_prob_up(prob_up)
+            bullbrain_block = {
+                "version": BULLBRAIN_VERSION,
+                "signal": inference.get("signal"),
+                "confidence": inference.get("confidence"),
+                "probabilities": class_probs,
+                "raw": {"prob_up": prob_up, "prob_down": 1.0 - prob_up},
+            }
 
-        # --------------------------------------------------
-        # 2️⃣ BUILD FRESH PAYLOAD
-        # --------------------------------------------------
-        payload = build_stockdetail_payload(
-            symbol=symbol,
-            force_grok=force,
+        if last_close is None and quote:
+            last_close = float(quote.get("current") or 0.0)
+
+        # TECHNICAL SNAPSHOT
+        technical = None
+        if feature_dict is not None and last_close is not None:
+            technical = build_technical_snapshot(symbol, feature_dict, last_close)
+
+        # CANDLES PAYLOAD
+        candles_payload = None
+        if candles:
+            closes = candles["close"]
+            highs = candles["high"]
+            lows = candles["low"]
+            opens = candles["open"]
+            vols = candles["volume"]
+            ts_list = candles.get("timestamp") or []
+            n = len(closes)
+            if n > 0:
+                use_n = min(limit_candles, n)
+                start_idx = n - use_n
+                chart_items = []
+                for i in range(start_idx, n):
+                    t_raw = ts_list[i] if i < len(ts_list) else None
+                    if t_raw:
+                        dt = datetime.datetime.utcfromtimestamp(t_raw / 1000.0).replace(microsecond=0)
+                        t_iso = dt.isoformat() + "Z"
+                    else:
+                        dt = datetime.datetime.utcnow() - datetime.timedelta(days=(n - 1 - i))
+                        t_iso = dt.replace(microsecond=0).isoformat() + "Z"
+
+                    chart_items.append(
+                        {
+                            "t": t_iso,
+                            "open": float(opens[i]),
+                            "high": float(highs[i]),
+                            "low": float(lows[i]),
+                            "close": float(closes[i]),
+                            "volume": float(vols[i]),
+                        }
+                    )
+                candles_payload = {
+                    "symbol": symbol,
+                    "source": candles.get("source", "polygon"),
+                    "candles": chart_items,
+                }
+
+        # NEWS + GROK
+        news = get_symbol_news(symbol, limit=8)
+        grok_pack = get_stockdetail_grok(symbol, quote, technical, force=forceGrok)
+        grok_prob_up = grok_pack.get("prob_up")
+
+        # HYBRID
+        hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
+            bull_prob_up, grok_prob_up
         )
 
-        # --------------------------------------------------
-        # 3️⃣ SAVE TO FIRESTORE
-        # --------------------------------------------------
-        doc_ref.set(payload, merge=True)
+        # -----------------------------------------------------------
+        # SMART PATTERN + HISTORY (SAFE WRAPPER)
+        # -----------------------------------------------------------
+        raw_ph = scan_smart_pattern_history(symbol, candles)
 
-        return payload
+        safe_smart_pattern = None
+        safe_pattern_dates = []
+        safe_pattern_stats = raw_ph  # return full stats for debugging/UI
+
+        if raw_ph:
+            cp = raw_ph.get("currentPattern")
+            hist = raw_ph.get("historyForCurrent")
+
+            # If we have a valid pattern for today
+            if cp and cp.get("pattern"):
+                safe_smart_pattern = {
+                    "pattern": cp.get("pattern"),
+                    "headline": cp.get("headline"),
+                    "winRate": cp.get("winRate"),
+                    "occurrences": hist.get("occurrences") if hist else 0,
+                    "samples": hist.get("samples") if hist else [],
+                    "forwardReturns": hist.get("forwardReturns") if hist else {},
+                }
+
+                if hist and hist.get("samples"):
+                    safe_pattern_dates = hist["samples"][:5]
+
+            else:
+                # No pattern today — return clean structure (prevents frontend crash)
+                safe_smart_pattern = {
+                    "pattern": None,
+                    "headline": None,
+                    "winRate": None,
+                    "occurrences": 0,
+                    "samples": [],
+                    "forwardReturns": {},
+                }
+                safe_pattern_dates = []
+
+        else:
+            # No history at all
+            safe_smart_pattern = {
+                "pattern": None,
+                "headline": None,
+                "winRate": None,
+                "occurrences": 0,
+                "samples": [],
+                "forwardReturns": {},
+            }
+            safe_pattern_dates = []
+
+        # FINAL RESPONSE
+        return {
+            "symbol": symbol,
+            "asOf": datetime.datetime.utcnow().isoformat(),
+            "quote": quote,
+            "price": last_close,
+            "bullbrain": bullbrain_block,
+            "features": feature_dict,
+            "technical": technical,
+            "candles": candles_payload,
+            "news": news,
+            "grok": grok_pack,
+            "hybridProbUp": hybrid_p,
+            "hybridSignal": hybrid_signal,
+            "hybridScore": hybrid_conf,
+
+            # NEW — Smart pattern data for UI
+            "smartPattern": safe_smart_pattern,
+            "patternDates": safe_pattern_dates,
+            "patternStats": safe_pattern_stats,
+        }
 
     except Exception as e:
-        print("❌ stockdetail error:", e)
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
-
+        print("stockdetail error:", e)
+        return {"symbol": symbol, "error": str(e)}
 
 # --------------------------------------------------------------------
 # SMART PATTERN HISTORY ENDPOINT
@@ -3985,3 +4082,5 @@ def market_bearwatch():
         "bearwatch": cache.get("bearwatch", []),
         "updated_at": cache.get("updated_at"),
     }
+
+
