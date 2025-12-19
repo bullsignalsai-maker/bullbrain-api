@@ -5,12 +5,14 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import os
 import datetime
 import asyncio
 
-import firebase_admin
-from firebase_admin import credentials, firestore  # type: ignore
+# ------------------------------------------------------------
+# Internal imports
+# ------------------------------------------------------------
+from backend.firestore_paths import get_db
+from backend.bullbrain import ensure_bullbrain_loaded
 
 # ------------------------------------------------------------
 # App
@@ -24,32 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ------------------------------------------------------------
-# Globals
-# ------------------------------------------------------------
-db = None
-
-
-# ------------------------------------------------------------
-# Firebase Init
-# ------------------------------------------------------------
-def init_firebase_admin():
-    global db
-
-    if firebase_admin._apps:
-        if db is None:
-            db = firestore.client()
-        return
-
-    cred_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
-    if not cred_json:
-        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT env var missing")
-
-    cred = credentials.Certificate(eval(cred_json))
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-
 
 # ------------------------------------------------------------
 # Logging helper
@@ -75,28 +51,28 @@ def root():
 
 @app.get("/market/overview")
 def get_market_overview():
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("bullsignals_ai").document("market_overview_live").get()
     return doc.to_dict() if doc.exists else {}
 
 
 @app.get("/market/hotlist")
 def get_market_hotlist():
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("bullsignals_ai").document("market_hotlist").get()
     return doc.to_dict() if doc.exists else {"count": 0, "hotlist": []}
 
 
 @app.get("/market/bearwatch")
 def get_market_bearwatch():
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("bullsignals_ai").document("market_bearwatch").get()
     return doc.to_dict() if doc.exists else {"count": 0, "bearwatch": []}
 
 
 @app.get("/market/pulse")
 def get_market_pulse():
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("bullsignals_ai").document("market_pulse").get()
     return doc.to_dict() if doc.exists else {}
 
@@ -107,7 +83,7 @@ def get_market_pulse():
 
 @app.get("/stock/detail/{symbol}")
 def get_stock_detail(symbol: str):
-    init_firebase_admin()
+    db = get_db()
     symbol = symbol.upper()
 
     doc = (
@@ -130,7 +106,7 @@ def get_stock_detail(symbol: str):
 
 @app.get("/stock/smart-pattern/{symbol}")
 def get_smart_pattern(symbol: str):
-    init_firebase_admin()
+    db = get_db()
     symbol = symbol.upper()
 
     doc = (
@@ -150,7 +126,7 @@ def get_smart_pattern(symbol: str):
 
 @app.get("/astra/context/{symbol}")
 def get_astra_context(symbol: str):
-    init_firebase_admin()
+    db = get_db()
     symbol = symbol.upper()
 
     doc = (
@@ -170,7 +146,7 @@ def get_astra_context(symbol: str):
 
 @app.get("/market/news")
 def get_market_news():
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("bullsignals_ai").document("market_news").get()
     return doc.to_dict() if doc.exists else {"data": []}
 
@@ -181,14 +157,14 @@ def get_market_news():
 
 @app.get("/portfolio/{user_id}")
 def get_portfolio(user_id: str):
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("portfolios").document(user_id).get()
     return doc.to_dict() if doc.exists else {"holdings": []}
 
 
 @app.get("/watchlist/{user_id}")
 def get_watchlist(user_id: str):
-    init_firebase_admin()
+    db = get_db()
     doc = db.collection("watchlists").document(user_id).get()
     return doc.to_dict() if doc.exists else {"symbols": []}
 
@@ -199,7 +175,7 @@ def get_watchlist(user_id: str):
 
 @app.get("/homescreen")
 def get_homescreen():
-    init_firebase_admin()
+    db = get_db()
 
     doc = (
         db.collection("bullsignals_ai")
@@ -235,14 +211,13 @@ async def homescreen_background_worker():
         await asyncio.sleep(10)
 
         # Load BullBrain ONCE
-        from backend.bullbrain import ensure_bullbrain_loaded
         ensure_bullbrain_loaded()
 
         while True:
             try:
                 log("HomeScreen background job started")
 
-                init_firebase_admin()
+                db = get_db()
 
                 from backend.homescreen_logic import build_homescreen_mag7_block
                 from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
@@ -254,7 +229,7 @@ async def homescreen_background_worker():
                 payload = {
                     "schema_version": "homescreen_v1",
                     "updated_at": utc_now_iso(),
-                    "market": macro.get("market"),
+                    "market": macro.get("live_market"),
                     "macro": {
                         "carousel": macro.get("carousel", [])
                     },
