@@ -1,138 +1,252 @@
 # backend/market_data.py
+# ------------------------------------------------------------
+# Market Data Fetching Layer (Quotes, Candles, News)
+# ------------------------------------------------------------
 
 import os
 import time
 import requests
 from typing import Dict, Any, List, Optional
 
+import feedparser
+
 
 # ------------------------------------------------------------
-# Environment
+# Environment / API Keys
 # ------------------------------------------------------------
 
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 POLYGON_KEY = os.getenv("POLYGON_KEY")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY") or os.getenv("NEWSDATA_API_KEY")
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 
 # ------------------------------------------------------------
-# Quote (Finnhub)
+# Low-level HTTP helper
 # ------------------------------------------------------------
+
+def _safe_json(url: str, timeout: int = 8) -> Optional[dict]:
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+# ============================================================
+# QUOTES
+# ============================================================
 
 def fetch_quote(symbol: str) -> Optional[Dict[str, Any]]:
     """
-    Fetch real-time quote from Finnhub.
+    Unified quote fetcher with fallback chain:
+    Finnhub → FMP → Yahoo (limited)
     """
-    if not FINNHUB_KEY:
-        return None
 
+    symbol = symbol.upper()
+
+    # -----------------------------
+    # Finnhub
+    # -----------------------------
+    if FINNHUB_KEY:
+        url = (
+            f"https://finnhub.io/api/v1/quote"
+            f"?symbol={symbol}&token={FINNHUB_KEY}"
+        )
+        q = _safe_json(url)
+        if q and q.get("c") is not None:
+            return {
+                "symbol": symbol,
+                "price": q.get("c"),
+                "change": q.get("d"),
+                "changePct": q.get("dp"),
+                "high": q.get("h"),
+                "low": q.get("l"),
+                "open": q.get("o"),
+                "prevClose": q.get("pc"),
+                "timestamp": int(time.time()),
+                "source": "finnhub",
+            }
+
+    # -----------------------------
+    # FMP fallback
+    # -----------------------------
+    if FMP_API_KEY:
+        url = (
+            f"https://financialmodelingprep.com/api/v3/quote/{symbol}"
+            f"?apikey={FMP_API_KEY}"
+        )
+        data = _safe_json(url)
+        if isinstance(data, list) and data:
+            q = data[0]
+            return {
+                "symbol": symbol,
+                "price": q.get("price"),
+                "change": q.get("change"),
+                "changePct": q.get("changesPercentage"),
+                "high": q.get("dayHigh"),
+                "low": q.get("dayLow"),
+                "open": q.get("open"),
+                "prevClose": q.get("previousClose"),
+                "timestamp": int(time.time()),
+                "source": "fmp",
+            }
+
+    # -----------------------------
+    # Yahoo fallback (minimal)
+    # -----------------------------
     try:
-        url = "https://finnhub.io/api/v1/quote"
-        params = {"symbol": symbol, "token": FINNHUB_KEY}
-        r = requests.get(url, params=params, timeout=6)
-        j = r.json()
-
-        if not j or "c" not in j:
-            return None
-
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
+        data = _safe_json(url)
+        result = data["quoteResponse"]["result"][0]
         return {
-            "current": j.get("c"),
-            "change": j.get("d"),
-            "changePct": j.get("dp"),
-            "high": j.get("h"),
-            "low": j.get("l"),
-            "open": j.get("o"),
-            "prevClose": j.get("pc"),
+            "symbol": symbol,
+            "price": result.get("regularMarketPrice"),
+            "change": result.get("regularMarketChange"),
+            "changePct": result.get("regularMarketChangePercent"),
+            "high": result.get("regularMarketDayHigh"),
+            "low": result.get("regularMarketDayLow"),
+            "open": result.get("regularMarketOpen"),
+            "prevClose": result.get("regularMarketPreviousClose"),
             "timestamp": int(time.time()),
-            "source": "finnhub",
+            "source": "yahoo",
         }
     except Exception:
         return None
 
 
-# ------------------------------------------------------------
-# Daily Candles (Polygon-style payload)
-# ------------------------------------------------------------
+# ============================================================
+# DAILY CANDLES
+# ============================================================
 
-def fetch_daily_candles(symbol: str, days: int = 250) -> Optional[Dict[str, Any]]:
+def fetch_daily_candles(
+    symbol: str,
+    limit: int = 180,
+) -> Optional[List[Dict[str, Any]]]:
     """
     Fetch daily OHLCV candles.
-    Output format matches existing BullBrain expectations.
+    ALWAYS returns a list of candle dicts:
+      [{open, high, low, close, volume, timestamp}, ...]
     """
-    if not POLYGON_KEY:
-        return None
 
-    try:
-        end = int(time.time() * 1000)
-        start = end - (days * 86400000)
+    symbol = symbol.upper()
 
-        url = (
-            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-            f"{start}/{end}"
+    # -----------------------------
+    # Polygon
+    # -----------------------------
+    if POLYGON_KEY:
+        try:
+            url = (
+                f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+                f"2020-01-01/{time.strftime('%Y-%m-%d')}"
+                f"?adjusted=true&sort=asc&limit={limit}&apiKey={POLYGON_KEY}"
+            )
+            data = _safe_json(url)
+            if data and data.get("results"):
+                res = data["results"][-limit:]
+                return [
+                    {
+                        "open": r["o"],
+                        "high": r["h"],
+                        "low": r["l"],
+                        "close": r["c"],
+                        "volume": r["v"],
+                        "timestamp": r["t"],
+                    }
+                    for r in res
+                ]
+        except Exception as e:
+            print(f"[market_data] Polygon error {symbol}: {e}")
+
+    # -----------------------------
+    # FMP fallback
+    # -----------------------------
+    if FMP_API_KEY:
+        try:
+            url = (
+                f"https://financialmodelingprep.com/api/v3/historical-price-full/"
+                f"{symbol}?apikey={FMP_API_KEY}"
+            )
+            data = _safe_json(url)
+            hist = data.get("historical", [])
+            hist = list(reversed(hist))[-limit:]
+
+            return [
+                {
+                    "open": h["open"],
+                    "high": h["high"],
+                    "low": h["low"],
+                    "close": h["close"],
+                    "volume": h["volume"],
+                    "timestamp": int(
+                        time.mktime(time.strptime(h["date"], "%Y-%m-%d"))
+                    ) * 1000,
+                }
+                for h in hist
+            ]
+        except Exception as e:
+            print(f"[market_data] FMP error {symbol}: {e}")
+
+    return None
+
+
+# ============================================================
+# NEWS
+# ============================================================
+
+def fetch_market_news(
+    query: str = "stock market",
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch market or stock-specific news.
+    Used by Market screen & Astra context.
+    """
+
+    items: List[Dict[str, Any]] = []
+
+    # -----------------------------
+    # NewsAPI
+    # -----------------------------
+    if NEWS_API_KEY:
+        try:
+            url = (
+                f"https://newsapi.org/v2/everything"
+                f"?q={query}&language=en&pageSize={limit}"
+                f"&apiKey={NEWS_API_KEY}"
+            )
+            data = _safe_json(url)
+            for a in data.get("articles", []):
+                items.append(
+                    {
+                        "title": a.get("title"),
+                        "summary": a.get("description"),
+                        "source": a.get("source", {}).get("name"),
+                        "url": a.get("url"),
+                        "publishedAt": a.get("publishedAt"),
+                    }
+                )
+        except Exception:
+            pass
+
+    # -----------------------------
+    # Google News RSS fallback
+    # -----------------------------
+    if not items:
+        feed = feedparser.parse(
+            f"https://news.google.com/rss/search?q={query}+stock&hl=en-US&gl=US&ceid=US:en"
         )
+        for e in feed.entries[:limit]:
+            items.append(
+                {
+                    "title": e.title,
+                    "summary": e.get("summary"),
+                    "source": "Google News",
+                    "url": e.link,
+                    "publishedAt": e.get("published"),
+                }
+            )
 
-        params = {
-            "adjusted": "true",
-            "sort": "asc",
-            "limit": days,
-            "apiKey": POLYGON_KEY,
-        }
-
-        r = requests.get(url, params=params, timeout=8)
-        j = r.json()
-
-        results = j.get("results") or []
-        if not results:
-            return None
-
-        return {
-            "open": [c["o"] for c in results],
-            "high": [c["h"] for c in results],
-            "low": [c["l"] for c in results],
-            "close": [c["c"] for c in results],
-            "volume": [c["v"] for c in results],
-            "timestamp": [c["t"] for c in results],
-            "source": "polygon",
-        }
-    except Exception:
-        return None
-
-
-# ------------------------------------------------------------
-# News (Lightweight, Headlines Only)
-# ------------------------------------------------------------
-
-def fetch_symbol_news(symbol: str, limit: int = 8) -> List[str]:
-    """
-    Fetch recent headlines for symbol.
-    Returned as clean string list (UI + Grok friendly).
-    """
-    if not NEWS_API_KEY:
-        return []
-
-    try:
-        url = "https://newsapi.org/v2/everything"
-        params = {
-            "q": symbol,
-            "language": "en",
-            "sortBy": "publishedAt",
-            "pageSize": limit,
-            "apiKey": NEWS_API_KEY,
-        }
-
-        r = requests.get(url, params=params, timeout=6)
-        j = r.json()
-
-        articles = j.get("articles") or []
-        headlines = []
-
-        for a in articles:
-            title = a.get("title")
-            if title:
-                headlines.append(title.strip())
-            if len(headlines) >= limit:
-                break
-
-        return headlines
-    except Exception:
-        return []
+    return items
