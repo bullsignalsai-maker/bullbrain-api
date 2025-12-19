@@ -74,6 +74,7 @@ def build_mag7_snapshot() -> Dict[str, Any]:
             # --------------------------------------------
             candles = fetch_daily_candles(symbol)
             if not candles:
+                print(f"[homescreen][MAG7] No candles for {symbol}")
                 continue
 
             quote = fetch_quote(symbol) or {}
@@ -100,6 +101,7 @@ def build_mag7_snapshot() -> Dict[str, Any]:
             # --------------------------------------------
             feats_vec, _, _ = compute_bullbrain_features(candles)
             if feats_vec is None:
+                print(f"[homescreen][MAG7] Features missing for {symbol}")
                 continue
 
             infer = bullbrain_infer(feats_vec)
@@ -127,9 +129,10 @@ def build_mag7_snapshot() -> Dict[str, Any]:
 
             items.append(item)
 
-        except Exception:
-            # Fail-soft per ticker — never kill batch
-            continue
+        except Exception as e:
+            print(f"[homescreen][MAG7] {symbol_toggle} failed:", e)
+        continue
+
 
     # Deterministic ordering for Firestore & UI diffing
     items.sort(key=lambda x: x["symbol"])
