@@ -1,63 +1,58 @@
 # homescreen_cron.py
 # ---------------------------------------------------------
-# BullSignalsAI — HomeScreen Snapshot Cron
+# BullSignalsAI — HomeScreen Snapshot Cron (LIGHTWEIGHT)
 # ---------------------------------------------------------
 
 import datetime
+import requests
 import firebase_admin
 import main as backend
 
-import backend.bullbrain as bullbrain
-from backend.homescreen_logic import build_homescreen_mag7_block
-from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
+
+# ---------------------------------------------------------
+# Config
+# ---------------------------------------------------------
+INTERNAL_ENDPOINT = os.getenv(
+    "HOMESCREEN_INTERNAL_URL",
+    "http://localhost:10000/internal/homescreen/compute"
+)
 
 
+# ---------------------------------------------------------
+# Logging helper
+# ---------------------------------------------------------
 def log(msg: str) -> None:
     backend.log(f"[homescreen_cron] {msg}")
 
 
+# ---------------------------------------------------------
+# Firestore handle
+# ---------------------------------------------------------
 def get_db():
     if not firebase_admin._apps:
         backend.init_firebase_admin()
     return backend.db
 
 
-def compute_homescreen_snapshot():
-    log("Loading BullBrain model for HomeScreen cron…")
+# ---------------------------------------------------------
+# Fetch snapshot from API (NO ML HERE)
+# ---------------------------------------------------------
+def fetch_homescreen_snapshot():
+    log("Calling internal HomeScreen compute endpoint")
 
-    model = bullbrain.load_bullbrain_model()
-    if model is None:
-        log("❌ BullBrain model failed to load")
-        raise RuntimeError("BullBrain model failed to load")
+    resp = requests.get(INTERNAL_ENDPOINT, timeout=60)
 
-    log("✅ BullBrain model loaded successfully")
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Internal endpoint failed: {resp.status_code} {resp.text}"
+        )
 
-    log("Computing HomeScreen MAG7 snapshot")
-    mag7_block = build_homescreen_mag7_block()
-
-    log("Computing HomeScreen macro snapshot")
-    macro_snapshot = build_homescreen_macro_snapshot()
-
-    now = (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-
-    return {
-        "schema_version": "homescreen_v1",
-        "updated_at": now,
-        "market": macro_snapshot.get("market"),
-        "macro": {"carousel": macro_snapshot.get("carousel", [])},
-        "mag7": mag7_block,
-        "meta": {
-            "computed_by": "homescreen_cron",
-            "refresh_minutes": 15,
-            "bullbrain_version": bullbrain.BULLBRAIN_VERSION,
-        },
-    }
+    return resp.json()
 
 
+# ---------------------------------------------------------
+# Save to Firestore
+# ---------------------------------------------------------
 def save_homescreen_to_firestore(homescreen_doc):
     db = get_db()
     db.collection("bullsignals_ai").document("homescreen_snapshot").set(
@@ -66,6 +61,9 @@ def save_homescreen_to_firestore(homescreen_doc):
     log("💾 Saved bullsignals_ai/homescreen_snapshot")
 
 
+# ---------------------------------------------------------
+# ENTRYPOINT
+# ---------------------------------------------------------
 def main():
     started = (
         datetime.datetime.now(datetime.timezone.utc)
@@ -74,15 +72,20 @@ def main():
     )
     log(f"HomeScreen cron started at {started}")
 
-    homescreen_doc = compute_homescreen_snapshot()
-    save_homescreen_to_firestore(homescreen_doc)
+    try:
+        homescreen_doc = fetch_homescreen_snapshot()
+        save_homescreen_to_firestore(homescreen_doc)
 
-    finished = (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    log(f"HomeScreen cron completed at {finished}")
+        finished = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        log(f"HomeScreen cron completed at {finished}")
+
+    except Exception as e:
+        log(f"❌ HomeScreen cron failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
