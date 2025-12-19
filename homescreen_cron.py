@@ -14,11 +14,10 @@ from firebase_admin import firestore  # type: ignore
 
 import main as backend
 
+from backend.bullbrain import load_bullbrain_model
 from backend.homescreen_logic import (
-    build_homescreen_raw,
-    DEFAULT_MAG7,
+    build_homescreen_mag7_block,
 )
-
 from backend.homescreen_macro_logic import (
     build_homescreen_macro_snapshot,
 )
@@ -31,7 +30,7 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------
-# Firestore handle (same pattern as market_cron)
+# Firestore handle
 # ---------------------------------------------------------
 def get_db():
     if not firebase_admin._apps:
@@ -40,31 +39,27 @@ def get_db():
 
 
 # ---------------------------------------------------------
-# Ensure BullBrain model is loaded (once per cron)
-# ---------------------------------------------------------
-def ensure_bullbrain_loaded():
-    if backend.bullbrain_model is not None:
-        return
-
-    log("Loading BullBrain model for HomeScreen cron…")
-    backend.bullbrain_model = backend.load_bullbrain_model()
-    log("BullBrain model loaded successfully for HomeScreen")
-
-
-# ---------------------------------------------------------
 # Build HomeScreen snapshot (MAG7 + Macro)
 # ---------------------------------------------------------
 def compute_homescreen_snapshot():
-    ensure_bullbrain_loaded()
+    # -----------------------------------------------------
+    # Ensure BullBrain model is loaded ONCE
+    # -----------------------------------------------------
+    if backend.bullbrain_model is None:
+        log("Loading BullBrain model for HomeScreen cron…")
+        backend.bullbrain_model = load_bullbrain_model()
+        log("BullBrain model loaded successfully for HomeScreen")
 
+    # -----------------------------------------------------
+    # MAG7 BullBrain snapshot
+    # -----------------------------------------------------
     log("Computing HomeScreen MAG7 snapshot")
-    homescreen_raw = build_homescreen_raw(
-        universe=DEFAULT_MAG7,
-        include_grok=True,
-        include_carousel=False,  # macro handled separately
-    )
+    mag7_block = build_homescreen_mag7_block()
 
-    log("Computing HomeScreen macro snapshot (carousel + market row)")
+    # -----------------------------------------------------
+    # Macro snapshot (carousel + market row)
+    # -----------------------------------------------------
+    log("Computing HomeScreen macro snapshot")
     macro_snapshot = build_homescreen_macro_snapshot()
 
     now = (
@@ -73,21 +68,23 @@ def compute_homescreen_snapshot():
         .replace("+00:00", "Z")
     )
 
+    # -----------------------------------------------------
+    # Final Firestore document
+    # -----------------------------------------------------
     homescreen_doc = {
         "schema_version": "homescreen_v1",
         "updated_at": now,
 
-        # 🔹 Live market row (authoritative)
-        "live_market": macro_snapshot.get("live_market"),
+        # 🔹 Market status row
+        "market": macro_snapshot.get("market"),
 
         # 🔹 Carousel cards
-        "carousel": macro_snapshot.get("carousel"),
+        "macro": {
+            "carousel": macro_snapshot.get("carousel", [])
+        },
 
         # 🔹 MAG7 BullBrain snapshot
-        "mag7": homescreen_raw.get("mag7"),
-
-        # 🔹 Market mood (derived from MAG7 BullBrain)
-        "market_mood": homescreen_raw.get("market_mood"),
+        "mag7": mag7_block,
 
         "meta": {
             "computed_by": "homescreen_cron",
