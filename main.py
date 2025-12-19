@@ -14,6 +14,13 @@ import asyncio
 from backend.firestore_paths import get_db
 from backend.bullbrain import ensure_bullbrain_loaded
 
+def utc_now_iso() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
 # ------------------------------------------------------------
 # App
 # ------------------------------------------------------------
