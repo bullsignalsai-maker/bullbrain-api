@@ -1,8 +1,3 @@
-# backend/bullbrain.py
-# ============================================================
-# BullSignalsAI — BullBrain (Model Loading + Feature + Inference)
-# ============================================================
-
 from __future__ import annotations
 
 import os
@@ -11,6 +6,12 @@ from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
 import xgboost as xgb
+
+
+# ------------------------------------------------------------
+# Process Role (SAFE)
+# ------------------------------------------------------------
+IS_API_PROCESS = os.getenv("IS_API_PROCESS", "false").lower() == "true"
 
 
 # ------------------------------------------------------------
@@ -29,12 +30,13 @@ BULLBRAIN_MODEL_PATH = os.getenv(
 
 BULLBRAIN_MODEL_DRIVE_URL = os.getenv("BULLBRAIN_MODEL_DRIVE_URL", "").strip()
 BULLBRAIN_MODEL_GDRIVE_ID = os.getenv("BULLBRAIN_MODEL_GDRIVE_ID", "").strip()
-BULLBRAIN_SKIP_DOWNLOAD = os.getenv("BULLBRAIN_SKIP_DOWNLOAD", "false").lower() == "true"
 
 
-print(f"[bullbrain] version={BULLBRAIN_VERSION}")
-print(f"[bullbrain] model_path={BULLBRAIN_MODEL_PATH}")
-print(f"[bullbrain] is_api_process={IS_API_PROCESS}")
+# ------------------------------------------------------------
+# Global model handle (singleton)
+# ------------------------------------------------------------
+bullbrain_model: Optional[xgb.Booster] = None
+
 
 
 # ------------------------------------------------------------
