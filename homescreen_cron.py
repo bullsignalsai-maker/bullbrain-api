@@ -3,6 +3,7 @@
 # BullSignalsAI — HomeScreen Snapshot Cron (LIGHTWEIGHT)
 # ---------------------------------------------------------
 
+import os
 import datetime
 import requests
 import firebase_admin
