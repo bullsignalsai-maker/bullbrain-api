@@ -15,15 +15,12 @@ from firebase_admin import firestore  # type: ignore
 import main as backend
 
 from backend.bullbrain import load_bullbrain_model
-from backend.homescreen_logic import (
-    build_homescreen_mag7_block,
-)
-from backend.homescreen_macro_logic import (
-    build_homescreen_macro_snapshot,
-)
+from backend.homescreen_logic import build_homescreen_mag7_block
+from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
+
 
 # ---------------------------------------------------------
-# Logging helper (same style as market_cron)
+# Logging helper
 # ---------------------------------------------------------
 def log(msg: str) -> None:
     backend.log(f"[homescreen_cron] {msg}")
@@ -45,13 +42,12 @@ def compute_homescreen_snapshot():
     # -----------------------------------------------------
     # Ensure BullBrain model is loaded ONCE
     # -----------------------------------------------------
-        log("Loading BullBrain model for HomeScreen cron…")
-        model = load_bullbrain_model()
-        if model is None:
-            log("❌ BullBrain model failed to load. Aborting cron.")
-            raise RuntimeError("BullBrain model failed to load")
-        log("BullBrain model loaded successfully for HomeScreen")
-
+    log("Loading BullBrain model for HomeScreen cron…")
+    model = load_bullbrain_model()
+    if model is None:
+        log("❌ BullBrain model failed to load. Aborting cron.")
+        raise RuntimeError("BullBrain model failed to load")
+    log("BullBrain model loaded successfully for HomeScreen")
 
     # -----------------------------------------------------
     # MAG7 BullBrain snapshot
