@@ -45,10 +45,13 @@ def compute_homescreen_snapshot():
     # -----------------------------------------------------
     # Ensure BullBrain model is loaded ONCE
     # -----------------------------------------------------
-    if backend.bullbrain_model is None:
         log("Loading BullBrain model for HomeScreen cron…")
-        backend.bullbrain_model = load_bullbrain_model()
+        model = load_bullbrain_model()
+        if model is None:
+            log("❌ BullBrain model failed to load. Aborting cron.")
+            raise RuntimeError("BullBrain model failed to load")
         log("BullBrain model loaded successfully for HomeScreen")
+
 
     # -----------------------------------------------------
     # MAG7 BullBrain snapshot

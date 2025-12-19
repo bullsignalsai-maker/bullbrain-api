@@ -14,10 +14,9 @@ from backend.market_data import (
     fetch_quote,
 )
 
-from backend.bullbrain import (
-    compute_bullbrain_features,
-    bullbrain_infer,
-)
+from backend.technicals import compute_bullbrain_features
+from backend.bullbrain import bullbrain_infer
+
 
 # ------------------------------------------------------------
 # Constants
