@@ -1,25 +1,16 @@
 # main.py
 # ============================================================
-# BullSignalsAI — API Gateway (READ-ONLY + Background Worker)
+# BullSignalsAI — API Gateway (READ-ONLY)
 # ============================================================
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import datetime
-import asyncio
 
 # ------------------------------------------------------------
 # Internal imports
 # ------------------------------------------------------------
 from backend.firestore_paths import get_db
-from backend.bullbrain import ensure_bullbrain_loaded
-
-def utc_now_iso() -> str:
-    return (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
 
 # ------------------------------------------------------------
 # App
@@ -50,6 +41,28 @@ def root():
         "status": "BullSignalsAI backend running",
         "time": datetime.datetime.utcnow().isoformat() + "Z",
     }
+
+
+# ============================================================
+# HOME SCREEN (READ FROM FIRESTORE)
+# ============================================================
+@app.get("/homescreen")
+def get_homescreen():
+    db = get_db()
+
+    doc = (
+        db.collection("bullsignals_ai")
+        .document("homescreen_snapshot")
+        .get()
+    )
+
+    if not doc.exists:
+        return {
+            "status": "unavailable",
+            "message": "HomeScreen snapshot not ready yet",
+        }
+
+    return doc.to_dict()
 
 
 # ============================================================
@@ -124,7 +137,10 @@ def get_smart_pattern(symbol: str):
         .get()
     )
 
-    return doc.to_dict() if doc.exists else {"symbol": symbol, "pattern": None}
+    return doc.to_dict() if doc.exists else {
+        "symbol": symbol,
+        "pattern": None,
+    }
 
 
 # ============================================================
@@ -144,7 +160,10 @@ def get_astra_context(symbol: str):
         .get()
     )
 
-    return doc.to_dict() if doc.exists else {"symbol": symbol, "context": None}
+    return doc.to_dict() if doc.exists else {
+        "symbol": symbol,
+        "context": None,
+    }
 
 
 # ============================================================
@@ -174,87 +193,3 @@ def get_watchlist(user_id: str):
     db = get_db()
     doc = db.collection("watchlists").document(user_id).get()
     return doc.to_dict() if doc.exists else {"symbols": []}
-
-
-# ============================================================
-# HOME SCREEN (READ-ONLY)
-# ============================================================
-
-@app.get("/homescreen")
-def get_homescreen():
-    db = get_db()
-
-    doc = (
-        db.collection("bullsignals_ai")
-        .document("homescreen_snapshot")
-        .get()
-    )
-
-    if not doc.exists:
-        return {
-            "status": "unavailable",
-            "message": "HomeScreen snapshot not ready yet",
-        }
-
-    return doc.to_dict()
-
-
-# ============================================================
-# BACKGROUND — HOME SCREEN AUTO REFRESH (NO CRON)
-# ============================================================
-
-@app.on_event("startup")
-async def homescreen_background_worker():
-    """
-    Runs INSIDE the API process.
-    - One container
-    - One BullBrain model
-    - No Render cron
-    - No OOM
-    """
-
-    async def loop():
-        # Allow API to fully start
-        await asyncio.sleep(10)
-
-        # Load BullBrain ONCE
-        ensure_bullbrain_loaded()
-
-        while True:
-            try:
-                log("HomeScreen background job started")
-
-                db = get_db()
-
-                from backend.homescreen_logic import build_homescreen_mag7_block
-                from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
-
-                mag7 = build_homescreen_mag7_block()
-                macro = build_homescreen_macro_snapshot()
-
-                payload = {
-                    "schema_version": "homescreen_v1",
-                    "updated_at": utc_now_iso(),
-                    "market": macro.get("live_market"),
-                    "macro": {
-                        "carousel": macro.get("carousel", [])
-                    },
-                    "mag7": mag7,
-                    "meta": {
-                        "computed_by": "api_background_worker",
-                        "refresh_minutes": 15,
-                    },
-                }
-
-                db.collection("bullsignals_ai").document(
-                    "homescreen_snapshot"
-                ).set(payload, merge=True)
-
-                log("HomeScreen snapshot updated successfully")
-
-            except Exception as e:
-                log(f"❌ HomeScreen background job failed: {e}")
-
-            await asyncio.sleep(15 * 60)  # 15 minutes
-
-    asyncio.create_task(loop())
