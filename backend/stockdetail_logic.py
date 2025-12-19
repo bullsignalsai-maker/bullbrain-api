@@ -1,157 +1,192 @@
 # backend/stockdetail_logic.py
+# ------------------------------------------------------------
+# Stock Detail Orchestration Logic
+#
+# Purpose:
+# - Central brain for StockDetail computation
+# - Used by:
+#     • main.py (read-only API)
+#     • stockdetail_cron.py (Firestore precompute)
+# - NO routing
+# - NO Firestore writes
+# ------------------------------------------------------------
 
 from typing import Dict, Any, Optional
-import time
 
-# ----------------------------
-# Data Sources
-# ----------------------------
+# ------------------------------------------------------------
+# Market data
+# ------------------------------------------------------------
 from backend.market_data import (
-    fetch_quote,
     fetch_daily_candles,
-    fetch_news,
+    fetch_quote,
 )
 
-# ----------------------------
-# Models & Indicators
-# ----------------------------
-from backend.bullbrain import run_bullbrain
+# ------------------------------------------------------------
+# BullBrain (ML)
+# ------------------------------------------------------------
+from backend.bullbrain import (
+    ensure_bullbrain_loaded,
+    bullbrain_infer,
+    compute_bullbrain_features,
+)
+
+# ------------------------------------------------------------
+# Technical indicators
+# ------------------------------------------------------------
 from backend.technicals import build_technical_snapshot
 
-# ----------------------------
-# Intelligence Engines
-# ----------------------------
-from backend.smart_patterns import build_smart_pattern
-from backend.grok_ai import get_grok_stock_insight
+# ------------------------------------------------------------
+# Smart patterns
+# ------------------------------------------------------------
+from backend.smart_patterns import (
+    detect_smart_pattern,
+    scan_smart_pattern_history,
+)
+
+# ------------------------------------------------------------
+# Grok / XAI
+# ------------------------------------------------------------
+from backend.grok_ai import get_stockdetail_grok
+
+# ------------------------------------------------------------
+# Utils
+# ------------------------------------------------------------
+import datetime
+
+def _utc_now_iso() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
-# --------------------------------------------------------
-# CORE ORCHESTRATION
-# --------------------------------------------------------
 
-def build_stockdetail_core(
+# ============================================================
+# PUBLIC API
+# ============================================================
+
+def build_stockdetail_payload(
     symbol: str,
-    limit_candles: int = 180,
+    *,
     force_grok: bool = False,
+    include_pattern_history: bool = True,
 ) -> Dict[str, Any]:
     """
-    Builds the full Stock Detail payload.
-    NO Firestore.
-    NO FastAPI.
-    NO caching.
+    Build the FULL StockDetail payload.
+
+    Used by:
+      - GET /stockdetail/{symbol}
+      - stockdetail_cron.py
+      - Firestore cache refresh
+
+    This function:
+      ✔ orchestrates everything
+      ✔ performs NO persistence
+      ✔ performs NO routing
     """
 
     symbol = symbol.upper()
 
-    # ----------------------------------------------------
-    # 1️⃣ Market Data
-    # ----------------------------------------------------
+    # --------------------------------------------------------
+    # 0) Ensure BullBrain model is loaded (SAFE, idempotent)
+    # --------------------------------------------------------
+    ensure_bullbrain_loaded()
+
+    # --------------------------------------------------------
+    # 1) Fetch market data
+    # --------------------------------------------------------
+    candles = fetch_daily_candles(symbol)
     quote = fetch_quote(symbol)
-    candles = fetch_daily_candles(symbol, limit=limit_candles)
 
-    last_price = quote.get("current") if quote else None
+    if not candles or not quote:
+        return {
+            "symbol": symbol,
+            "error": "Market data unavailable",
+            "generatedAt": _utc_now_iso(),
+        }
 
-    # ----------------------------------------------------
-    # 2️⃣ BullBrain v2 (48 features)
-    # ----------------------------------------------------
-    bullbrain_block = None
-    bull_prob_up = None
-    features = None
+    # --------------------------------------------------------
+    # 2) BullBrain features + inference
+    # --------------------------------------------------------
+    bullbrain_block: Optional[Dict[str, Any]] = None
 
-    if candles:
-        bb = run_bullbrain(candles)
-        bullbrain_block = bb.get("block")
-        bull_prob_up = bb.get("prob_up")
-        features = bb.get("features")
+    features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
 
-    # ----------------------------------------------------
-    # 3️⃣ Technical Snapshot (Human-readable)
-    # ----------------------------------------------------
-    technical = None
-    if features and last_price:
-        technical = build_technical_snapshot(
-            symbol=symbol,
-            features=features,
-            last_price=last_price,
+    if features_vec is not None:
+        out = bullbrain_infer(features_vec) or {}
+
+        prob_up = float(
+            out.get("probability_up")
+            or out.get("raw_output")
+            or 0.5
         )
 
-    # ----------------------------------------------------
-    # 4️⃣ Grok AI Reasoning
-    # ----------------------------------------------------
-    grok = get_grok_stock_insight(
+        bullbrain_block = {
+            "signal": out.get("signal", "NEUTRAL"),
+            "probability_up": round(prob_up * 100.0, 1),  # percent
+            "confidence": (
+                "High" if prob_up >= 0.66
+                else "Moderate" if prob_up >= 0.55
+                else "Low"
+            ),
+            "version": out.get("version") or "v2",
+        }
+
+    # --------------------------------------------------------
+    # 3) Technical snapshot
+    # --------------------------------------------------------
+    technical = build_technical_snapshot(
+        symbol=symbol,
+        features=feature_dict,
+        last_close=last_close,
+    )
+
+    # --------------------------------------------------------
+    # 4) Smart Pattern (single-day)
+    # --------------------------------------------------------
+    smart_pattern = detect_smart_pattern(
+        features=feature_dict,
+        quote=quote,
+        technical=technical,
+    )
+
+    # --------------------------------------------------------
+    # 5) Smart Pattern History (optional, heavy)
+    # --------------------------------------------------------
+    pattern_history = None
+    if include_pattern_history:
+        try:
+            pattern_history = scan_smart_pattern_history(
+                symbol=symbol,
+                candles=candles,
+            )
+        except Exception as e:
+            pattern_history = {
+                "error": "Pattern history unavailable",
+                "detail": str(e),
+            }
+
+    # --------------------------------------------------------
+    # 6) Grok AI (natural language)
+    # --------------------------------------------------------
+    grok_block = get_stockdetail_grok(
         symbol=symbol,
         quote=quote,
         technical=technical,
         force=force_grok,
     )
 
-    grok_prob_up = grok.get("prob_up")
-
-    # ----------------------------------------------------
-    # 5️⃣ Hybrid Signal (BullBrain + Grok)
-    # ----------------------------------------------------
-    hybrid_prob_up = _hybrid_prob(bull_prob_up, grok_prob_up)
-    hybrid_signal = _signal_from_prob(hybrid_prob_up)
-
-    # ----------------------------------------------------
-    # 6️⃣ Smart Pattern Detection
-    # ----------------------------------------------------
-    smart_pattern = build_smart_pattern(
-        symbol=symbol,
-        candles=candles,
-    )
-
-    # ----------------------------------------------------
-    # 7️⃣ News
-    # ----------------------------------------------------
-    news = fetch_news(symbol, limit=5)
-
-    # ----------------------------------------------------
-    # 8️⃣ Final Payload
-    # ----------------------------------------------------
+    # --------------------------------------------------------
+    # 7) Final payload
+    # --------------------------------------------------------
     return {
         "symbol": symbol,
-        "asOf": int(time.time()),
-
         "quote": quote,
-        "price": last_price,
-
         "bullbrain": bullbrain_block,
         "technical": technical,
-
-        "grok": grok,
-
-        "hybridProbUp": hybrid_prob_up,
-        "hybridSignal": hybrid_signal,
-
         "smartPattern": smart_pattern,
-        "news": news,
+        "patternHistory": pattern_history,
+        "grok": grok_block,
+        "generatedAt": _utc_now_iso(),
     }
-
-
-# --------------------------------------------------------
-# Helpers
-# --------------------------------------------------------
-
-def _hybrid_prob(
-    bull: Optional[float],
-    grok: Optional[float],
-) -> float:
-    """
-    Conservative blend.
-    """
-    if bull is None and grok is None:
-        return 0.5
-    if bull is None:
-        return grok
-    if grok is None:
-        return bull
-    return round((bull * 0.6) + (grok * 0.4), 4)
-
-
-def _signal_from_prob(p: float) -> str:
-    if p >= 0.65:
-        return "BUY"
-    if p <= 0.35:
-        return "SELL"
-    return "HOLD"

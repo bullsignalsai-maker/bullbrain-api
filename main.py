@@ -228,7 +228,6 @@ async def homescreen_background_worker():
 
                 from backend.homescreen_logic import build_homescreen_mag7_block
                 from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
-                from backend.firestore_utils import utc_now_iso
 
                 mag7 = build_homescreen_mag7_block()
                 macro = build_homescreen_macro_snapshot()
