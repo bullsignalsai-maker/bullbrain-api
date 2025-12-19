@@ -22,7 +22,11 @@ BULLBRAIN_VERSION = os.getenv("BULLBRAIN_VERSION", "v2")
 # ------------------------------------------------------------
 # Model location (Drive -> local path)
 # ------------------------------------------------------------
-BULLBRAIN_MODEL_PATH = os.getenv("BULLBRAIN_MODEL_PATH", "/tmp/bullbrain_model.json")
+BULLBRAIN_MODEL_PATH = os.getenv(
+    "BULLBRAIN_MODEL_PATH",
+    "models/bullbrain_v2_48f.json"
+)
+
 BULLBRAIN_MODEL_DRIVE_URL = os.getenv("BULLBRAIN_MODEL_DRIVE_URL", "").strip()
 BULLBRAIN_MODEL_GDRIVE_ID = os.getenv("BULLBRAIN_MODEL_GDRIVE_ID", "").strip()
 BULLBRAIN_SKIP_DOWNLOAD = os.getenv("BULLBRAIN_SKIP_DOWNLOAD", "false").lower() == "true"
