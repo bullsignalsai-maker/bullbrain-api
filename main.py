@@ -11,6 +11,9 @@ import datetime
 
 import firebase_admin
 from firebase_admin import credentials, firestore  # type: ignore
+from backend.bullbrain import ensure_bullbrain_loaded
+ensure_bullbrain_loaded()
+
 
 # ------------------------------------------------------------
 # App
@@ -214,23 +217,22 @@ def get_watchlist(user_id: str):
     doc = db.collection("watchlists").document(user_id).get()
     return doc.to_dict() if doc.exists else {"symbols": []}
 
-
-# ============================================================
-# INTERNAL — HOME SCREEN COMPUTE (FOR CRON ONLY)
-# ============================================================
-
 @app.get("/internal/homescreen/compute")
 def compute_homescreen_internal():
     """
     INTERNAL endpoint:
     - Called ONLY by Render cron
-    - BullBrain is already loaded at API startup
+    - BullBrain is loaded safely if not already
     """
     init_firebase_admin()
 
+    from backend.bullbrain import ensure_bullbrain_loaded
     from backend.homescreen_logic import build_homescreen_mag7_block
     from backend.homescreen_macro_logic import build_homescreen_macro_snapshot
     from backend.firestore_utils import utc_now_iso
+
+    # 🔑 THIS IS THE MISSING PIECE
+    ensure_bullbrain_loaded()
 
     mag7 = build_homescreen_mag7_block()
     macro = build_homescreen_macro_snapshot()
@@ -248,6 +250,7 @@ def compute_homescreen_internal():
             "bullbrain_version": "v2-48f",
         },
     }
+
 
 
 # ============================================================
