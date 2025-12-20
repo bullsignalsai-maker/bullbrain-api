@@ -1,5 +1,5 @@
-Main.py
-Please analyze this python code and give me list of definitions, functions, endpoints, helpers and static data and whatever this file contains, I need full list ..
+# main.py
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
