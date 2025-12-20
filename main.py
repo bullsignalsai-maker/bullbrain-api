@@ -1,3 +1,5 @@
+Main.py
+Please analyze this python code and give me list of definitions, functions, endpoints, helpers and static data and whatever this file contains, I need full list ..
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
@@ -14,6 +16,8 @@ import gdown
 import re
 import math
 from symbols_clean import REAL_TICKERS
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 app = FastAPI()
 
@@ -3837,260 +3841,13 @@ def _get_market_overview_quick():
 
 @app.get("/market-pulse")
 def market_pulse():
-    import pytz
-    eastern = pytz.timezone("America/New_York")
-    utc = pytz.utc
-
-    try:
-        # ----------------------------------------------------
-        # 1) ALWAYS FETCH FRESH NEWS
-        # ----------------------------------------------------
-        news_resp = market_news()
-        raw_news = news_resp.get("data", []) if isinstance(news_resp, dict) else []
-
-        if not isinstance(raw_news, list):
-            raw_news = []
-
-        cleaned = []
-
-        # ----------------------------------------------------
-        # 2) Convert UTC → Eastern time
-        # ----------------------------------------------------
-        for n in raw_news:
-            try:
-                # Parse published date (UTC ISO)
-                dt_utc = datetime.datetime.fromisoformat(
-                    n["pubDate"].replace("Z", "")
-                ).replace(tzinfo=utc)
-
-                # Convert → Eastern
-                dt_et = dt_utc.astimezone(eastern)
-
-                n["pubDateET"] = dt_et.isoformat()
-                n["pubDateObj"] = dt_et
-
-                cleaned.append(n)
-
-            except:
-                continue
-
-        # ----------------------------------------------------
-        # 3) SORT LATEST → FIRST using ET
-        # ----------------------------------------------------
-        cleaned.sort(key=lambda x: x["pubDateObj"], reverse=True)
-
-        # ----------------------------------------------------
-        # 4) SENTIMENT — from latest 80 items
-        # ----------------------------------------------------
-        titles = [n.get("title", "") for n in cleaned[:80] if n.get("title")]
-
-        analyzed = _analyze_headline_sentiment_py(titles)
-
-        bullish_raw = [a["title"] for a in analyzed if a["tag"] == "📈"]
-        bearish_raw = [a["title"] for a in analyzed if a["tag"] == "📉"]
-        neutral_raw = [a["title"] for a in analyzed if a["tag"] == "⚖️"]
-
-        # Fallback keyword method (adds variation)
-        for n in cleaned[:80]:
-            t = n.get("title", "").lower()
-            if not t:
-                continue
-
-            if any(w in t for w in ["rises", "beats", "up", "strong", "record"]):
-                bullish_raw.append(n["title"])
-            elif any(w in t for w in ["falls", "drops", "down", "weak", "cuts"]):
-                bearish_raw.append(n["title"])
-            else:
-                neutral_raw.append(n["title"])
-
-        # Unique
-        bullish_raw = list(set(bullish_raw))
-        bearish_raw = list(set(bearish_raw))
-        neutral_raw = list(set(neutral_raw))
-
-        # Top 5 each
-        bullish = bullish_raw[:5]
-        neutral = neutral_raw[:5]
-        bearish = bearish_raw[:5]
-
-        # Numeric summary
-        highlights_numeric = {
-            "bull": len(bullish_raw),
-            "bear": len(bearish_raw),
-            "neutral": len(neutral_raw),
-        }
-
-        # ----------------------------------------------------
-        # 5) MARKET OVERVIEW
-        # ----------------------------------------------------
-        overview = _get_market_overview_quick()
-
-        # ----------------------------------------------------
-        # 6) GROUP NEWS BY DATE (ET)
-        # ----------------------------------------------------
-        grouped = {"today": [], "yesterday": [], "week": [], "older": []}
-
-        now_et = datetime.datetime.now(eastern)
-        today_et = now_et.date()
-        yesterday_et = today_et - datetime.timedelta(days=1)
-        week_ago_et = today_et - datetime.timedelta(days=7)
-
-        for n in cleaned:
-            d = n["pubDateObj"].date()
-
-            if d == today_et:
-                grouped["today"].append(n)
-            elif d == yesterday_et:
-                grouped["yesterday"].append(n)
-            elif d >= week_ago_et:
-                grouped["week"].append(n)
-            else:
-                grouped["older"].append(n)
-
-        # ----------------------------------------------------
-        # 7) Sort grouped lists by ET timestamp
-        # ----------------------------------------------------
-        for key in grouped:
-            grouped[key].sort(key=lambda x: x["pubDateObj"], reverse=True)
-
-        # ----------------------------------------------------
-        # FINAL RESPONSE
-        # ----------------------------------------------------
-        return {
-            "market_overview": overview,
-            "highlights_numeric": highlights_numeric,
-            "highlights_grouped": {
-                "bullish": bullish,
-                "neutral": neutral,
-                "bearish": bearish,
-            },
-            "news_grouped": grouped,
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-
-    except Exception as e:
-        print("market_pulse error:", e)
-        fb = _get_market_overview_quick()
-        return {
-            "market_overview": fb,
-            "highlights_numeric": {"bull": 0, "bear": 0, "neutral": 0},
-            "highlights_grouped": {
-                "bullish": [],
-                "neutral": [],
-                "bearish": [],
-            },
-            "news_grouped": {"today": [], "yesterday": [], "week": [], "older": []},
-            "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
-        }
-
-def bullbrain_infer_single(symbol: str):
-    try:
-        candles = fetch_daily_candles(symbol)
-        if not candles:
-            return None
-
-        features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-        return bullbrain_infer(features_vec)
-
-    except Exception as e:
-        print("bullbrain_infer_single error:", symbol, e)
-        return None
-
-
-
-@app.get("/debug-bullbrain/{symbol}")
-def debug_bullbrain(symbol: str):
-    try:
-        sym = symbol.upper()
-        candles = fetch_daily_candles(sym)
-
-        features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-        infer = bullbrain_infer(features_vec)
-
-        return {
-            "symbol": sym,
-            "features_shape": len(features_vec),
-            "infer": infer,
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-        
-# ---------------------------------------------------------
-# Read market AI cache (global Firestore)
-# ---------------------------------------------------------
-def read_market_cache(doc_id):
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
-
-        # safe init
-        if not firebase_admin._apps:
-            cred = credentials.ApplicationDefault()
-            firebase_admin.initialize_app(cred)
-
-        db = firestore.client()
-        doc_ref = db.collection("bullsignals_ai").document(doc_id)
-        snap = doc_ref.get()
-
-        if not snap.exists:
-            return None
-
-        data = snap.to_dict()
-        updated = data.get("updated_at")
-        if not updated:
-            return None
-
-        # Check cache age
-        age_minutes = (datetime.datetime.utcnow() -
-                       datetime.datetime.fromisoformat(updated.replace("Z",""))
-                       ).total_seconds() / 60
-
-        if age_minutes <= 5:
-            print(f"💾 Using cached {doc_id} ({age_minutes:.1f} min old)")
-            return data
-
-        print(f"⏳ Cache expired ({age_minutes:.1f} min). Will recompute.")
-        return None
-
-    except Exception as e:
-        print("read_market_cache error:", e)
-        return None
-
-# ---------------------------------------------------------
-# Read market-overview AI cache (global Firestore)
-# ---------------------------------------------------------
-@app.get("/market-overview")
-def market_overview():
+    """
+    Firestore read-only endpoint.
+    Cron job is the single writer.
+    """
     try:
         db = firestore.client()
-        doc = (
-            db.collection("bullsignals_ai")
-            .document("market_overview_live")
-            .get()
-        )
-
-        if not doc.exists:
-            return {}
-
-        return doc.to_dict()
-
-    except Exception as e:
-        print(f"[market-overview] Firestore read error: {e}")
-        return {}
-
-# ---------------------------------------------------------
-# Read market-pulse AI cache (global Firestore)
-# ---------------------------------------------------------
-@app.get("/market-pulse")
-def market_pulse():
-    try:
-        db = firestore.client()
-        doc = (
-            db.collection("bullsignals_ai")
-            .document("market_pulse")
-            .get()
-        )
+        doc = db.collection("bullsignals_ai").document("market_pulse").get()
 
         if not doc.exists:
             return {
@@ -4111,7 +3868,7 @@ def market_pulse():
         return doc.to_dict()
 
     except Exception as e:
-        print(f"[market-pulse] Firestore read error: {e}")
+        backend.log(f"[market-pulse] Firestore read error: {e}")
         return {
             "highlights_grouped": {
                 "bullish": [],
@@ -4127,93 +3884,206 @@ def market_pulse():
             "updated_at": None,
         }
 
+
+@app.get("/market-overview")
+def market_overview():
+    try:
+        db = firestore.client()
+        doc = db.collection("bullsignals_ai").document("market_overview_live").get()
+
+        if not doc.exists:
+            return {}
+
+        return doc.to_dict()
+
+    except Exception as e:
+        backend.log(f"[market-overview] Firestore read error: {e}")
+        return {}
+
+
+
+
+
+
+@app.get("/debug-bullbrain/{symbol}")
+def debug_bullbrain(symbol: str):
+    try:
+        sym = symbol.upper()
+        candles = fetch_daily_candles(sym)
+
+        features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
+        infer = bullbrain_infer(features_vec)
+
+        return {
+            "symbol": sym,
+            "features_shape": len(features_vec),
+            "infer": infer,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
 # ---------------------------------------------------------
-# Read market-hotlist AI cache (global Firestore)
+# Firebase Admin init (shared by API + Cron)
+# ---------------------------------------------------------
+def init_firebase_admin():
+    """
+    Initialize Firebase Admin exactly once using FIREBASE_ADMIN_JSON.
+    This is safe to call from both main API and cron scripts.
+    """
+    if firebase_admin._apps:
+        # Already initialized
+        return firebase_admin._apps[0]
+
+    firebase_json = os.getenv("FIREBASE_ADMIN_JSON")
+    if not firebase_json:
+        print("❌ FIREBASE_ADMIN_JSON is missing!")
+        return None
+
+    try:
+        cred_dict = json.loads(firebase_json)
+        cred = credentials.Certificate(cred_dict)
+        app = firebase_admin.initialize_app(cred)
+        print("🔥 Firebase Admin initialized")
+        return app
+    except Exception as e:
+        print("❌ Firebase Admin init failed:", e)
+        return None
+
+
+# Initialize immediately for API process
+init_firebase_admin()
+db = firestore.client()
+
+
+# ---------------------------------------------------------
+# Generic helpers: save/read market AI cache (Firestore)
+# ---------------------------------------------------------
+def save_to_firestore_market_cache(doc_id: str, data: dict):
+    """
+    Save a document into bullsignals_ai/<doc_id>.
+    Used by cron script OR any backend batch job.
+    """
+    try:
+        if not firebase_admin._apps:
+            init_firebase_admin()
+
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        doc_ref.set(data, merge=True)
+
+        print(f"🔥 Saved AI Market Cache: {doc_id}")
+    except Exception as e:
+        print("save_to_firestore_market_cache error:", e)
+
+
+def read_market_cache(doc_id: str):
+    """
+    Read a document from bullsignals_ai/<doc_id>.
+    API endpoints use this to return cached Hotlist/BearWatch.
+    No recompute, no TTL logic here — cron keeps it fresh.
+    """
+    try:
+        if not firebase_admin._apps:
+            init_firebase_admin()
+
+        doc_ref = db.collection("bullsignals_ai").document(doc_id)
+        snap = doc_ref.get()
+
+        if not snap.exists:
+            print(f"⚠️ No Firestore cache for {doc_id}")
+            return None
+
+        data = snap.to_dict()
+        return data
+    except Exception as e:
+        print("read_market_cache error:", e)
+        return None
+
+
+# ---------------------------------------------------------
+# /market-hotlist — READ-ONLY view of Firestore cache
 # ---------------------------------------------------------
 @app.get("/market-hotlist")
 def market_hotlist():
-    try:
-        db = firestore.client()
-        doc = (
-            db.collection("bullsignals_ai")
-            .document("market_hotlist")
-            .get()
-        )
+    """
+    Returns the last precomputed Hotlist from Firestore.
 
-        if not doc.exists:
-            return {
-                "count": 0,
-                "hotlist": [],
-            }
-
-        data = doc.to_dict() or {}
-        hotlist = data.get("hotlist", [])
-
-        return {
-            "count": len(hotlist),
-            "hotlist": hotlist,
-        }
-
-    except Exception as e:
-        print(f"[market-hotlist] Firestore read error: {e}")
+    Document shape (in bullsignals_ai/market_hotlist):
+    {
+        "count": 5,
+        "hotlist": [
+            {
+                "symbol": "KO",
+                "prob_up": 0.6123,
+                "prob_down": 0.3877,
+                "signal": "BUY",
+                "kind": "STRONG_BUY" | "BUY" | "WATCHLIST_BUY",
+                "confidence": 61.23,
+                "explanation_short": "...",
+                "explanation_risk": "..."
+            },
+            ...
+        ],
+        "updated_at": "2025-12-10T03:15:00Z"
+    }
+    """
+    cache = read_market_cache("market_hotlist")
+    if not cache:
         return {
             "count": 0,
             "hotlist": [],
+            "updated_at": None,
         }
+
+    return {
+        "count": cache.get("count", len(cache.get("hotlist", []))),
+        "hotlist": cache.get("hotlist", []),
+        "updated_at": cache.get("updated_at"),
+    }
 
 
 # ---------------------------------------------------------
-# Read market-bearwatch AI cache (global Firestore)
+# /market-bearwatch — READ-ONLY view of Firestore cache
 # ---------------------------------------------------------
 @app.get("/market-bearwatch")
 def market_bearwatch():
-    try:
-        db = firestore.client()
-        doc = (
-            db.collection("bullsignals_ai")
-            .document("market_bearwatch")
-            .get()
-        )
+    """
+    Returns the last precomputed BearWatch from Firestore.
 
-        if not doc.exists:
-            return {
-                "count": 0,
-                "bearwatch": [],
-            }
-
-        data = doc.to_dict() or {}
-        bearwatch = data.get("bearwatch", [])
-
-        return {
-            "count": len(bearwatch),
-            "bearwatch": bearwatch,
-        }
-
-    except Exception as e:
-        print(f"[market-bearwatch] Firestore read error: {e}")
+    Document shape (in bullsignals_ai/market_bearwatch):
+    {
+        "count": 5,
+        "bearwatch": [
+            {
+                "symbol": "VZ",
+                "prob_up": 0.287,
+                "prob_down": 0.713,
+                "signal": "SELL" | "HOLD",
+                "kind": "STRONG_SELL" | "SELL" | "HOLD",
+                "confidence": 71.3,
+                "explanation_short": "...",
+                "explanation_risk": "..."
+            },
+            ...
+        ],
+        "updated_at": "2025-12-10T03:15:00Z"
+    }
+    """
+    cache = read_market_cache("market_bearwatch")
+    if not cache:
         return {
             "count": 0,
             "bearwatch": [],
+            "updated_at": None,
         }
 
+    return {
+        "count": cache.get("count", len(cache.get("bearwatch", []))),
+        "bearwatch": cache.get("bearwatch", []),
+        "updated_at": cache.get("updated_at"),
+    }
 
-# ============================================================
-# HOME SCREEN (READ FROM FIRESTORE)
-# ============================================================
-@app.get("/homescreen")
-def get_homescreen():
-    db = firestore.client()
 
-    doc = (
-        db.collection("bullsignals_ai")
-        .document("homescreen_snapshot")
-        .get()
-    )
 
-    if not doc.exists:
-        return {
-            "status": "unavailable",
-            "message": "HomeScreen snapshot not ready yet",
-        }
-
-    return doc.to_dict()
