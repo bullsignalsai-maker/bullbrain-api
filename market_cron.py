@@ -61,12 +61,13 @@ def log(msg: str) -> None:
 
 
 # ---------------------------------------------------------
-# Firestore handle
+# Firestore handle (SAFE, standalone)
 # ---------------------------------------------------------
 def get_db():
     if not firebase_admin._apps:
-        backend.init_firebase_admin()
-    return backend.db
+        firebase_admin.initialize_app()
+    return firestore.client()
+
 
 
 # ---------------------------------------------------------
