@@ -836,7 +836,6 @@ def save_market_pulse_docs(overview_doc, pulse_doc):
     col.document("market_pulse").set(pulse_doc, merge=True)
     log("💾 Saved bullsignals_ai/market_pulse")
 
-
 # ---------------------------------------------------------
 # Safe quote fetcher (cron)
 # ---------------------------------------------------------
@@ -855,6 +854,7 @@ def fetch_quote_safe(symbol: str) -> dict:
     return {}
 
 
+
 # =========================================================
 # HOME SCREEN SNAPSHOT (Firestore)
 # =========================================================
@@ -869,12 +869,11 @@ def percent_str(x: Optional[float], digits: int = 2) -> str:
 
 def build_us_market_card() -> Dict[str, Any]:
     # Use SPY + QQQ as "AI Market Insights" proxy
-        spy = fetch_quote_safe("SPY")
-        qqq = fetch_quote_safe("QQQ")
+    spy = fetch_quote_safe("SPY")
+    qqq = fetch_quote_safe("QQQ")
 
-        spy_chg = spy.get("changePct")
-        qqq_chg = qqq.get("changePct")
-
+    spy_chg = spy.get("changePct")
+    qqq_chg = qqq.get("changePct")
 
     # Some providers return decimals; normalize if needed
     def normalize_pct(v):
