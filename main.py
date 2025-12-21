@@ -171,6 +171,20 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
         print("🧪 [candles] Polygon URL:", url)
 
         j = safe_json(url)
+        if not j:
+        print("🧪 [candles] safe_json returned None")
+        return None
+
+        if j.get("status") == "ERROR":
+        print("🧪 [candles] Polygon ERROR:", j.get("error"))
+        return None
+
+        if "results" not in j:
+        print("🧪 [candles] No results field. Keys:", list(j.keys()))
+        return None
+
+        print("🧪 [candles] resultsCount:", j.get("resultsCount"), "queryCount:", j.get("queryCount"))
+
         if not j or "results" not in j:
             return None
         res = j["results"]
@@ -191,7 +205,7 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
             "volume": vols,
             "timestamp": ts,
         }
-        
+
 
     except Exception as e:
         print("fetch_daily_candles error:", e)
