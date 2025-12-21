@@ -172,18 +172,18 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
 
         j = safe_json(url)
         if not j:
-        print("🧪 [candles] safe_json returned None")
-        return None
+            print("🧪 [candles] safe_json returned None")
+            return None
 
         if j.get("status") == "ERROR":
-        print("🧪 [candles] Polygon ERROR:", j.get("error"))
-        return None
+            print("🧪 [candles] Polygon ERROR:", j.get("error"))
+            return None
 
         if "results" not in j:
-        print("🧪 [candles] No results field. Keys:", list(j.keys()))
-        return None
+            print("🧪 [candles] No results field. Keys:", list(j.keys()))
+            return None
 
-        print("🧪 [candles] resultsCount:", j.get("resultsCount"), "queryCount:", j.get("queryCount"))
+    print("🧪 [candles] resultsCount:", j.get("resultsCount"), "queryCount:", j.get("queryCount"))
 
         if not j or "results" not in j:
             return None
