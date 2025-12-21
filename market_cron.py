@@ -52,6 +52,11 @@ ALLOWED_SOURCES = {
     "Yahoo",
 }
 
+# ---------------------------------------------------------
+# MAG-7 (mandatory on every cron run)
+# ---------------------------------------------------------
+MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
+
 
 # ---------------------------------------------------------
 # Logging helper
@@ -758,29 +763,297 @@ def save_market_pulse_docs(overview_doc, pulse_doc):
     col.document("market_pulse").set(pulse_doc, merge=True)
     log("💾 Saved bullsignals_ai/market_pulse")
 
+# =========================================================
+# HOME SCREEN SNAPSHOT (Firestore)
+# =========================================================
+def percent_str(x: Optional[float], digits: int = 2) -> str:
+    try:
+        if x is None:
+            return "--"
+        return f"{x:+.{digits}f}%"
+    except Exception:
+        return "--"
+
+
+def build_us_market_card() -> Dict[str, Any]:
+    # Use SPY + QQQ as "AI Market Insights" proxy
+    spy = fetch_quote_safe("SPY")
+    qqq = fetch_quote_safe("QQQ")
+
+    spy_chg = spy.get("changePct")
+    qqq_chg = qqq.get("changePct")
+
+    # Some providers return decimals; normalize if needed
+    def normalize_pct(v):
+        try:
+            v = float(v)
+            # if it's like 0.0086 => 0.86%
+            if abs(v) <= 1.5:
+                return v * 100.0
+            return v
+        except Exception:
+            return None
+
+    spy_chg = normalize_pct(spy_chg)
+    qqq_chg = normalize_pct(qqq_chg)
+
+    return {
+        "id": "us_market",
+        "title": "AI Market Insights",
+        "subtitle": "US Market snapshot",
+        "items": [
+            {"label": "S&P 500 (SPY)", "value": percent_str(spy_chg)},
+            {"label": "Nasdaq (QQQ)", "value": percent_str(qqq_chg)},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_crypto_movers_card() -> Dict[str, Any]:
+    # Free CoinGecko
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=dogecoin,ripple,solana"
+        "&vs_currencies=usd"
+        "&include_24hr_change=true"
+    )
+    data = requests.get(url, timeout=10).json()
+
+    def cg_change(id_):
+        try:
+            return float(data[id_]["usd_24h_change"])
+        except Exception:
+            return None
+
+    return {
+        "id": "crypto",
+        "title": "Crypto Movers",
+        "subtitle": "24h change",
+        "items": [
+            {"label": "DOGE", "value": percent_str(cg_change("dogecoin"))},
+            {"label": "XRP", "value": percent_str(cg_change("ripple"))},
+            {"label": "SOL", "value": percent_str(cg_change("solana"))},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_sentiment_card() -> Dict[str, Any]:
+    # Free alternative.me
+    url = "https://api.alternative.me/fng/?limit=1&format=json"
+    data = requests.get(url, timeout=10).json()
+
+    value = None
+    label = "Neutral"
+    try:
+        row = (data.get("data") or [])[0]
+        value = int(row.get("value"))
+        label = row.get("value_classification") or "Neutral"
+    except Exception:
+        value = 50
+        label = "Neutral"
+
+    return {
+        "id": "sentiment",
+        "title": "Market Sentiment",
+        "subtitle": "Fear & Greed (crypto proxy)",
+        "items": [
+            {"label": "Mood", "value": f"{label} ({value})"},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_commodities_card() -> Dict[str, Any]:
+    # Use ETFs as proxies (free quote source already in your backend)
+    gld = fetch_quote_safe("GLD")
+    slv = fetch_quote_safe("SLV")
+    uso = fetch_quote_safe("USO")
+
+    def norm(v):
+        try:
+            v = float(v)
+            if abs(v) <= 1.5:
+                return v * 100.0
+            return v
+        except Exception:
+            return None
+
+    return {
+        "id": "commodities",
+        "title": "Commodities Snapshot",
+        "subtitle": "ETF proxies",
+        "items": [
+            {"label": "Gold (GLD)", "value": percent_str(norm(gld.get("changePct")) )},
+            {"label": "Oil (USO)", "value": percent_str(norm(uso.get("changePct")) )},
+            {"label": "Silver (SLV)", "value": percent_str(norm(slv.get("changePct")) )},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def compute_homescreen_carousel() -> List[Dict[str, Any]]:
+    cards: List[Dict[str, Any]] = []
+
+    for builder in [build_us_market_card, build_crypto_movers_card, build_sentiment_card, build_commodities_card]:
+        try:
+            cards.append(builder())
+        except Exception as e:
+            log(f"Home carousel card failed ({builder.__name__}): {e}")
+
+    # Ensure exactly 4 cards (if any failed, add a static fallback)
+    while len(cards) < 4:
+        cards.append(
+            {
+                "id": f"fallback_{len(cards)+1}",
+                "title": "Trending Sectors",
+                "subtitle": "Quick view",
+                "items": [
+                    {"label": "AI", "value": "Watch"},
+                    {"label": "Tech", "value": "Watch"},
+                    {"label": "Energy", "value": "Watch"},
+                ],
+                "updated_at": utc_now_iso(),
+            }
+        )
+
+    return cards[:4]
+
+
+def build_mag7_summary(signal: str) -> str:
+    if signal == "BUY":
+        return "BullBrain detects favorable upside conditions with improving momentum."
+    if signal == "SELL":
+        return "BullBrain flags downside risk as selling pressure increases."
+    return "BullBrain sees mixed signals with no strong directional edge."
+
+
+def build_mag7_fallback(symbol: str) -> Dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "price": None,
+        "changePct": None,
+        "signal": "HOLD",
+        "confidence": 50.0,
+        "prob_up": 0.5,
+        "prob_down": 0.5,
+        "summary": "Data temporarily unavailable. Model defaults to neutral.",
+        "updated_at": utc_now_iso(),
+    }
+
+
+def compute_single_mag7(symbol: str) -> Dict[str, Any]:
+    ensure_bullbrain_loaded()
+
+    candles = backend.fetch_daily_candles(symbol)
+    if not candles:
+        raise RuntimeError("No candles")
+
+    feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+    if feats_vec is None:
+        raise RuntimeError("Feature generation failed")
+
+    infer = backend.bullbrain_infer(feats_vec)
+    if infer is None:
+        raise RuntimeError("Inference failed")
+
+    prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
+    prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
+
+    kind = classify_signal(prob_up, prob_down)
+
+    if kind in ("BUY", "STRONG_BUY"):
+        signal = "BUY"
+    elif kind in ("SELL", "STRONG_SELL"):
+        signal = "SELL"
+    else:
+        signal = "HOLD"
+
+    confidence = round(max(prob_up, prob_down) * 100.0, 1)
+
+    q = fetch_quote_safe(symbol)
+    price = q.get("price") or q.get("close")
+    change_pct = q.get("changePct")
+
+    # normalize if needed (0.0086 => 0.86)
+    try:
+        if change_pct is not None:
+            change_pct = float(change_pct)
+            if abs(change_pct) <= 1.5:
+                change_pct = change_pct * 100.0
+    except Exception:
+        pass
+
+    return {
+        "symbol": symbol,
+        "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "price": price,
+        "changePct": change_pct,
+        "signal": signal,
+        "confidence": confidence,
+        "prob_up": round(prob_up, 4),
+        "prob_down": round(prob_down, 4),
+        "summary": build_mag7_summary(signal),
+        "updated_at": utc_now_iso(),
+    }
+
+
+def compute_mag7_snapshot() -> List[Dict[str, Any]]:
+    results = []
+    for sym in MAG7:
+        try:
+            results.append(compute_single_mag7(sym))
+        except Exception as e:
+            log(f"MAG7 fallback for {sym}: {e}")
+            results.append(build_mag7_fallback(sym))
+    return results
+
+
+def build_homescreen_snapshot() -> Dict[str, Any]:
+    # reuse same market overview helper for consistency
+    overview = compute_market_overview()
+
+    return {
+        "market_overview": overview,
+        "carousel": compute_homescreen_carousel(),
+        "mag7": compute_mag7_snapshot(),
+        "updated_at": utc_now_iso(),
+        "version": "v1",
+    }
+
+
+def save_homescreen_snapshot(snapshot: Dict[str, Any]) -> None:
+    db = get_db()
+    db.collection("bullsignals_ai").document("homescreen_snapshot").set(snapshot, merge=True)
+    log("💾 Saved bullsignals_ai/homescreen_snapshot")
+
 
 # =========================================================
 # ENTRYPOINT
 # =========================================================
 def main():
-    started = datetime.datetime.now(
-        datetime.timezone.utc
-    ).isoformat().replace("+00:00", "Z")
+    started = utc_now_iso()
     log(f"Market cron started at {started}")
 
     try:
-        # 🔒 Existing
+        # 1) Existing Hotlist/BearWatch (must not break)
         hotlist_doc, bearwatch_doc = compute_hotlist_and_bearwatch()
         save_docs_to_firestore(hotlist_doc, bearwatch_doc)
 
-        # 🆕 New
+        # 2) Market Overview + Market Pulse
         overview_doc = compute_market_overview()
         pulse_doc = compute_market_pulse()
         save_market_pulse_docs(overview_doc, pulse_doc)
 
-        finished = datetime.datetime.now(
-            datetime.timezone.utc
-        ).isoformat().replace("+00:00", "Z")
+        # 3) HomeScreen Snapshot (do not block cron if this fails)
+        try:
+            hs = build_homescreen_snapshot()
+            save_homescreen_snapshot(hs)
+        except Exception as e:
+            log(f"HomeScreen snapshot failed (non-fatal): {e}")
+
+        finished = utc_now_iso()
         log(f"Market cron completed at {finished}")
 
     except Exception as e:
