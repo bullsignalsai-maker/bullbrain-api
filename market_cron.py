@@ -23,6 +23,7 @@ from firebase_admin import firestore  # type: ignore
 
 import main as backend
 from symbols_clean import REAL_TICKERS, COMPANY_NAMES
+from typing import Optional, Dict, Any, List
 
 
 MARKET_KEYWORDS = [
@@ -73,6 +74,41 @@ def get_db():
         firebase_admin.initialize_app()
     return firestore.client()
 
+
+# ---------------------------------------------------------
+# Fetch previous MAG-7 snapshot from Firestore
+# ---------------------------------------------------------
+def get_previous_mag7_map() -> Dict[str, Dict[str, Any]]:
+    """
+    Returns:
+      {
+        "AAPL": { ... previous mag7 object ... },
+        "MSFT": { ... },
+        ...
+      }
+    """
+    try:
+        db = get_db()
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("homescreen_snapshot")
+              .get()
+        )
+
+        if not doc.exists:
+            return {}
+
+        data = doc.to_dict() or {}
+        prev_list = data.get("mag7", [])
+
+        return {
+            item.get("symbol"): item
+            for item in prev_list
+            if isinstance(item, dict) and item.get("symbol")
+        }
+
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------
@@ -130,6 +166,35 @@ def classify_signal(prob_up: float, prob_down: float) -> str:
         return "SELL"
 
     return "HOLD"
+
+# ---------------------------------------------------------
+# MAG-7 Trend Arrow Calculation
+# ---------------------------------------------------------
+def compute_trend_arrow(
+    current_confidence: float,
+    previous_confidence: Optional[float],
+) -> str:
+    """
+    Returns:
+      "UP"   -> ⬆️ Bullish momentum increasing
+      "DOWN" -> ⬇️ Momentum weakening
+      "FLAT" -> ➡️ No meaningful change
+    """
+    if previous_confidence is None:
+        return "FLAT"
+
+    try:
+        delta = float(current_confidence) - float(previous_confidence)
+    except Exception:
+        return "FLAT"
+
+    # Stable thresholds (avoid flip-flop)
+    if delta >= 3.0:
+        return "UP"
+    if delta <= -3.0:
+        return "DOWN"
+
+    return "FLAT"
 
 
 # ---------------------------------------------------------
@@ -1000,13 +1065,32 @@ def compute_single_mag7(symbol: str) -> Dict[str, Any]:
 
 
 def compute_mag7_snapshot() -> List[Dict[str, Any]]:
-    results = []
+    previous_map = get_previous_mag7_map()
+    results: List[Dict[str, Any]] = []
+
     for sym in MAG7:
         try:
-            results.append(compute_single_mag7(sym))
+            current = compute_single_mag7(sym)
+
+            prev_conf = (
+                previous_map.get(sym, {})
+                .get("confidence")
+            )
+
+            trend = compute_trend_arrow(
+                current_confidence=current["confidence"],
+                previous_confidence=prev_conf,
+            )
+
+            current["trend"] = trend
+            results.append(current)
+
         except Exception as e:
             log(f"MAG7 fallback for {sym}: {e}")
-            results.append(build_mag7_fallback(sym))
+            fallback = build_mag7_fallback(sym)
+            fallback["trend"] = "FLAT"
+            results.append(fallback)
+
     return results
 
 
