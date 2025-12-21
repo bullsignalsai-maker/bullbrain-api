@@ -17,7 +17,7 @@ import pytz
 
 import datetime
 import math
-
+import requests
 import firebase_admin
 from firebase_admin import firestore  # type: ignore
 
@@ -835,6 +835,24 @@ def save_market_pulse_docs(overview_doc, pulse_doc):
 
     col.document("market_pulse").set(pulse_doc, merge=True)
     log("💾 Saved bullsignals_ai/market_pulse")
+
+# ---------------------------------------------------------
+# Safe quote fetcher (cron-safe)
+# ---------------------------------------------------------
+def fetch_quote_safe(symbol: str) -> dict:
+    """
+    Wrapper around backend.fetch_quote
+    Ensures cron never crashes due to quote failures
+    """
+    try:
+        q = backend.fetch_quote(symbol)
+        if isinstance(q, dict):
+            return q
+    except Exception as e:
+        log(f"Quote fetch failed for {symbol}: {e}")
+
+    return {}
+
 
 # =========================================================
 # HOME SCREEN SNAPSHOT (Firestore)
