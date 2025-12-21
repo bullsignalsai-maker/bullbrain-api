@@ -151,8 +151,15 @@ def load_bullbrain_model() -> xgb.Booster:
 # --------------------------------------------------------------------
 def fetch_daily_candles(symbol: str, min_points: int = 60):
     symbol = symbol.upper()
+
+    print("🧪 [candles] symbol:", symbol)
+    print("🧪 [candles] POLYGON_KEY exists:", bool(POLYGON_KEY))
+    print("🧪 [candles] POLYGON_KEY prefix:", POLYGON_KEY[:6] if POLYGON_KEY else None)
+
     if not POLYGON_KEY:
+        print("❌ [candles] POLYGON_KEY is missing in this process")
         return None
+
     try:
         now = datetime.datetime.utcnow()
         end = int(now.timestamp())
@@ -161,6 +168,8 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
             f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
             f"{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
         )
+        print("🧪 [candles] Polygon URL:", url)
+
         j = safe_json(url)
         if not j or "results" not in j:
             return None
@@ -182,8 +191,7 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
             "volume": vols,
             "timestamp": ts,
         }
-        print("POLYGON_KEY present:", bool(POLYGON_KEY))
-        print("Using Polygon URL:", url)
+        
 
     except Exception as e:
         print("fetch_daily_candles error:", e)
