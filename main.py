@@ -182,6 +182,9 @@ def fetch_daily_candles(symbol: str, min_points: int = 60):
             "volume": vols,
             "timestamp": ts,
         }
+        print("POLYGON_KEY present:", bool(POLYGON_KEY))
+        print("Using Polygon URL:", url)
+
     except Exception as e:
         print("fetch_daily_candles error:", e)
         return None
