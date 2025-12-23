@@ -154,9 +154,7 @@ def _normalize_polygon_results(results: list) -> Dict[str, list]:
         "ts":     [r.get("t") for r in results],  # ms
     }
 
-# ---------------------------------------------------------
-# PUBLIC API — SINGLE ENTRY POINT (DROP-IN REPLACEMENT)
-# ---------------------------------------------------------
+
 # ---------------------------------------------------------
 # PUBLIC API — SINGLE ENTRY POINT
 # ---------------------------------------------------------

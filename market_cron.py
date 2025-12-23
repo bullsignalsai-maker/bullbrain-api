@@ -7,21 +7,19 @@
 #   Schedule: */15 * * * 1-5
 # ---------------------------------------------------------
 # ADD near the top
+import main as backend
 from main import (
-    _get_market_overview_quick,
-    _analyze_headline_sentiment_py,
-    _clean_text_py,
-    market_news,
+    backend._get_market_overview_quick()
+    backend._analyze_headline_sentiment_py,
+    backend._clean_text_py,
+    backend.market_news,
 )
 import pytz
-
 import datetime
 import math
 import requests
 import firebase_admin
 from firebase_admin import firestore  # type: ignore
-
-import main as backend
 from symbols_clean import REAL_TICKERS, COMPANY_NAMES
 from typing import Optional, Dict, Any, List
 import time
@@ -388,8 +386,6 @@ def build_bear_explanations(symbol, prob_up, prob_down, kind, feat_dict):
 # Main scan: build Hotlist + BearWatch docs
 # ---------------------------------------------------------
 def compute_hotlist_and_bearwatch():
-    import time
-    import random
 
     ensure_bullbrain_loaded()
 
@@ -408,7 +404,7 @@ def compute_hotlist_and_bearwatch():
         # 🔒 SAFE candle fetch with 429 protection
         # -------------------------------------------------
         try:
-            candles = get_candles(symbol, min_points=120)
+            candles = get_candles(sym, min_points=120)
 
             if not candles:
                 log(f"No candles for {sym}, skipping…")
@@ -420,7 +416,7 @@ def compute_hotlist_and_bearwatch():
                 log("Polygon rate limit hit — aborting SP500 scan early")
                 break
 
-            log(f"Candle fetch error for {sym}: {e}")
+            log(f"Candle fetch error for {sym}: {type(e).__name__}: {e}")
             continue
 
         # -------------------------------------------------
@@ -467,7 +463,6 @@ def compute_hotlist_and_bearwatch():
             {
                 **base,
                 "kind": kind,
-                "feat_dict": feat_dict,
                 "prob_up_raw": prob_up,
                 "prob_down_raw": prob_down,
             }
@@ -524,9 +519,20 @@ def compute_hotlist_and_bearwatch():
             prob_down = extra["prob_down_raw"]
             feat_dict = extra["feat_dict"]
 
-            short, risk = build_buy_explanations(
-                sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
-            )
+            try:
+                candles_extra = get_candles(sym, min_points=120)
+                if not candles_extra:
+                    continue
+
+                _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
+
+                short, risk = build_buy_explanations(
+                    sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
+                )
+
+            except Exception:
+                continue
+
 
             hotlist.append(
                 {
@@ -859,15 +865,6 @@ def build_market_pulse():
     }
 
 
-def save_market_pulse_docs(overview_doc, pulse_doc):
-    db = get_db()
-    col = db.collection("bullsignals_ai")
-
-    col.document("market_overview_live").set(overview_doc, merge=True)
-    log("💾 Saved bullsignals_ai/market_overview_live")
-
-    col.document("market_pulse").set(pulse_doc, merge=True)
-    log("💾 Saved bullsignals_ai/market_pulse")
 
 # ---------------------------------------------------------
 # Safe quote fetcher (cron)
