@@ -157,26 +157,28 @@ def _normalize_polygon_results(results: list) -> Dict[str, list]:
 # ---------------------------------------------------------
 # PUBLIC API — SINGLE ENTRY POINT (DROP-IN REPLACEMENT)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# PUBLIC API — SINGLE ENTRY POINT
+# ---------------------------------------------------------
 def get_candles(
     symbol: str,
     min_points: int = MIN_POINTS_DEFAULT,
+    **_ignored_kwargs,   # ✅ absorbs unexpected kwargs safely
 ) -> Optional[Dict[str, list]]:
     """
     Returns normalized candle dict:
-      {
-        open: [...],
-        high: [...],
-        low: [...],
-        close: [...],
-        volume: [...],
-        timestamp: [...]
-      }
+      { open, high, low, close, volume, timestamp }
 
-    Firestore is the source of truth.
-    Polygon is used ONLY for:
-      • initial fill
-      • delta updates when cache is stale
+    Firestore is source of truth.
+    Polygon is used ONLY for delta or initial fill.
     """
+
+    # ✅ harden: if someone passes min_points in kwargs in some weird way
+    if "min_points" in _ignored_kwargs:
+        try:
+            min_points = int(_ignored_kwargs["min_points"])
+        except Exception:
+            pass
 
     symbol = symbol.upper()
 

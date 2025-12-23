@@ -21,6 +21,7 @@ from firebase_admin import credentials, firestore
 import time
 from backend.candle_store import get_candles
 
+
 app = FastAPI()
 
 # CORS for Expo / mobile
@@ -108,6 +109,8 @@ TOP_LIQUID_TICKERS = [
 
 bullbrain_model: xgb.Booster | None = None
 cache: dict[str, dict] = {}
+
+print("✅ get_candles loaded from:", get_candles.__module__)
 
 # --------------------------------------------------------------------
 # UTILS
