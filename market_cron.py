@@ -9,7 +9,7 @@
 # ADD near the top
 import main as backend
 from main import (
-    backend._get_market_overview_quick()
+    backend._get_market_overview_quick,
     backend._analyze_headline_sentiment_py,
     backend._clean_text_py,
     backend.market_news,
