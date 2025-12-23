@@ -77,8 +77,11 @@ def utc_now_iso() -> str:
 # Logging helper
 # ---------------------------------------------------------
 def log(msg: str) -> None:
-    backend.log(f"[cron] {msg}")
-
+    try:
+        backend.log(f"[cron] {msg}")
+    except Exception:
+        pass
+    print(f"[cron] {msg}", flush=True)
 
 # ---------------------------------------------------------
 # Firestore handle (SAFE, standalone)
@@ -398,14 +401,14 @@ def compute_hotlist_and_bearwatch():
     log(f"Scanning {total} tickers with BullBrain…")
 
     for i, sym in enumerate(REAL_TICKERS, start=1):
-        if i % 50 == 0:
+        if i % 25 == 0:
             log(f"...processed {i}/{total}")
 
         # -------------------------------------------------
         # 🔒 SAFE candle fetch with 429 protection
         # -------------------------------------------------
         try:
-            candles = get_candles(sym, min_points=120)
+            candles = get_candles(symbol, min_points=120)
 
             if not candles:
                 log(f"No candles for {sym}, skipping…")
@@ -1068,7 +1071,7 @@ def build_mag7_fallback(symbol: str) -> Dict[str, Any]:
 def compute_single_mag7(symbol: str) -> Dict[str, Any]:
     ensure_bullbrain_loaded()
 
-    candles = get_candles(sym, min_points=120)
+    candles = get_candles(symbol, min_points=120)
 
     if not candles:
         raise RuntimeError("No candles")
@@ -1202,3 +1205,6 @@ def main():
 
     except Exception as e:
         log(f"Fatal error in market_cron: {e}")
+
+if __name__ == "__main__":
+    main()
