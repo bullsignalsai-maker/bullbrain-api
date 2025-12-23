@@ -8,12 +8,6 @@
 # ---------------------------------------------------------
 # ADD near the top
 import main as backend
-from main import (
-    backend._get_market_overview_quick,
-    backend._analyze_headline_sentiment_py,
-    backend._clean_text_py,
-    backend.market_news,
-)
 import pytz
 import datetime
 import math
@@ -514,24 +508,23 @@ def compute_hotlist_and_bearwatch():
 
         needed = 5 - len(hotlist)
         for extra in extras_pool[:needed]:
-            sym = extra["symbol"]
-            prob_up = extra["prob_up_raw"]
-            prob_down = extra["prob_down_raw"]
-            feat_dict = extra["feat_dict"]
+        sym = extra["symbol"]
+        prob_up = extra["prob_up_raw"]
+        prob_down = extra["prob_down_raw"]
 
-            try:
-                candles_extra = get_candles(sym, min_points=120)
-                if not candles_extra:
-                    continue
-
-                _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
-
-                short, risk = build_buy_explanations(
-                    sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
-                )
-
-            except Exception:
+        try:
+            candles_extra = get_candles(sym, min_points=120)
+            if not candles_extra:
                 continue
+
+            _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
+
+            short, risk = build_buy_explanations(
+                sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
+            )
+
+        except Exception:
+            continue
 
 
             hotlist.append(
