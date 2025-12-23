@@ -20,6 +20,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import time
 from backend.candle_store import get_candles
+from backend.candle_store import get_candles as get_cached_candles
+
 
 
 app = FastAPI()
@@ -1940,46 +1942,79 @@ def get_features(symbol: str):
 
 
 @app.get("/candles/{symbol}")
-def get_candles(symbol: str, limit: int = 252):
+def candles_endpoint(symbol: str, limit: int = 252):
+    """
+    Returns OHLCV candles for charting.
+    Data is sourced from Firestore-backed candle cache.
+    """
+
     symbol = symbol.upper()
+
     try:
-        candles = get_candles(symbol, min_points=min(limit, 60))
+        # Fetch from Firestore-backed candle store
+        candles = get_cached_candles(
+            symbol,
+            min_points=min(limit, 120),
+        )
+
         if not candles:
-            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
+            return {
+                "symbol": symbol,
+                "error": f"No candle data available for {symbol}",
+            }
+
         closes = candles["close"]
         highs = candles["high"]
         lows = candles["low"]
         opens = candles["open"]
-        vols = candles["volume"]
-        ts_list = candles.get("timestamp") or []
+        volumes = candles["volume"]
+        timestamps = candles.get("timestamp") or []
+
         n = len(closes)
         if n == 0:
-            return {"symbol": symbol, "error": "No candle data"}
+            return {
+                "symbol": symbol,
+                "error": "Empty candle set",
+            }
+
+        # Trim to requested window
         use_n = min(limit, n)
         start_idx = n - use_n
+
         items = []
         for i in range(start_idx, n):
-            t_raw = ts_list[i] if i < len(ts_list) and ts_list[i] else None
-            if t_raw:
-                dt = datetime.datetime.utcfromtimestamp(t_raw / 1000.0).replace(microsecond=0)
-                t_iso = dt.isoformat() + "Z"
+            ts = timestamps[i] if i < len(timestamps) else None
+
+            if ts:
+                dt = datetime.datetime.utcfromtimestamp(ts / 1000.0)
             else:
+                # Fallback: synthetic spacing (should be rare)
                 dt = datetime.datetime.utcnow() - datetime.timedelta(days=(n - 1 - i))
-                t_iso = dt.replace(microsecond=0).isoformat() + "Z"
+
             items.append(
                 {
-                    "t": t_iso,
+                    "t": dt.replace(microsecond=0).isoformat() + "Z",
                     "open": float(opens[i]),
                     "high": float(highs[i]),
                     "low": float(lows[i]),
                     "close": float(closes[i]),
-                    "volume": float(vols[i]),
+                    "volume": float(volumes[i]),
                 }
             )
-        return {"symbol": symbol, "source": candles.get("source", "polygon"), "candles": items}
+
+        return {
+            "symbol": symbol,
+            "source": "firestore",
+            "count": len(items),
+            "candles": items,
+        }
+
     except Exception as e:
-        print("get_candles error:", e)
-        return {"symbol": symbol, "error": str(e)}
+        print("[candles_endpoint] error:", e)
+        return {
+            "symbol": symbol,
+            "error": str(e),
+        }
 
 
 @app.get("/technical/{symbol}")
