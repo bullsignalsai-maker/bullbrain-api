@@ -154,9 +154,8 @@ def _normalize_polygon_results(results: list) -> Dict[str, list]:
         "ts":     [r.get("t") for r in results],  # ms
     }
 
-
 # ---------------------------------------------------------
-# PUBLIC API — SINGLE ENTRY POINT
+# PUBLIC API — SINGLE ENTRY POINT (DROP-IN REPLACEMENT)
 # ---------------------------------------------------------
 def get_candles(
     symbol: str,
@@ -164,26 +163,41 @@ def get_candles(
 ) -> Optional[Dict[str, list]]:
     """
     Returns normalized candle dict:
-      { open, high, low, close, volume, timestamp }
+      {
+        open: [...],
+        high: [...],
+        low: [...],
+        close: [...],
+        volume: [...],
+        timestamp: [...]
+      }
 
-    Firestore is source of truth.
-    Polygon is used ONLY for delta or initial fill.
+    Firestore is the source of truth.
+    Polygon is used ONLY for:
+      • initial fill
+      • delta updates when cache is stale
     """
 
     symbol = symbol.upper()
 
-    # -----------------------------------------------------
-    # 1) Read cache
-    # -----------------------------------------------------
+    # =====================================================
+    # 1) Attempt Firestore cache read
+    # =====================================================
     cached = _read_firestore_candles(symbol)
 
     if cached:
-        candles = cached.get("candles", {})
-        meta = cached.get("meta", {})
+        candles = cached.get("candles") or {}
+        meta = cached.get("meta") or {}
 
-        # Validate candle count
-        if candles and len(candles.get("close", [])) >= min_points:
-            # Fresh → return immediately
+        closes = candles.get("close") or []
+        ts = candles.get("ts") or []
+
+        # -------------------------------
+        # A) Cache has enough data
+        # -------------------------------
+        if len(closes) >= min_points and len(ts) == len(closes):
+
+            # A1) Cache is fresh → return immediately
             if _candles_fresh(meta):
                 return {
                     "open": candles["open"],
@@ -194,24 +208,28 @@ def get_candles(
                     "timestamp": candles["ts"],
                 }
 
-            # Stale → fetch delta
+            # A2) Cache is stale → fetch delta
             try:
-                last_ts = candles["ts"][-1]
+                last_ts = ts[-1]
                 delta = fetch_delta_history(symbol, last_ts)
 
                 if delta:
                     norm = _normalize_polygon_results(delta)
 
+                    # Merge delta candles
                     for k in candles:
                         candles[k].extend(norm[k])
 
                     meta["last_fetch"] = utc_now_iso()
+                    meta["last_ts"] = candles["ts"][-1]
+                    meta["count"] = len(candles["close"])
 
                     _save_firestore_candles(symbol, {
                         "candles": candles,
                         "meta": meta,
                     })
 
+                # Serve updated (or unchanged) cache
                 return {
                     "open": candles["open"],
                     "high": candles["high"],
@@ -222,8 +240,8 @@ def get_candles(
                 }
 
             except RuntimeError as e:
+                # Polygon rate-limited → serve stale but valid cache
                 if "429" in str(e):
-                    # rate-limited → serve stale but valid data
                     return {
                         "open": candles["open"],
                         "high": candles["high"],
@@ -232,17 +250,29 @@ def get_candles(
                         "volume": candles["volume"],
                         "timestamp": candles["ts"],
                     }
+
+                # Any other error → fail safely
                 return None
 
-    # -----------------------------------------------------
-    # 2) No cache → full fetch
-    # -----------------------------------------------------
+        # -------------------------------
+        # B) Cache exists but insufficient
+        # -------------------------------
+        # Fall through to full fetch
+
+    # =====================================================
+    # 2) No usable cache → full Polygon fetch
+    # =====================================================
     try:
         full = fetch_full_history(symbol)
-        if not full or len(full) < min_points:
+
+        if not full:
             return None
 
         norm = _normalize_polygon_results(full)
+
+        # Enforce min_points strictly
+        if len(norm.get("close", [])) < min_points:
+            return None
 
         payload = {
             "candles": norm,
@@ -268,6 +298,8 @@ def get_candles(
         }
 
     except RuntimeError as e:
+        # Hard rate limit → no data
         if "429" in str(e):
             return None
+
         return None
