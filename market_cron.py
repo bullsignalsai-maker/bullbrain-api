@@ -24,6 +24,9 @@ from firebase_admin import firestore  # type: ignore
 import main as backend
 from symbols_clean import REAL_TICKERS, COMPANY_NAMES
 from typing import Optional, Dict, Any, List
+import time
+import random
+from backend.candle_store import get_candles
 
 
 MARKET_KEYWORDS = [
@@ -375,11 +378,13 @@ def build_bear_explanations(symbol, prob_up, prob_down, kind, feat_dict):
     explanation_risk = tech_sentence + risk_sentence
     return short, explanation_risk
 
-
 # ---------------------------------------------------------
 # Main scan: build Hotlist + BearWatch docs
 # ---------------------------------------------------------
 def compute_hotlist_and_bearwatch():
+    import time
+    import random
+
     ensure_bullbrain_loaded()
 
     buy_candidates = []
@@ -393,15 +398,33 @@ def compute_hotlist_and_bearwatch():
         if i % 50 == 0:
             log(f"...processed {i}/{total}")
 
+        # -------------------------------------------------
+        # 🔒 SAFE candle fetch with 429 protection
+        # -------------------------------------------------
         try:
-            candles = backend.fetch_daily_candles(sym)
+            candles = get_candles(sym, min_points=120)
+
             if not candles:
                 log(f"No candles for {sym}, skipping…")
                 continue
 
+        except Exception as e:
+            # 🚨 HARD STOP on Polygon rate limit
+            if "429" in str(e):
+                log("Polygon rate limit hit — aborting SP500 scan early")
+                break
+
+            log(f"Candle fetch error for {sym}: {e}")
+            continue
+
+        # -------------------------------------------------
+        # BullBrain feature generation + inference
+        # -------------------------------------------------
+        try:
             feats_vec, feat_dict, last_close = backend.compute_bullbrain_features(
                 candles
             )
+
             if feats_vec is None:
                 log(f"Feature generation failed for {sym}, skipping…")
                 continue
@@ -415,6 +438,9 @@ def compute_hotlist_and_bearwatch():
             log(f"bullbrain_infer_single error for {sym}: {e}")
             continue
 
+        # -------------------------------------------------
+        # Signal interpretation
+        # -------------------------------------------------
         prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
         prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
 
@@ -469,14 +495,17 @@ def compute_hotlist_and_bearwatch():
                 }
             )
 
+        # -------------------------------------------------
+        # 🕒 THROTTLE (VERY IMPORTANT)
+        # -------------------------------------------------
+        time.sleep(random.uniform(0.15, 0.25))
+
     # ----------------------------
     # Build Hotlist (Top 5 BUY)
     # ----------------------------
     buy_candidates.sort(key=lambda x: x["prob_up"], reverse=True)
     hotlist = buy_candidates[:5]
 
-    # Fallback: if still <5, fill with top bullish names (WATCHLIST_BUY),
-    # even if the model is slightly bearish overall.
     if len(hotlist) < 5:
         already = {item["symbol"] for item in hotlist}
         extras_pool = [c for c in all_symbols if c["symbol"] not in already]
@@ -507,7 +536,6 @@ def compute_hotlist_and_bearwatch():
                 }
             )
 
-    # Cap at 5
     hotlist = hotlist[:5]
 
     # ----------------------------
@@ -524,19 +552,18 @@ def compute_hotlist_and_bearwatch():
         .replace("+00:00", "Z")
     )
 
-    hotlist_doc = {
-        "count": len(hotlist),
-        "hotlist": hotlist,
-        "updated_at": now,
-    }
-
-    bearwatch_doc = {
-        "count": len(bearwatch),
-        "bearwatch": bearwatch,
-        "updated_at": now,
-    }
-
-    return hotlist_doc, bearwatch_doc
+    return (
+        {
+            "count": len(hotlist),
+            "hotlist": hotlist,
+            "updated_at": now,
+        },
+        {
+            "count": len(bearwatch),
+            "bearwatch": bearwatch,
+            "updated_at": now,
+        },
+    )
 
 
 # ---------------------------------------------------------
@@ -1038,7 +1065,8 @@ def build_mag7_fallback(symbol: str) -> Dict[str, Any]:
 def compute_single_mag7(symbol: str) -> Dict[str, Any]:
     ensure_bullbrain_loaded()
 
-    candles = backend.fetch_daily_candles(symbol)
+    candles = get_candles(sym, min_points=120)
+
     if not candles:
         raise RuntimeError("No candles")
 
@@ -1148,28 +1176,26 @@ def main():
     log(f"Market cron started at {started}")
 
     try:
-        # 1) Existing Hotlist/BearWatch (must not break)
-        hotlist_doc, bearwatch_doc = compute_hotlist_and_bearwatch()
-        save_docs_to_firestore(hotlist_doc, bearwatch_doc)
-
-        # 2) Market Overview + Market Pulse
-        overview_doc = compute_market_overview()
-        pulse_doc = compute_market_pulse()
-        save_market_pulse_docs(overview_doc, pulse_doc)
-
-        # 3) HomeScreen Snapshot (do not block cron if this fails)
+        # 🔥 1) MAG7 FIRST — mandatory
         try:
             hs = build_homescreen_snapshot()
             save_homescreen_snapshot(hs)
         except Exception as e:
-            log(f"HomeScreen snapshot failed (non-fatal): {e}")
+            log(f"MAG7/Home snapshot failed (non-fatal): {e}")
 
-        finished = utc_now_iso()
-        log(f"Market cron completed at {finished}")
+        # ⏳ Small pause (rate-limit safety)
+        time.sleep(2)
+
+        # 2) SP500 scan (Hotlist + BearWatch)
+        hotlist_doc, bearwatch_doc = compute_hotlist_and_bearwatch()
+        save_docs_to_firestore(hotlist_doc, bearwatch_doc)
+
+        # 3) Market Pulse
+        overview_doc = compute_market_overview()
+        pulse_doc = compute_market_pulse()
+        save_market_pulse_docs(overview_doc, pulse_doc)
+
+        log(f"Market cron completed at {utc_now_iso()}")
 
     except Exception as e:
         log(f"Fatal error in market_cron: {e}")
-
-
-if __name__ == "__main__":
-    main()

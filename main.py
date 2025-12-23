@@ -18,6 +18,8 @@ import math
 from symbols_clean import REAL_TICKERS
 import firebase_admin
 from firebase_admin import credentials, firestore
+import time
+from backend.candle_store import get_candles
 
 app = FastAPI()
 
@@ -145,71 +147,76 @@ def load_bullbrain_model() -> xgb.Booster:
     log(f"BullBrain num_features={booster.num_features()}")
     return booster
 
-
-# --------------------------------------------------------------------
-# CANDLES + FEATURES
-# --------------------------------------------------------------------
-def fetch_daily_candles(symbol: str, min_points: int = 60):
-    symbol = symbol.upper()
-
-    print("🧪 [candles] symbol:", symbol)
-    print("🧪 [candles] POLYGON_KEY exists:", bool(POLYGON_KEY))
-    print("🧪 [candles] POLYGON_KEY prefix:", POLYGON_KEY[:6] if POLYGON_KEY else None)
-
+# =========================================================
+# Incremental Polygon Candle Fetch
+# =========================================================
+def fetch_polygon_candles_incremental(symbol: str, since_ms: int | None):
     if not POLYGON_KEY:
-        print("❌ [candles] POLYGON_KEY is missing in this process")
         return None
 
-    try:
-        now = datetime.datetime.utcnow()
-        end = int(now.timestamp())
-        start = int((now - datetime.timedelta(days=365)).timestamp())
-        url = (
-            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-            f"{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
-        )
-        print("🧪 [candles] Polygon URL:", url)
+    now = datetime.datetime.utcnow()
+    end = int(now.timestamp() * 1000)
 
-        j = safe_json(url)
-        if not j:
-            print("🧪 [candles] safe_json returned None")
-            return None
+    # If no cache → fetch 1 year
+    if not since_ms:
+        start = int((now - datetime.timedelta(days=365)).timestamp() * 1000)
+    else:
+        start = since_ms + 1  # avoid duplicate candle
 
-        if j.get("status") == "ERROR":
-            print("🧪 [candles] Polygon ERROR:", j.get("error"))
-            return None
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+        f"{start}/{end}?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
+    )
 
-        if "results" not in j:
-            print("🧪 [candles] No results field. Keys:", list(j.keys()))
-            return None
-
-    print("🧪 [candles] resultsCount:", j.get("resultsCount"), "queryCount:", j.get("queryCount"))
-
-        if not j or "results" not in j:
-            return None
-        res = j["results"]
-        closes = [r["c"] for r in res]
-        highs = [r["h"] for r in res]
-        lows = [r["l"] for r in res]
-        vols = [r["v"] for r in res]
-        opens = [r.get("o", r["c"]) for r in res]
-        ts = [r.get("t") for r in res]
-        if len(closes) < min_points:
-            return None
-        return {
-            "source": "polygon",
-            "close": closes,
-            "high": highs,
-            "low": lows,
-            "open": opens,
-            "volume": vols,
-            "timestamp": ts,
-        }
-
-
-    except Exception as e:
-        print("fetch_daily_candles error:", e)
+    data = safe_json(url)
+    if not data or "results" not in data:
         return None
+
+    res = data["results"]
+    if not res:
+        return None
+
+    return {
+        "source": "polygon",
+        "close": [r["c"] for r in res],
+        "high": [r["h"] for r in res],
+        "low": [r["l"] for r in res],
+        "open": [r.get("o", r["c"]) for r in res],
+        "volume": [r["v"] for r in res],
+        "timestamp": [r["t"] for r in res],
+    }
+
+
+def fetch_daily_candles(symbol: str, min_points: int = 60):
+    """
+    DEPRECATED: Redirects to Firestore-backed candle store.
+    Kept for backward compatibility.
+    """
+    return get_candles(symbol, min_points=min_points)
+
+
+def get_candles_cached(symbol: str):
+    cached = load_cached_candles(symbol)
+
+    since_ms = cached.get("last_t_ms") if cached else None
+    new_data = fetch_polygon_candles_incremental(symbol, since_ms)
+
+    if not cached and not new_data:
+        return None
+
+    if cached and new_data:
+        c = cached["candles"]
+        for k in ["close", "high", "low", "open", "volume", "timestamp"]:
+            c[k].extend(new_data[k])
+        save_cached_candles(symbol, c)
+        return c
+
+    if new_data:
+        save_cached_candles(symbol, new_data)
+        return new_data
+
+    return cached["candles"]
+
 
 # ============================================================
 # SMART PATTERN CORE + HISTORY SCANNER
@@ -1052,7 +1059,7 @@ def _run_bullbrain_for_symbol(symbol: str):
     symbol = symbol.upper()
     if bullbrain_model is None:
         return None, {"error": "BullBrain model not loaded yet."}
-    candles = fetch_daily_candles(symbol)
+    candles = get_candles(symbol, min_points=120)
     if not candles:
         return None, {"error": f"Could not fetch candles for {symbol}"}
     features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
@@ -1912,7 +1919,7 @@ def predict_multi(tickers: str = Query(..., description="Comma-separated tickers
 def get_features(symbol: str):
     symbol = symbol.upper()
     try:
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=120)
         if not candles:
             return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
         _, feature_dict, last_close = compute_bullbrain_features(candles)
@@ -1933,7 +1940,7 @@ def get_features(symbol: str):
 def get_candles(symbol: str, limit: int = 252):
     symbol = symbol.upper()
     try:
-        candles = fetch_daily_candles(symbol, min_points=min(limit, 60))
+        candles = get_candles(symbol, min_points=min(limit, 60))
         if not candles:
             return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
         closes = candles["close"]
@@ -1976,7 +1983,7 @@ def get_candles(symbol: str, limit: int = 252):
 def get_technical(symbol: str):
     symbol = symbol.upper()
     try:
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=120)
         if not candles:
             return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
         _, feat, last_close = compute_bullbrain_features(candles)
@@ -1993,7 +2000,7 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
     symbol = symbol.upper()
     try:
         quote = backend_fetch_quote(symbol)
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=120)
 
         feature_dict = None
         last_close = None
@@ -2158,7 +2165,7 @@ def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
 def pattern_history(symbol: str, lookahead_5: int = 5, lookahead_10: int = 10):
     symbol = symbol.upper()
     try:
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=180)
         if not candles:
             return {
                 "symbol": symbol,
@@ -3103,7 +3110,7 @@ def portfolio_ai_insight(
 
     try:
         # 1) Fetch candles
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=120)
         if not candles:
             return {"error": "Insufficient candle data"}
 
@@ -3274,7 +3281,7 @@ def astra_symbol_sentiment(symbol: str) -> Dict[str, Any]:
     }
 
     try:
-        candles = fetch_daily_candles(symbol)
+        candles = get_candles(symbol, min_points=60)
         if not candles or len(candles) < 2:
             sentiment["summary"] = f"{symbol} market sentiment could not be derived from recent price data."
             return sentiment
@@ -3402,7 +3409,7 @@ def astra_chat(req: AstraChatRequest):
         symbol = pos.symbol.upper()
 
         try:
-            candles = fetch_daily_candles(symbol)
+            candles = get_candles(sym, min_points=60)
             if not candles:
                 bullbrain_failures.append(symbol)
                 continue
@@ -3934,7 +3941,7 @@ def market_overview():
 def debug_bullbrain(symbol: str):
     try:
         sym = symbol.upper()
-        candles = fetch_daily_candles(sym)
+        candles = get_candles(sym, min_points=120)
 
         features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
         infer = bullbrain_infer(features_vec)
@@ -3981,6 +3988,42 @@ def init_firebase_admin():
 # Initialize immediately for API process
 init_firebase_admin()
 db = firestore.client()
+
+# =========================================================
+# Firestore Candle Cache (shared by cron + APIs)
+# =========================================================
+def get_candle_doc(db, symbol: str):
+    return (
+        db.collection("bullsignals_ai_candles")
+          .document(symbol.upper())
+    )
+
+
+def load_cached_candles(symbol: str):
+    try:
+        from firebase_admin import firestore
+        db = firestore.client()
+        doc = get_candle_doc(db, symbol).get()
+        if not doc.exists:
+            return None
+        return doc.to_dict()
+    except Exception:
+        return None
+
+
+def save_cached_candles(symbol: str, candles: dict):
+    from firebase_admin import firestore
+    db = firestore.client()
+
+    payload = {
+        "symbol": symbol,
+        "source": candles.get("source", "polygon"),
+        "candles": candles,
+        "last_t_ms": max(candles.get("timestamp", []), default=0),
+        "cached_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+    get_candle_doc(db, symbol).set(payload, merge=True)
 
 
 # ---------------------------------------------------------
