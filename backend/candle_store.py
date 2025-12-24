@@ -56,6 +56,8 @@ def utc_now_iso() -> str:
 def rate_limit_sleep():
     time.sleep(random.uniform(RATE_SLEEP_MIN, RATE_SLEEP_MAX))
 
+def normalize_polygon_symbol(symbol: str) -> str:
+    return symbol.replace(".", "-")
 
 # ---------------------------------------------------------
 # POLYGON FETCHERS
@@ -64,8 +66,10 @@ def _polygon_fetch(symbol: str, start_ts: int, end_ts: int) -> Optional[list]:
     if not POLYGON_KEY:
         return None
 
+    poly_symbol = normalize_polygon_symbol(symbol)
+
     url = (
-        f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+        f"https://api.polygon.io/v2/aggs/ticker/{poly_symbol}/range/1/day/"
         f"{start_ts}/{end_ts}"
         f"?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_KEY}"
     )
@@ -83,8 +87,8 @@ def _polygon_fetch(symbol: str, start_ts: int, end_ts: int) -> Optional[list]:
 
 
 def fetch_full_history(symbol: str) -> Optional[list]:
-    end = int(utc_now().timestamp())
-    start = int((utc_now() - datetime.timedelta(days=MAX_DAYS_BACK)).timestamp())
+    end = int(utc_now().timestamp() * 1000)
+    start = int((utc_now() - datetime.timedelta(days=MAX_DAYS_BACK)).timestamp() * 1000)
 
     rate_limit_sleep()
     return _polygon_fetch(symbol, start, end)
@@ -92,8 +96,8 @@ def fetch_full_history(symbol: str) -> Optional[list]:
 
 def fetch_delta_history(symbol: str, last_ts_ms: int) -> Optional[list]:
     # Polygon timestamps are in milliseconds
-    start = int(last_ts_ms / 1000) + 1
-    end = int(utc_now().timestamp())
+    start = last_ts_ms + 86400000  # next trading day (1 day in ms)
+    end = int(utc_now().timestamp() * 1000)
 
     rate_limit_sleep()
     return _polygon_fetch(symbol, start, end)
