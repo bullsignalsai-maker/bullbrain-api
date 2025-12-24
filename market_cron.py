@@ -507,39 +507,45 @@ def compute_hotlist_and_bearwatch():
         extras_pool.sort(key=lambda x: x["prob_up_raw"], reverse=True)
 
         needed = 5 - len(hotlist)
-        for extra in extras_pool[:needed]:
-        sym = extra["symbol"]
-        prob_up = extra["prob_up_raw"]
-        prob_down = extra["prob_down_raw"]
 
-        try:
-            candles_extra = get_candles(sym, min_points=120)
-            if not candles_extra:
+        for extra in extras_pool[:needed]:
+            sym = extra["symbol"]
+            prob_up = extra["prob_up_raw"]
+            prob_down = extra["prob_down_raw"]
+
+            try:
+                candles_extra = get_candles(sym, min_points=120)
+                if not candles_extra:
+                    continue
+
+                _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
+
+                short, risk = build_buy_explanations(
+                    sym,
+                    prob_up,
+                    prob_down,
+                    "WATCHLIST_BUY",
+                    feat_dict,
+                )
+
+                hotlist.append(
+                    {
+                        "symbol": sym,
+                        "company_name": extra["company_name"],
+                        "prob_up": round(prob_up, 4),
+                        "prob_down": round(prob_down, 4),
+                        "confidence": extra["confidence"],
+                        "signal": "BUY",
+                        "kind": "WATCHLIST_BUY",
+                        "explanation_short": short,
+                        "explanation_risk": risk,
+                    }
+                )
+
+            except Exception as e:
+                log(f"Hotlist fallback failed for {sym}: {e}")
                 continue
 
-            _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
-
-            short, risk = build_buy_explanations(
-                sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
-            )
-
-        except Exception:
-            continue
-
-
-            hotlist.append(
-                {
-                    "symbol": sym,
-                    "company_name": extra["company_name"],
-                    "prob_up": round(prob_up, 4),
-                    "prob_down": round(prob_down, 4),
-                    "confidence": extra["confidence"],
-                    "signal": "BUY",
-                    "kind": "WATCHLIST_BUY",
-                    "explanation_short": short,
-                    "explanation_risk": risk,
-                }
-            )
 
     hotlist = hotlist[:5]
 
