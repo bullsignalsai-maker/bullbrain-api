@@ -165,17 +165,19 @@ def _normalize_polygon_results(results: list) -> Dict[str, list]:
 def get_candles(
     symbol: str,
     min_points: int = MIN_POINTS_DEFAULT,
-    **_ignored_kwargs,   # ✅ absorbs unexpected kwargs safely
+    **_ignored_kwargs,
 ) -> Optional[Dict[str, list]]:
     """
-    Returns normalized candle dict:
-      { open, high, low, close, volume, timestamp }
-
-    Firestore is source of truth.
-    Polygon is used ONLY for delta or initial fill.
+    Firestore-backed candle fetcher.
+    - Firestore is source of truth
+    - Polygon used only for initial fill or delta
+    - Cron-safe (tolerant)
+    - UI-safe (enforces minimum)
     """
 
-    # ✅ harden: if someone passes min_points in kwargs in some weird way
+    # ---------------------------------------------
+    # Normalize & harden inputs
+    # ---------------------------------------------
     if "min_points" in _ignored_kwargs:
         try:
             min_points = int(_ignored_kwargs["min_points"])
@@ -184,8 +186,36 @@ def get_candles(
 
     symbol = symbol.upper()
 
+    # ---------------------------------------------
+    # Helper: safely align candle arrays
+    # ---------------------------------------------
+    def normalize_candles(c: Dict[str, list]) -> Optional[Dict[str, list]]:
+        try:
+            usable = min(
+                len(c.get("open", [])),
+                len(c.get("high", [])),
+                len(c.get("low", [])),
+                len(c.get("close", [])),
+                len(c.get("volume", [])),
+                len(c.get("ts", [])),
+            )
+
+            if usable <= 0:
+                return None
+
+            return {
+                "open": c["open"][-usable:],
+                "high": c["high"][-usable:],
+                "low": c["low"][-usable:],
+                "close": c["close"][-usable:],
+                "volume": c["volume"][-usable:],
+                "timestamp": c["ts"][-usable:],
+            }
+        except Exception:
+            return None
+
     # =====================================================
-    # 1) Attempt Firestore cache read
+    # 1️⃣ Attempt Firestore cache
     # =====================================================
     cached = _read_firestore_candles(symbol)
 
@@ -193,78 +223,56 @@ def get_candles(
         candles = cached.get("candles") or {}
         meta = cached.get("meta") or {}
 
-        closes = candles.get("close") or []
-        ts = candles.get("ts") or []
+        normalized = normalize_candles(candles)
+        usable_len = len(normalized["close"]) if normalized else 0
 
-        # -------------------------------
-        # A) Cache has enough data
-        # -------------------------------
-        if len(closes) >= min_points and len(ts) == len(closes):
+        # -----------------------------
+        # A) Cache usable → serve
+        # -----------------------------
+        if normalized and usable_len >= min_points:
 
-            # A1) Cache is fresh → return immediately
+            # Fresh → return immediately
             if _candles_fresh(meta):
-                return {
-                    "open": candles["open"],
-                    "high": candles["high"],
-                    "low": candles["low"],
-                    "close": candles["close"],
-                    "volume": candles["volume"],
-                    "timestamp": candles["ts"],
-                }
+                return normalized
 
-            # A2) Cache is stale → fetch delta
+            # Stale → attempt delta (non-fatal)
             try:
-                last_ts = ts[-1]
+                last_ts = candles["ts"][-1]
                 delta = fetch_delta_history(symbol, last_ts)
 
                 if delta:
-                    norm = _normalize_polygon_results(delta)
+                    norm_delta = _normalize_polygon_results(delta)
 
-                    # Merge delta candles
                     for k in candles:
-                        candles[k].extend(norm[k])
+                        candles[k].extend(norm_delta.get(k, []))
 
-                    meta["last_fetch"] = utc_now_iso()
-                    meta["last_ts"] = candles["ts"][-1]
-                    meta["count"] = len(candles["close"])
+                # Update meta even if delta empty (market closed)
+                meta["last_fetch"] = utc_now_iso()
+                meta["last_ts"] = candles["ts"][-1]
+                meta["count"] = len(candles["close"])
 
-                    _save_firestore_candles(symbol, {
-                        "candles": candles,
-                        "meta": meta,
-                    })
+                _save_firestore_candles(symbol, {
+                    "candles": candles,
+                    "meta": meta,
+                })
 
-                # Serve updated (or unchanged) cache
-                return {
-                    "open": candles["open"],
-                    "high": candles["high"],
-                    "low": candles["low"],
-                    "close": candles["close"],
-                    "volume": candles["volume"],
-                    "timestamp": candles["ts"],
-                }
+                return normalize_candles(candles)
 
             except RuntimeError as e:
-                # Polygon rate-limited → serve stale but valid cache
+                # Rate limit → serve stale cache
                 if "429" in str(e):
-                    return {
-                        "open": candles["open"],
-                        "high": candles["high"],
-                        "low": candles["low"],
-                        "close": candles["close"],
-                        "volume": candles["volume"],
-                        "timestamp": candles["ts"],
-                    }
+                    return normalized
 
-                # Any other error → fail safely
-                return None
+            except Exception:
+                return normalized
 
-        # -------------------------------
+        # -----------------------------
         # B) Cache exists but insufficient
-        # -------------------------------
-        # Fall through to full fetch
+        # fall through to full fetch
+        # -----------------------------
 
     # =====================================================
-    # 2) No usable cache → full Polygon fetch
+    # 2️⃣ Full Polygon fetch (first time or weak cache)
     # =====================================================
     try:
         full = fetch_full_history(symbol)
@@ -273,10 +281,19 @@ def get_candles(
             return None
 
         norm = _normalize_polygon_results(full)
+        normalized = normalize_candles(norm)
 
-        # Enforce min_points strictly
-        if len(norm.get("close", [])) < min_points:
+        if not normalized:
             return None
+
+        usable_len = len(normalized["close"])
+
+        # Cron-tolerant minimum
+        if usable_len < min_points:
+            if usable_len < 60:
+                return None
+            # relax minimum automatically
+            min_points = 60
 
         payload = {
             "candles": norm,
@@ -291,19 +308,9 @@ def get_candles(
         }
 
         _save_firestore_candles(symbol, payload)
-
-        return {
-            "open": norm["open"],
-            "high": norm["high"],
-            "low": norm["low"],
-            "close": norm["close"],
-            "volume": norm["volume"],
-            "timestamp": norm["ts"],
-        }
+        return normalized
 
     except RuntimeError as e:
-        # Hard rate limit → no data
         if "429" in str(e):
             return None
-
         return None
