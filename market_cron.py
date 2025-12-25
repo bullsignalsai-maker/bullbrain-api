@@ -1067,17 +1067,26 @@ def build_mag7_fallback(symbol: str) -> Dict[str, Any]:
 def compute_single_mag7(symbol: str) -> Dict[str, Any]:
     ensure_bullbrain_loaded()
 
+    log(f"[MAG7] ▶ candle-fetch {symbol}")
+
     candles = get_candles(symbol, min_points=120)
 
     if not candles:
+        log(f"[MAG7] ❌ no candles for {symbol}")
         raise RuntimeError("No candles")
+
+    log(
+        f"[MAG7] {symbol} | candles-ok | count={len(candles.get('close', []))}"
+    )
 
     feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
     if feats_vec is None:
+        log(f"[MAG7] ❌ feature-gen failed {symbol}")
         raise RuntimeError("Feature generation failed")
 
     infer = backend.bullbrain_infer(feats_vec)
     if infer is None:
+        log(f"[MAG7] ❌ inference failed {symbol}")
         raise RuntimeError("Inference failed")
 
     prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
@@ -1085,25 +1094,27 @@ def compute_single_mag7(symbol: str) -> Dict[str, Any]:
 
     kind = classify_signal(prob_up, prob_down)
 
-    if kind in ("BUY", "STRONG_BUY"):
-        signal = "BUY"
-    elif kind in ("SELL", "STRONG_SELL"):
-        signal = "SELL"
-    else:
-        signal = "HOLD"
+    signal = (
+        "BUY" if kind in ("BUY", "STRONG_BUY")
+        else "SELL" if kind in ("SELL", "STRONG_SELL")
+        else "HOLD"
+    )
 
     confidence = round(max(prob_up, prob_down) * 100.0, 1)
+
+    log(
+        f"[MAG7] {symbol} | signal={signal} | conf={confidence}"
+    )
 
     q = fetch_quote_safe(symbol)
     price = q.get("price") or q.get("close")
     change_pct = q.get("changePct")
 
-    # normalize if needed (0.0086 => 0.86)
     try:
         if change_pct is not None:
             change_pct = float(change_pct)
             if abs(change_pct) <= 1.5:
-                change_pct = change_pct * 100.0
+                change_pct *= 100.0
     except Exception:
         pass
 
@@ -1121,9 +1132,12 @@ def compute_single_mag7(symbol: str) -> Dict[str, Any]:
     }
 
 
+
 def compute_mag7_snapshot() -> List[Dict[str, Any]]:
     previous_map = get_previous_mag7_map()
     results: List[Dict[str, Any]] = []
+
+    log("[MAG7] snapshot-start")
 
     for sym in MAG7:
         try:
@@ -1142,13 +1156,17 @@ def compute_mag7_snapshot() -> List[Dict[str, Any]]:
             current["trend"] = trend
             results.append(current)
 
+            log(f"[MAG7] {sym} | trend={trend}")
+
         except Exception as e:
-            log(f"MAG7 fallback for {sym}: {e}")
+            log(f"[MAG7] fallback {sym} | {e}")
             fallback = build_mag7_fallback(sym)
             fallback["trend"] = "FLAT"
             results.append(fallback)
 
+    log("[MAG7] snapshot-complete")
     return results
+
 
 
 def build_homescreen_snapshot() -> Dict[str, Any]:

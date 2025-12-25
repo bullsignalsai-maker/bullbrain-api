@@ -167,17 +167,7 @@ def get_candles(
     min_points: int = MIN_POINTS_DEFAULT,
     **_ignored_kwargs,
 ) -> Optional[Dict[str, list]]:
-    """
-    Firestore-backed candle fetcher.
-    - Firestore is source of truth
-    - Polygon used only for initial fill or delta
-    - Cron-safe (tolerant)
-    - UI-safe (enforces minimum)
-    """
 
-    # ---------------------------------------------
-    # Normalize & harden inputs
-    # ---------------------------------------------
     if "min_points" in _ignored_kwargs:
         try:
             min_points = int(_ignored_kwargs["min_points"])
@@ -186,9 +176,11 @@ def get_candles(
 
     symbol = symbol.upper()
 
-    # ---------------------------------------------
-    # Helper: safely align candle arrays
-    # ---------------------------------------------
+    print(
+        f"[candles] ▶ START {symbol} | min_points={min_points}",
+        flush=True,
+    )
+
     def normalize_candles(c: Dict[str, list]) -> Optional[Dict[str, list]]:
         try:
             usable = min(
@@ -215,7 +207,7 @@ def get_candles(
             return None
 
     # =====================================================
-    # 1️⃣ Attempt Firestore cache
+    # 1️⃣ Firestore cache
     # =====================================================
     cached = _read_firestore_candles(symbol)
 
@@ -226,27 +218,46 @@ def get_candles(
         normalized = normalize_candles(candles)
         usable_len = len(normalized["close"]) if normalized else 0
 
+        print(
+            f"[candles] {symbol} | cache-found | usable={usable_len}",
+            flush=True,
+        )
+
         # -----------------------------
-        # A) Cache usable → serve
+        # A) Cache usable
         # -----------------------------
         if normalized and usable_len >= min_points:
 
-            # Fresh → return immediately
             if _candles_fresh(meta):
+                print(
+                    f"[candles] {symbol} | cache-fresh → serve",
+                    flush=True,
+                )
                 return normalized
 
-            # Stale → attempt delta (non-fatal)
+            print(
+                f"[candles] {symbol} | cache-stale → delta-attempt",
+                flush=True,
+            )
+
             try:
                 last_ts = candles["ts"][-1]
                 delta = fetch_delta_history(symbol, last_ts)
 
                 if delta:
+                    print(
+                        f"[candles] {symbol} | delta-fetched | rows={len(delta)}",
+                        flush=True,
+                    )
                     norm_delta = _normalize_polygon_results(delta)
-
                     for k in candles:
                         candles[k].extend(norm_delta.get(k, []))
+                else:
+                    print(
+                        f"[candles] {symbol} | delta-empty (market closed)",
+                        flush=True,
+                    )
 
-                # Update meta even if delta empty (market closed)
                 meta["last_fetch"] = utc_now_iso()
                 meta["last_ts"] = candles["ts"][-1]
                 meta["count"] = len(candles["close"])
@@ -259,43 +270,76 @@ def get_candles(
                 return normalize_candles(candles)
 
             except RuntimeError as e:
-                # Rate limit → serve stale cache
                 if "429" in str(e):
+                    print(
+                        f"[candles] {symbol} | 429 → serve-stale",
+                        flush=True,
+                    )
                     return normalized
 
-            except Exception:
+            except Exception as e:
+                print(
+                    f"[candles] {symbol} | delta-error | {e}",
+                    flush=True,
+                )
                 return normalized
 
         # -----------------------------
-        # B) Cache exists but insufficient
-        # fall through to full fetch
+        # B) Cache insufficient
         # -----------------------------
+        print(
+            f"[candles] {symbol} | cache-insufficient → full-fetch",
+            flush=True,
+        )
 
     # =====================================================
-    # 2️⃣ Full Polygon fetch (first time or weak cache)
+    # 2️⃣ Full Polygon fetch
     # =====================================================
     try:
+        print(
+            f"[candles] {symbol} | FULL-FETCH start",
+            flush=True,
+        )
+
         full = fetch_full_history(symbol)
 
         if not full:
+            print(
+                f"[candles] {symbol} | FULL-FETCH empty",
+                flush=True,
+            )
             return None
 
         norm = _normalize_polygon_results(full)
         normalized = normalize_candles(norm)
 
         if not normalized:
+            print(
+                f"[candles] {symbol} | normalize-failed",
+                flush=True,
+            )
             return None
 
         usable_len = len(normalized["close"])
+        print(
+            f"[candles] {symbol} | FULL-FETCH done | usable={usable_len}",
+            flush=True,
+        )
 
-        # Cron-tolerant minimum
         if usable_len < min_points:
             if usable_len < 60:
+                print(
+                    f"[candles] {symbol} | <60 candles → reject",
+                    flush=True,
+                )
                 return None
-            # relax minimum automatically
             min_points = 60
+            print(
+                f"[candles] {symbol} | relaxed-min → 60",
+                flush=True,
+            )
 
-        payload = {
+        _save_firestore_candles(symbol, {
             "candles": norm,
             "meta": {
                 "symbol": symbol,
@@ -305,12 +349,24 @@ def get_candles(
                 "last_fetch": utc_now_iso(),
                 "count": len(norm["close"]),
             },
-        }
+        })
 
-        _save_firestore_candles(symbol, payload)
+        print(
+            f"[candles] {symbol} | saved-to-firestore",
+            flush=True,
+        )
+
         return normalized
 
     except RuntimeError as e:
         if "429" in str(e):
+            print(
+                f"[candles] {symbol} | HARD 429 → abort",
+                flush=True,
+            )
             return None
+        print(
+            f"[candles] {symbol} | full-fetch-error | {e}",
+            flush=True,
+        )
         return None
