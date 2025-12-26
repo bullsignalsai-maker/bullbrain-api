@@ -848,7 +848,6 @@ def fetch_quote_safe(symbol: str) -> dict:
     return {}
 
 
-
 # =========================================================
 # HOME SCREEN SNAPSHOT (Firestore)
 # =========================================================
@@ -860,68 +859,6 @@ def percent_str(x: Optional[float], digits: int = 2) -> str:
     except Exception:
         return "--"
 
-
-def build_us_market_card() -> Dict[str, Any]:
-    # Use SPY + QQQ as "AI Market Insights" proxy
-    spy = fetch_quote_safe("SPY")
-    qqq = fetch_quote_safe("QQQ")
-
-    spy_chg = spy.get("changePct")
-    qqq_chg = qqq.get("changePct")
-
-    # Some providers return decimals; normalize if needed
-    def normalize_pct(v):
-        try:
-            v = float(v)
-            # if it's like 0.0086 => 0.86%
-            if abs(v) <= 1.5:
-                return v * 100.0
-            return v
-        except Exception:
-            return None
-
-    spy_chg = normalize_pct(spy_chg)
-    qqq_chg = normalize_pct(qqq_chg)
-
-    return {
-        "id": "us_market",
-        "title": "AI Market Insights",
-        "subtitle": "US Market snapshot",
-        "items": [
-            {"label": "S&P 500 (SPY)", "value": percent_str(spy_chg)},
-            {"label": "Nasdaq (QQQ)", "value": percent_str(qqq_chg)},
-        ],
-        "updated_at": utc_now_iso(),
-    }
-
-
-def build_crypto_movers_card() -> Dict[str, Any]:
-    # Free CoinGecko
-    url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=dogecoin,ripple,solana"
-        "&vs_currencies=usd"
-        "&include_24hr_change=true"
-    )
-    data = requests.get(url, timeout=10).json()
-
-    def cg_change(id_):
-        try:
-            return float(data[id_]["usd_24h_change"])
-        except Exception:
-            return None
-
-    return {
-        "id": "crypto",
-        "title": "Crypto Movers",
-        "subtitle": "24h change",
-        "items": [
-            {"label": "DOGE", "value": percent_str(cg_change("dogecoin"))},
-            {"label": "XRP", "value": percent_str(cg_change("ripple"))},
-            {"label": "SOL", "value": percent_str(cg_change("solana"))},
-        ],
-        "updated_at": utc_now_iso(),
-    }
 
 
 def build_sentiment_card() -> Dict[str, Any]:
@@ -949,61 +886,6 @@ def build_sentiment_card() -> Dict[str, Any]:
         "updated_at": utc_now_iso(),
     }
 
-
-def build_commodities_card() -> Dict[str, Any]:
-    # Use ETFs as proxies (free quote source already in your backend)
-    gld = fetch_quote_safe("GLD")
-    slv = fetch_quote_safe("SLV")
-    uso = fetch_quote_safe("USO")
-
-    def norm(v):
-        try:
-            v = float(v)
-            if abs(v) <= 1.5:
-                return v * 100.0
-            return v
-        except Exception:
-            return None
-
-    return {
-        "id": "commodities",
-        "title": "Commodities Snapshot",
-        "subtitle": "ETF proxies",
-        "items": [
-            {"label": "Gold (GLD)", "value": percent_str(norm(gld.get("changePct")) )},
-            {"label": "Oil (USO)", "value": percent_str(norm(uso.get("changePct")) )},
-            {"label": "Silver (SLV)", "value": percent_str(norm(slv.get("changePct")) )},
-        ],
-        "updated_at": utc_now_iso(),
-    }
-
-
-def compute_homescreen_carousel() -> List[Dict[str, Any]]:
-    cards: List[Dict[str, Any]] = []
-
-    for builder in [build_us_market_card, build_crypto_movers_card, build_sentiment_card, build_commodities_card]:
-        try:
-            cards.append(builder())
-        except Exception as e:
-            log(f"Home carousel card failed ({builder.__name__}): {e}")
-
-    # Ensure exactly 4 cards (if any failed, add a static fallback)
-    while len(cards) < 4:
-        cards.append(
-            {
-                "id": f"fallback_{len(cards)+1}",
-                "title": "Trending Sectors",
-                "subtitle": "Quick view",
-                "items": [
-                    {"label": "AI", "value": "Watch"},
-                    {"label": "Tech", "value": "Watch"},
-                    {"label": "Energy", "value": "Watch"},
-                ],
-                "updated_at": utc_now_iso(),
-            }
-        )
-
-    return cards[:4]
 
 
 def build_mag7_summary(signal: str) -> str:

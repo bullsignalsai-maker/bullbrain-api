@@ -1,6 +1,9 @@
 # quote_provider.py
 # ---------------------------------------------------------
-# Central Quote Provider (NO Firestore, NO loops)
+# Central Quote Provider
+# - Stocks / ETFs via Finnhub
+# - Crypto via CoinGecko
+# - Indices & sector proxies
 # ---------------------------------------------------------
 
 import os
@@ -10,9 +13,13 @@ from typing import Dict, Any, Optional
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 
 
-def _normalize_pct(v: Optional[float]) -> Optional[float]:
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+def normalize_pct(v: Optional[float]) -> Optional[float]:
     try:
         v = float(v)
+        # Finnhub sometimes returns decimals like 0.008 → 0.8%
         if abs(v) <= 1.5:
             return v * 100.0
         return v
@@ -20,56 +27,51 @@ def _normalize_pct(v: Optional[float]) -> Optional[float]:
         return None
 
 
+# ---------------------------------------------------------
+# EQUITIES / ETFs
+# ---------------------------------------------------------
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
-    """
-    Uses Finnhub quote endpoint.
-    Returns:
-      { "price": float|None, "changePct": float|None }
-    """
     if not FINNHUB_KEY:
         return {}
 
     try:
-        url = "https://finnhub.io/api/v1/quote"
-        resp = requests.get(url, params={"symbol": symbol, "token": FINNHUB_KEY}, timeout=10)
-        data = resp.json()
+        r = requests.get(
+            "https://finnhub.io/api/v1/quote",
+            params={"symbol": symbol, "token": FINNHUB_KEY},
+            timeout=10,
+        )
+        d = r.json()
 
-        price = data.get("c")
-        prev_close = data.get("pc")
+        price = d.get("c")
+        prev = d.get("pc")
 
         change_pct = None
-        if price is not None and prev_close:
-            change_pct = ((price - prev_close) / prev_close) * 100.0
+        if price is not None and prev:
+            change_pct = ((price - prev) / prev) * 100.0
 
         return {
             "price": price,
-            "changePct": _normalize_pct(change_pct),
+            "changePct": normalize_pct(change_pct),
         }
     except Exception:
         return {}
 
 
+# ---------------------------------------------------------
+# INDEX SNAPSHOT (proxies)
+# ---------------------------------------------------------
 def fetch_index_snapshot() -> Dict[str, Any]:
-    """
-    SPY -> S&P proxy
-    QQQ -> Nasdaq proxy
-    VIX -> volatility
-    """
-    spy = fetch_equity_quote("SPY")
-    qqq = fetch_equity_quote("QQQ")
-    vix = fetch_equity_quote("VIX")
-
     return {
-        "sp500_change": spy.get("changePct"),
-        "nasdaq_change": qqq.get("changePct"),
-        "vix": vix.get("price"),
+        "SPY": fetch_equity_quote("SPY"),
+        "QQQ": fetch_equity_quote("QQQ"),
+        "VIX": fetch_equity_quote("VIX"),
     }
 
 
-def fetch_crypto_snapshot() -> Dict[str, Any]:
-    """
-    Top crypto 24h changes (CoinGecko free)
-    """
+# ---------------------------------------------------------
+# CRYPTO SNAPSHOT (CoinGecko – free)
+# ---------------------------------------------------------
+def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
     try:
         url = (
             "https://api.coingecko.com/api/v3/simple/price"
@@ -79,27 +81,27 @@ def fetch_crypto_snapshot() -> Dict[str, Any]:
         )
         data = requests.get(url, timeout=10).json()
 
-        def pct(k: str) -> Optional[float]:
+        def chg(key):
             try:
-                return float(data[k]["usd_24h_change"])
+                return float(data[key]["usd_24h_change"])
             except Exception:
                 return None
 
         return {
-            "BTC": pct("bitcoin"),
-            "ETH": pct("ethereum"),
-            "SOL": pct("solana"),
-            "XRP": pct("ripple"),
-            "DOGE": pct("dogecoin"),
+            "BTC": chg("bitcoin"),
+            "ETH": chg("ethereum"),
+            "SOL": chg("solana"),
+            "XRP": chg("ripple"),
+            "DOGE": chg("dogecoin"),
         }
     except Exception:
         return {}
 
 
-def fetch_sector_snapshot() -> Dict[str, Any]:
-    """
-    ETF proxies for sector performance (simple + reliable)
-    """
+# ---------------------------------------------------------
+# SECTOR SNAPSHOT (ETF proxies)
+# ---------------------------------------------------------
+def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
     sectors = {
         "Technology": "XLK",
         "Financials": "XLF",
@@ -108,9 +110,8 @@ def fetch_sector_snapshot() -> Dict[str, Any]:
         "Consumer": "XLY",
     }
 
-    out: Dict[str, Any] = {}
+    out = {}
     for name, sym in sectors.items():
-        q = fetch_equity_quote(sym)
-        out[name] = q.get("changePct")
+        out[name] = fetch_equity_quote(sym).get("changePct")
 
     return out
