@@ -4196,7 +4196,7 @@ def market_bearwatch():
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY Mag7 snapshot for Homescreen
 # ---------------------------------------------------------
-@app.get("/homescreen")
+@app.get("/homescreen-mag7")
 def homescreen_mag7():
     """
     Returns the precomputed Mag7 snapshot from Firestore.
@@ -4246,3 +4246,48 @@ def homescreen_mag7():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
     }
+
+# ---------------------------------------------------------
+# /homescreen — READ-ONLY Home Screen Snapshot
+# ---------------------------------------------------------
+@app.get("/homescreen")
+def get_homescreen_snapshot():
+    """
+    Returns the full Home Screen snapshot from Firestore.
+
+    Source:
+      bullsignals_ai / homescreen_snapshot
+
+    This endpoint:
+      - Does NOT compute anything
+      - Does NOT call APIs
+      - Is SAFE for frequent UI polling
+    """
+    try:
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("homescreen_snapshot")
+              .get()
+        )
+
+        if not doc.exists:
+            return {
+                "status": "empty",
+                "homescreen": None,
+            }
+
+        data = doc.to_dict() or {}
+
+        return {
+            "status": "ok",
+            "homescreen": data,
+            "updated_at": data.get("updated_at"),
+            "quote_refreshed_at": data.get("quote_refreshed_at"),
+            "version": data.get("version", "v1"),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }

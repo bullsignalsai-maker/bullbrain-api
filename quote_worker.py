@@ -102,18 +102,23 @@ def collect_tickers(db) -> Set[str]:
 
 
 # ---------------------------------------------------------
-# Update Firestore
+# Update Firestore (SAFE, MERGE-ONLY)
 # ---------------------------------------------------------
 def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
     now = utc_now_iso()
 
+    # -------------------------------------------------
     # Home screen
+    # -------------------------------------------------
     ref = db.collection("bullsignals_ai").document("homescreen_snapshot")
     snap = ref.get()
+
     if snap.exists:
         data = snap.to_dict() or {}
 
+        # -------------------------
         # MAG7 update
+        # -------------------------
         mag7_list = data.get("mag7", [])
         if isinstance(mag7_list, list):
             for m in mag7_list:
@@ -123,35 +128,74 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                 if sym in quotes:
                     m["price"] = quotes[sym].get("price")
                     m["changePct"] = quotes[sym].get("changePct")
-                    m["quote_updated_at"] = now
+                    m["quote_updated_at"] = now  # ✅ freshness marker
 
-        # Carousel update (value is a string like +1.23%)
+        # -------------------------
+        # Carousel update
+        # -------------------------
         carousel_list = data.get("carousel", [])
         if isinstance(carousel_list, list):
             for card in carousel_list:
                 if not isinstance(card, dict):
                     continue
+
+                card_id = card.get("id")
                 items = card.get("items", [])
                 if not isinstance(items, list):
                     continue
+
                 for it in items:
                     if not isinstance(it, dict):
                         continue
+
                     label = it.get("label", "")
+
+                    # -----------------
+                    # Equity / ETF cards (SPY, QQQ, GLD, etc.)
+                    # -----------------
                     if "(" in label and ")" in label:
                         sym = label.split("(")[-1].replace(")", "").strip()
                         q = quotes.get(sym) or {}
                         chg = q.get("changePct")
-                        it["value"] = f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
 
-        ref.set({"mag7": mag7_list, "carousel": carousel_list}, merge=True)
+                        it["value"] = (
+                            f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
+                        )
+                        it["quote_updated_at"] = now
 
+                    # -----------------
+                    # Crypto card (DOGE, XRP, SOL)
+                    # -----------------
+                    elif card_id == "crypto":
+                        sym = label.upper()
+                        q = quotes.get(sym) or {}
+                        chg = q.get("changePct")
+
+                        it["value"] = (
+                            f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
+                        )
+                        it["quote_updated_at"] = now
+
+        # Persist home screen updates
+        ref.set(
+            {
+                "mag7": mag7_list,
+                "carousel": carousel_list,
+                "quote_refreshed_at": now,  # ✅ backend-only global marker
+            },
+            merge=True,
+        )
+
+    # -------------------------------------------------
     # Hotlist
+    # -------------------------------------------------
     hot_ref = db.collection("bullsignals_ai").document("market_hotlist")
     hot = hot_ref.get()
+
     if hot.exists:
         d = hot.to_dict() or {}
         hotlist = d.get("hotlist", [])
+
         if isinstance(hotlist, list):
             for h in hotlist:
                 if not isinstance(h, dict):
@@ -161,14 +205,25 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                     h["price"] = quotes[sym].get("price")
                     h["changePct"] = quotes[sym].get("changePct")
                     h["quote_updated_at"] = now
-        hot_ref.set({"hotlist": hotlist}, merge=True)
 
+        hot_ref.set(
+            {
+                "hotlist": hotlist,
+                "quote_refreshed_at": now,
+            },
+            merge=True,
+        )
+
+    # -------------------------------------------------
     # Bearwatch
+    # -------------------------------------------------
     bear_ref = db.collection("bullsignals_ai").document("market_bearwatch")
     bear = bear_ref.get()
+
     if bear.exists:
         d = bear.to_dict() or {}
         bearwatch = d.get("bearwatch", [])
+
         if isinstance(bearwatch, list):
             for b in bearwatch:
                 if not isinstance(b, dict):
@@ -178,7 +233,14 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                     b["price"] = quotes[sym].get("price")
                     b["changePct"] = quotes[sym].get("changePct")
                     b["quote_updated_at"] = now
-        bear_ref.set({"bearwatch": bearwatch}, merge=True)
+
+        bear_ref.set(
+            {
+                "bearwatch": bearwatch,
+                "quote_refreshed_at": now,
+            },
+            merge=True,
+        )
 
 
 # ---------------------------------------------------------
