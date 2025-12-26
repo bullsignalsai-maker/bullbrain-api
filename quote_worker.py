@@ -16,7 +16,9 @@ import os
 import json
 import time
 import datetime
-from typing import Dict, Any, Set
+import requests
+import random
+from typing import Dict, Any, Set, Optional, List
 
 import firebase_admin
 from firebase_admin import credentials, firestore
