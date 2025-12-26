@@ -4,14 +4,21 @@
 # ---------------------------------------------------------
 
 import os
+import sys
 import json
 import time
 import datetime
 from typing import Dict, Any, Set
 
+# ✅ Ensure this script's folder is on sys.path (prevents import issues on Render)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# ✅ Import from sibling file quote_provider.py
 from quote_provider import (
     fetch_equity_quote,
     fetch_index_snapshot,
@@ -30,19 +37,12 @@ def init_firebase():
     if not raw:
         raise RuntimeError("FIREBASE_ADMIN_JSON missing")
 
+    # IMPORTANT: FIREBASE_ADMIN_JSON must be valid JSON with double quotes
     cred = credentials.Certificate(json.loads(raw))
     firebase_admin.initialize_app(cred)
-    print("[quote-worker] 🔥 Firebase initialized")
+    print("[quote-worker] 🔥 Firebase initialized", flush=True)
 
 
-init_firebase()
-db = firestore.client()
-print("[quote-worker] ✅ Firestore client ready")
-
-
-# ---------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------
 def utc_now_iso() -> str:
     return (
         datetime.datetime.now(datetime.timezone.utc)
@@ -58,7 +58,7 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------
 # Collect ALL tickers needing quotes
 # ---------------------------------------------------------
-def collect_tickers() -> Set[str]:
+def collect_tickers(db) -> Set[str]:
     tickers: Set[str] = set()
 
     # Home snapshot
@@ -66,29 +66,36 @@ def collect_tickers() -> Set[str]:
     if snap.exists:
         d = snap.to_dict() or {}
 
+        # MAG7
         for m in d.get("mag7", []):
-            if m.get("symbol"):
+            if isinstance(m, dict) and m.get("symbol"):
                 tickers.add(m["symbol"])
 
+        # Carousel proxies like "S&P 500 (SPY)"
         for card in d.get("carousel", []):
+            if not isinstance(card, dict):
+                continue
             for it in card.get("items", []):
+                if not isinstance(it, dict):
+                    continue
                 label = it.get("label", "")
                 if "(" in label and ")" in label:
                     sym = label.split("(")[-1].replace(")", "").strip()
-                    tickers.add(sym)
+                    if sym:
+                        tickers.add(sym)
 
     # Hotlist
     hot = db.collection("bullsignals_ai").document("market_hotlist").get()
     if hot.exists:
-        for h in hot.to_dict().get("hotlist", []):
-            if h.get("symbol"):
+        for h in (hot.to_dict() or {}).get("hotlist", []):
+            if isinstance(h, dict) and h.get("symbol"):
                 tickers.add(h["symbol"])
 
     # Bearwatch
     bear = db.collection("bullsignals_ai").document("market_bearwatch").get()
     if bear.exists:
-        for b in bear.to_dict().get("bearwatch", []):
-            if b.get("symbol"):
+        for b in (bear.to_dict() or {}).get("bearwatch", []):
+            if isinstance(b, dict) and b.get("symbol"):
                 tickers.add(b["symbol"])
 
     return tickers
@@ -97,7 +104,7 @@ def collect_tickers() -> Set[str]:
 # ---------------------------------------------------------
 # Update Firestore
 # ---------------------------------------------------------
-def update_quotes(quotes: Dict[str, Dict[str, Any]]) -> None:
+def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
     now = utc_now_iso()
 
     # Home screen
@@ -106,88 +113,116 @@ def update_quotes(quotes: Dict[str, Dict[str, Any]]) -> None:
     if snap.exists:
         data = snap.to_dict() or {}
 
-        for m in data.get("mag7", []):
-            sym = m.get("symbol")
-            if sym in quotes:
-                m["price"] = quotes[sym]["price"]
-                m["changePct"] = quotes[sym]["changePct"]
-                m["quote_updated_at"] = now
+        # MAG7 update
+        mag7_list = data.get("mag7", [])
+        if isinstance(mag7_list, list):
+            for m in mag7_list:
+                if not isinstance(m, dict):
+                    continue
+                sym = m.get("symbol")
+                if sym in quotes:
+                    m["price"] = quotes[sym].get("price")
+                    m["changePct"] = quotes[sym].get("changePct")
+                    m["quote_updated_at"] = now
 
-        for card in data.get("carousel", []):
-            for it in card.get("items", []):
-                label = it.get("label", "")
-                if "(" in label and ")" in label:
-                    sym = label.split("(")[-1].replace(")", "").strip()
-                    if sym in quotes and quotes[sym]["changePct"] is not None:
-                        it["value"] = f"{quotes[sym]['changePct']:+.2f}%"
+        # Carousel update (value is a string like +1.23%)
+        carousel_list = data.get("carousel", [])
+        if isinstance(carousel_list, list):
+            for card in carousel_list:
+                if not isinstance(card, dict):
+                    continue
+                items = card.get("items", [])
+                if not isinstance(items, list):
+                    continue
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    label = it.get("label", "")
+                    if "(" in label and ")" in label:
+                        sym = label.split("(")[-1].replace(")", "").strip()
+                        q = quotes.get(sym) or {}
+                        chg = q.get("changePct")
+                        it["value"] = f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
 
-        ref.set(
-            {"mag7": data.get("mag7", []), "carousel": data.get("carousel", [])},
-            merge=True,
-        )
+        ref.set({"mag7": mag7_list, "carousel": carousel_list}, merge=True)
 
     # Hotlist
     hot_ref = db.collection("bullsignals_ai").document("market_hotlist")
     hot = hot_ref.get()
     if hot.exists:
-        d = hot.to_dict()
-        for h in d.get("hotlist", []):
-            sym = h.get("symbol")
-            if sym in quotes:
-                h["price"] = quotes[sym]["price"]
-                h["changePct"] = quotes[sym]["changePct"]
-                h["quote_updated_at"] = now
-        hot_ref.set({"hotlist": d.get("hotlist", [])}, merge=True)
+        d = hot.to_dict() or {}
+        hotlist = d.get("hotlist", [])
+        if isinstance(hotlist, list):
+            for h in hotlist:
+                if not isinstance(h, dict):
+                    continue
+                sym = h.get("symbol")
+                if sym in quotes:
+                    h["price"] = quotes[sym].get("price")
+                    h["changePct"] = quotes[sym].get("changePct")
+                    h["quote_updated_at"] = now
+        hot_ref.set({"hotlist": hotlist}, merge=True)
 
     # Bearwatch
     bear_ref = db.collection("bullsignals_ai").document("market_bearwatch")
     bear = bear_ref.get()
     if bear.exists:
-        d = bear.to_dict()
-        for b in d.get("bearwatch", []):
-            sym = b.get("symbol")
-            if sym in quotes:
-                b["price"] = quotes[sym]["price"]
-                b["changePct"] = quotes[sym]["changePct"]
-                b["quote_updated_at"] = now
-        bear_ref.set({"bearwatch": d.get("bearwatch", [])}, merge=True)
+        d = bear.to_dict() or {}
+        bearwatch = d.get("bearwatch", [])
+        if isinstance(bearwatch, list):
+            for b in bearwatch:
+                if not isinstance(b, dict):
+                    continue
+                sym = b.get("symbol")
+                if sym in quotes:
+                    b["price"] = quotes[sym].get("price")
+                    b["changePct"] = quotes[sym].get("changePct")
+                    b["quote_updated_at"] = now
+        bear_ref.set({"bearwatch": bearwatch}, merge=True)
 
 
 # ---------------------------------------------------------
 # Market Overview Update
 # ---------------------------------------------------------
-def update_market_overview() -> None:
+def update_market_overview(db) -> None:
     overview = fetch_index_snapshot()
-    overview["crypto"] = fetch_crypto_snapshot()
-    overview["sectors"] = fetch_sector_snapshot()
-    overview["updated_at"] = utc_now_iso()
+    crypto = fetch_crypto_snapshot()
+    sectors = fetch_sector_snapshot()
 
-    db.collection("bullsignals_ai").document("market_overview_live").set(
-        overview, merge=True
-    )
+    doc = {
+        **overview,
+        "crypto": crypto,
+        "sectors": sectors,
+        "updated_at": utc_now_iso(),
+    }
+
+    db.collection("bullsignals_ai").document("market_overview_live").set(doc, merge=True)
 
 
 # ---------------------------------------------------------
 # MAIN LOOP (30s)
 # ---------------------------------------------------------
 def main():
+    init_firebase()
+    db = firestore.client()
+    log("✅ quote_worker Firestore client ready")
     log("🚀 Quote worker started (30s loop)")
 
     while True:
+        cycle = utc_now_iso()
         try:
-            tickers = collect_tickers()
-            log(f"Refreshing quotes for {len(tickers)} tickers")
+            tickers = collect_tickers(db)
+            log(f"Refreshing quotes for {len(tickers)} tickers | cycle={cycle}")
 
             quotes: Dict[str, Dict[str, Any]] = {}
-
             for sym in sorted(tickers):
                 quotes[sym] = fetch_equity_quote(sym)
-                time.sleep(0.15)
+                time.sleep(0.15)  # gentle throttling
 
-            update_quotes(quotes)
-            update_market_overview()
+            update_quotes(db, quotes)
+            update_market_overview(db)
 
-            log("✅ Quote refresh cycle completed")
+            log(f"✅ Quote refresh cycle completed | tickers={len(tickers)}")
 
         except Exception as e:
             log(f"❌ Worker error: {e}")
