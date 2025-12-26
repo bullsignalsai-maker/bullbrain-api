@@ -85,9 +85,9 @@ def fetch_quote_safe(symbol: str) -> Dict[str, Any]:
     heavy initialization. Returns {} on failure.
     """
     try:
-        import main as backend  # lazy import (inside function)
+        from backend.quote_provider import fetch_quote  # lazy import (inside function)
 
-        q = backend.backend_fetch_quote(symbol)
+        q = fetch_quote(symbol)
         if isinstance(q, dict):
             return q
     except Exception as e:
