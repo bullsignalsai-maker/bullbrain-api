@@ -4193,3 +4193,56 @@ def market_bearwatch():
 
 
 
+# ---------------------------------------------------------
+# /homescreen-mag7 — READ-ONLY Mag7 snapshot for Homescreen
+# ---------------------------------------------------------
+@app.get("/homescreen")
+def homescreen_mag7():
+    """
+    Returns the precomputed Mag7 snapshot from Firestore.
+
+    Source document:
+      bullsignals_ai/homescreen_snapshot
+
+    Response shape:
+    {
+        "count": 7,
+        "mag7": [
+            {
+                "symbol": "AAPL",
+                "company_name": "Apple Inc.",
+                "price": null,
+                "changePct": 53.24,
+                "signal": "SELL",
+                "confidence": 72.6,
+                "prob_up": 0.274,
+                "prob_down": 0.726,
+                "trend": "FLAT",
+                "summary": "...",
+                "updated_at": "2025-12-26T02:50:41Z"
+            },
+            ...
+        ],
+        "updated_at": "2025-12-26T02:50:44Z",
+        "version": "v1"
+    }
+    """
+
+    cache = read_market_cache("homescreen_snapshot")
+
+    if not cache:
+        return {
+            "count": 0,
+            "mag7": [],
+            "updated_at": None,
+            "version": None,
+        }
+
+    mag7 = cache.get("mag7", [])
+
+    return {
+        "count": len(mag7),
+        "mag7": mag7,
+        "updated_at": cache.get("updated_at"),
+        "version": cache.get("version"),
+    }
