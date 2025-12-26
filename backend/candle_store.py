@@ -160,6 +160,25 @@ def _normalize_polygon_results(results: list) -> Dict[str, list]:
 
 
 # ---------------------------------------------------------
+# Global Polygon rate-limit circuit breaker
+# ---------------------------------------------------------
+_POLYGON_COOLDOWN_UNTIL = 0  # unix ts
+_POLYGON_COOLDOWN_SECS = 10 * 60  # 10 minutes
+
+
+def _polygon_available() -> bool:
+    return time.time() >= _POLYGON_COOLDOWN_UNTIL
+
+
+def _trip_polygon_cooldown(reason: str):
+    global _POLYGON_COOLDOWN_UNTIL
+    _POLYGON_COOLDOWN_UNTIL = time.time() + _POLYGON_COOLDOWN_SECS
+    print(
+        f"[candles] ⚠️ POLYGON DISABLED for {_POLYGON_COOLDOWN_SECS}s | reason={reason}",
+        flush=True,
+    )
+
+# ---------------------------------------------------------
 # PUBLIC API — SINGLE ENTRY POINT
 # ---------------------------------------------------------
 def get_candles(
@@ -191,7 +210,6 @@ def get_candles(
                 len(c.get("volume", [])),
                 len(c.get("ts", [])),
             )
-
             if usable <= 0:
                 return None
 
@@ -223,9 +241,6 @@ def get_candles(
             flush=True,
         )
 
-        # -----------------------------
-        # A) Cache usable
-        # -----------------------------
         if normalized and usable_len >= min_points:
 
             if _candles_fresh(meta):
@@ -239,6 +254,13 @@ def get_candles(
                 f"[candles] {symbol} | cache-stale → delta-attempt",
                 flush=True,
             )
+
+            if not _polygon_available():
+                print(
+                    f"[candles] {symbol} | polygon-disabled → serve-stale",
+                    flush=True,
+                )
+                return normalized
 
             try:
                 last_ts = candles["ts"][-1]
@@ -271,6 +293,7 @@ def get_candles(
 
             except RuntimeError as e:
                 if "429" in str(e):
+                    _trip_polygon_cooldown("delta-429")
                     print(
                         f"[candles] {symbol} | 429 → serve-stale",
                         flush=True,
@@ -284,9 +307,6 @@ def get_candles(
                 )
                 return normalized
 
-        # -----------------------------
-        # B) Cache insufficient
-        # -----------------------------
         print(
             f"[candles] {symbol} | cache-insufficient → full-fetch",
             flush=True,
@@ -295,6 +315,13 @@ def get_candles(
     # =====================================================
     # 2️⃣ Full Polygon fetch
     # =====================================================
+    if not _polygon_available():
+        print(
+            f"[candles] {symbol} | polygon-disabled → skip-full-fetch",
+            flush=True,
+        )
+        return None
+
     try:
         print(
             f"[candles] {symbol} | FULL-FETCH start",
@@ -360,11 +387,13 @@ def get_candles(
 
     except RuntimeError as e:
         if "429" in str(e):
+            _trip_polygon_cooldown("full-fetch-429")
             print(
                 f"[candles] {symbol} | HARD 429 → abort",
                 flush=True,
             )
             return None
+
         print(
             f"[candles] {symbol} | full-fetch-error | {e}",
             flush=True,

@@ -388,66 +388,62 @@ def compute_hotlist_and_bearwatch():
     all_symbols = []
 
     total = len(REAL_TICKERS)
+
+    candles_none = 0
+    infer_ok = 0
+    buy_count = 0
+    sell_count = 0
+    hold_count = 0
+
     log(f"Scanning {total} tickers with BullBrain…")
 
     for i, sym in enumerate(REAL_TICKERS, start=1):
+
         if i % 25 == 0:
-            log(f"...processed {i}/{total}")
-
-        # -------------------------------------------------
-        # 🔒 SAFE candle fetch with 429 protection
-        # -------------------------------------------------
-        try:
-            candles = get_candles(sym, min_points=120)
-
-            if not candles:
-                log(f"No candles for {sym}, skipping…")
-                continue
-
-        except Exception as e:
-            # 🚨 HARD STOP on Polygon rate limit
-            if "429" in str(e):
-                log("Polygon rate limit hit — aborting SP500 scan early")
-                break
-
-            log(f"Candle fetch error for {sym}: {type(e).__name__}: {e}")
-            continue
-
-        # -------------------------------------------------
-        # BullBrain feature generation + inference
-        # -------------------------------------------------
-        try:
-            feats_vec, feat_dict, last_close = backend.compute_bullbrain_features(
-                candles
+            log(
+                f"[PROGRESS] {i}/{total} | buys={buy_count} sells={sell_count} holds={hold_count} | candle_none={candles_none}"
             )
 
+        try:
+            candles = get_candles(sym, min_points=120)
+            if not candles:
+                candles_none += 1
+                log(f"[SCAN] {sym} | candles=None → skip")
+                continue
+        except Exception as e:
+            log(f"[SCAN] {sym} | candle-error | {e}")
+            continue
+
+        try:
+            feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
             if feats_vec is None:
-                log(f"Feature generation failed for {sym}, skipping…")
+                log(f"[SCAN] {sym} | feature-fail")
                 continue
 
             infer = backend.bullbrain_infer(feats_vec)
             if infer is None:
-                log(f"bullbrain_infer returned None for {sym}, skipping…")
+                log(f"[SCAN] {sym} | infer-none")
                 continue
 
+            infer_ok += 1
+
         except Exception as e:
-            log(f"bullbrain_infer_single error for {sym}: {e}")
+            log(f"[SCAN] {sym} | infer-exception | {e}")
             continue
 
-        # -------------------------------------------------
-        # Signal interpretation
-        # -------------------------------------------------
         prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
         prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
 
         kind = classify_signal(prob_up, prob_down)
         confidence = max(prob_up, prob_down) * 100.0
 
-        company_name = COMPANY_NAMES.get(sym, sym)
+        log(
+            f"[SCAN] {sym} | kind={kind} | up={prob_up:.3f} down={prob_down:.3f} conf={confidence:.1f}"
+        )
 
         base = {
             "symbol": sym,
-            "company_name": company_name,
+            "company_name": COMPANY_NAMES.get(sym, sym),
             "prob_up": round(prob_up, 4),
             "prob_down": round(prob_down, 4),
             "confidence": round(confidence, 2),
@@ -463,6 +459,7 @@ def compute_hotlist_and_bearwatch():
         )
 
         if kind in ("STRONG_BUY", "BUY"):
+            buy_count += 1
             short, risk = build_buy_explanations(
                 sym, prob_up, prob_down, kind, feat_dict
             )
@@ -476,86 +473,54 @@ def compute_hotlist_and_bearwatch():
                 }
             )
         else:
+            if kind in ("STRONG_SELL", "SELL"):
+                sell_count += 1
+            else:
+                hold_count += 1
+
             short, risk = build_bear_explanations(
                 sym, prob_up, prob_down, kind, feat_dict
             )
-            signal_label = "SELL" if kind in ("STRONG_SELL", "SELL") else "HOLD"
+
             bear_candidates.append(
                 {
                     **base,
-                    "signal": signal_label,
+                    "signal": "SELL" if kind in ("STRONG_SELL", "SELL") else "HOLD",
                     "kind": kind,
                     "explanation_short": short,
                     "explanation_risk": risk,
                 }
             )
 
-        # -------------------------------------------------
-        # 🕒 THROTTLE (VERY IMPORTANT)
-        # -------------------------------------------------
         time.sleep(random.uniform(0.15, 0.25))
 
     # ----------------------------
-    # Build Hotlist (Top 5 BUY)
+    # Hotlist
     # ----------------------------
     buy_candidates.sort(key=lambda x: x["prob_up"], reverse=True)
     hotlist = buy_candidates[:5]
 
-    if len(hotlist) < 5:
-        already = {item["symbol"] for item in hotlist}
-        extras_pool = [c for c in all_symbols if c["symbol"] not in already]
-        extras_pool.sort(key=lambda x: x["prob_up_raw"], reverse=True)
-
-        needed = 5 - len(hotlist)
-
-        for extra in extras_pool[:needed]:
-            sym = extra["symbol"]
-            prob_up = extra["prob_up_raw"]
-            prob_down = extra["prob_down_raw"]
-
-            try:
-                candles_extra = get_candles(sym, min_points=120)
-                if not candles_extra:
-                    continue
-
-                _, feat_dict, _ = backend.compute_bullbrain_features(candles_extra)
-
-                short, risk = build_buy_explanations(
-                    sym,
-                    prob_up,
-                    prob_down,
-                    "WATCHLIST_BUY",
-                    feat_dict,
-                )
-
-                hotlist.append(
-                    {
-                        "symbol": sym,
-                        "company_name": extra["company_name"],
-                        "prob_up": round(prob_up, 4),
-                        "prob_down": round(prob_down, 4),
-                        "confidence": extra["confidence"],
-                        "signal": "BUY",
-                        "kind": "WATCHLIST_BUY",
-                        "explanation_short": short,
-                        "explanation_risk": risk,
-                    }
-                )
-
-            except Exception as e:
-                log(f"Hotlist fallback failed for {sym}: {e}")
-                continue
-
-
-    hotlist = hotlist[:5]
+    log("[HOTLIST] Final picks:")
+    for i, h in enumerate(hotlist, 1):
+        log(
+            f"[HOTLIST] #{i} {h['symbol']} | up={h['prob_up']} conf={h['confidence']} kind={h['kind']}"
+        )
 
     # ----------------------------
-    # Build BearWatch (Top 5 SELL / HOLD)
+    # BearWatch
     # ----------------------------
     bear_candidates.sort(key=lambda x: x["prob_down"], reverse=True)
     bearwatch = bear_candidates[:5]
 
-    log(f"Built Hotlist: {len(hotlist)} | BearWatch: {len(bearwatch)}")
+    log("[BEARWATCH] Final picks:")
+    for i, b in enumerate(bearwatch, 1):
+        log(
+            f"[BEARWATCH] #{i} {b['symbol']} | down={b['prob_down']} conf={b['confidence']} kind={b['kind']}"
+        )
+
+    log(
+        f"[SUMMARY] scan-done | total={total} | infer_ok={infer_ok} | candles_none={candles_none}"
+    )
 
     now = (
         datetime.datetime.now(datetime.timezone.utc)
