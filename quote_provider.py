@@ -2,8 +2,8 @@
 # ---------------------------------------------------------
 # Central Quote Provider
 # - Stocks / ETFs via Finnhub
-# - Crypto via CoinGecko
-# - Indices & sector proxies
+# - Crypto via CoinGecko (coins/markets endpoint - like your HomeScreen.js)
+# - Sector snapshot via ETF proxies
 # ---------------------------------------------------------
 
 import os
@@ -18,8 +18,11 @@ FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 # ---------------------------------------------------------
 def normalize_pct(v: Optional[float]) -> Optional[float]:
     try:
+        if v is None:
+            return None
         v = float(v)
-        # Finnhub sometimes returns decimals like 0.008 → 0.8%
+        # If already in percent space, return as-is
+        # If it's a decimal (e.g., 0.008 = 0.8%), convert
         if abs(v) <= 1.5:
             return v * 100.0
         return v
@@ -27,54 +30,65 @@ def normalize_pct(v: Optional[float]) -> Optional[float]:
         return None
 
 
+def _safe_json(resp: requests.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------
-# EQUITIES / ETFs
+# EQUITIES / ETFs (Finnhub)
 # ---------------------------------------------------------
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
+    """
+    Returns:
+      {
+        "price": float | None,
+        "changePct": float | None
+      }
+    """
     if not FINNHUB_KEY:
         return {}
 
     try:
-        r = requests.get(
+        resp = requests.get(
             "https://finnhub.io/api/v1/quote",
             params={"symbol": symbol, "token": FINNHUB_KEY},
             timeout=10,
         )
-        d = r.json()
+        data = _safe_json(resp)
+        if not isinstance(data, dict):
+            return {}
 
-        price = d.get("c")
-        prev = d.get("pc")
+        # Finnhub: c=current, pc=previous close
+        price = data.get("c")
+        prev = data.get("pc")
 
         change_pct = None
-        if price is not None and prev:
-            change_pct = ((price - prev) / prev) * 100.0
+        try:
+            if isinstance(price, (int, float)) and isinstance(prev, (int, float)) and prev != 0:
+                change_pct = ((float(price) - float(prev)) / float(prev)) * 100.0
+        except Exception:
+            change_pct = None
 
         return {
-            "price": price,
+            "price": price if isinstance(price, (int, float)) else None,
             "changePct": normalize_pct(change_pct),
         }
+
     except Exception:
         return {}
 
 
 # ---------------------------------------------------------
-# INDEX SNAPSHOT (proxies)
-# ---------------------------------------------------------
-def fetch_index_snapshot() -> Dict[str, Any]:
-    return {
-        "SPY": fetch_equity_quote("SPY"),
-        "QQQ": fetch_equity_quote("QQQ"),
-        "VIX": fetch_equity_quote("VIX"),
-    }
-
-
-# ---------------------------------------------------------
 # CRYPTO SNAPSHOT (CoinGecko – free)
+# Mirrors your old HomeScreen.js coins/markets logic
 # ---------------------------------------------------------
 def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
     """
-    Backend-safe CoinGecko fetch.
-    Mirrors HomeScreen.js logic using coins/markets endpoint.
+    Returns top symbols (market-cap top10 scan) mapped to 24h % change.
+    Explicitly returns BTC/ETH/SOL/XRP/DOGE keys for your carousel.
     """
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
@@ -84,22 +98,26 @@ def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
             "per_page": 10,
             "page": 1,
         }
-        headers = {
-            "User-Agent": "BullSignalsAI/1.0 (contact: support@bullsignals.ai)"
-        }
 
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        data = resp.json()
+        # CoinGecko sometimes blocks requests without a UA
+        headers = {"User-Agent": "BullSignalsAI/1.0"}
 
-        out = {}
+        resp = requests.get(url, params=params, headers=headers, timeout=12)
+        data = _safe_json(resp)
+
+        out: Dict[str, float] = {}
+
         if isinstance(data, list):
-            for c in data:
-                sym = (c.get("symbol") or "").upper()
-                chg = c.get("price_change_percentage_24h")
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                sym = (row.get("symbol") or "").upper().strip()
+                chg = row.get("price_change_percentage_24h")
+
                 if sym and isinstance(chg, (int, float)):
                     out[sym] = float(chg)
 
-        # Explicitly return only what your carousel expects
+        # Return only what your carousel expects (stable schema)
         return {
             "BTC": out.get("BTC"),
             "ETH": out.get("ETH"),
@@ -109,14 +127,28 @@ def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
         }
 
     except Exception as e:
-        print(f"[crypto] CoinGecko markets fetch failed: {e}")
-        return {}
+        print(f"[quote-provider] CoinGecko fetch failed: {e}")
+        return {
+            "BTC": None,
+            "ETH": None,
+            "SOL": None,
+            "XRP": None,
+            "DOGE": None,
+        }
 
 
 # ---------------------------------------------------------
-# SECTOR SNAPSHOT (ETF proxies  )
+# SECTOR SNAPSHOT (ETF proxies)
 # ---------------------------------------------------------
 def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
+    """
+    Returns:
+      {
+        "Technology": +x.xx,
+        "Financials": +x.xx,
+        ...
+      }
+    """
     sectors = {
         "Technology": "XLK",
         "Financials": "XLF",
@@ -125,8 +157,10 @@ def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
         "Consumer": "XLY",
     }
 
-    out = {}
-    for name, sym in sectors.items():
-        out[name] = fetch_equity_quote(sym).get("changePct")
+    out: Dict[str, Optional[float]] = {}
+    for name, etf in sectors.items():
+        q = fetch_equity_quote(etf)
+        chg = q.get("changePct")
+        out[name] = chg if isinstance(chg, (int, float)) else None
 
     return out
