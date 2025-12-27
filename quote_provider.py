@@ -72,14 +72,24 @@ def fetch_index_snapshot() -> Dict[str, Any]:
 # CRYPTO SNAPSHOT (CoinGecko – free)
 # ---------------------------------------------------------
 def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
+    """
+    CoinGecko requires a User-Agent from cloud environments.
+    Without this, it returns empty / throttled responses.
+    """
     try:
-        url = (
-            "https://api.coingecko.com/api/v3/simple/price"
-            "?ids=bitcoin,ethereum,solana,ripple,dogecoin"
-            "&vs_currencies=usd"
-            "&include_24hr_change=true"
-        )
-        data = requests.get(url, timeout=10).json()
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": "bitcoin,ethereum,solana,ripple,dogecoin",
+            "vs_currencies": "usd",
+            "include_24hr_change": "true",
+        }
+
+        headers = {
+            "User-Agent": "BullSignalsAI/1.0 (contact: support@bullsignals.ai)"
+        }
+
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        data = resp.json()
 
         def chg(key):
             try:
@@ -94,7 +104,9 @@ def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
             "XRP": chg("ripple"),
             "DOGE": chg("dogecoin"),
         }
-    except Exception:
+
+    except Exception as e:
+        print(f"[crypto] CoinGecko fetch failed: {e}")
         return {}
 
 
