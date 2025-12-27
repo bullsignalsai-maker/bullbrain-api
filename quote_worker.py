@@ -142,23 +142,81 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]):
 # Market overview update
 # ---------------------------------------------------------
 def update_market_overview(db):
+    """
+    Updates ONLY dynamic quote-driven parts of the homescreen:
+      - Crypto carousel (BTC, ETH, SOL, XRP, DOGE)
+      - Keeps sentiment card aligned with market_overview.fearGreed
+
+    This function:
+      ✔ DOES NOT create carousel structure
+      ✔ DOES NOT touch MAG7
+      ✔ DOES NOT conflict with market_cron
+    """
+
+    now = utc_now_iso()
+
+    # ---------------------------------------------
+    # 1) Fetch fresh crypto snapshot (CoinGecko)
+    # ---------------------------------------------
     crypto = fetch_crypto_snapshot()
+
     ref = db.collection("bullsignals_ai").document("homescreen_snapshot")
     snap = ref.get()
     if not snap.exists:
         return
 
     d = snap.to_dict() or {}
-    for card in d.get("carousel", []):
+    carousel = d.get("carousel", [])
+
+    # ---------------------------------------------
+    # 2) Update / rebuild CRYPTO carousel card
+    # ---------------------------------------------
+    for card in carousel:
         if card.get("id") == "crypto":
-            for it in card.get("items", []):
-                sym = it.get("label")
+            card["items"] = []
+
+            for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
                 chg = crypto.get(sym)
-                it["value"] = f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
-                it["quote_updated_at"] = utc_now_iso()
+                card["items"].append(
+                    {
+                        "label": sym,
+                        "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                        "quote_updated_at": now,
+                    }
+                )
 
-    ref.set({"carousel": d.get("carousel", [])}, merge=True)
+            card["updated_at"] = now
 
+    # ---------------------------------------------
+    # 3) Keep SENTIMENT card consistent with overview
+    # ---------------------------------------------
+    overview = d.get("market_overview", {})
+    fg = overview.get("fearGreed")
+
+    if fg:
+        label = fg.get("label", "Neutral")
+        value = fg.get("value", 50)
+
+        for card in carousel:
+            if card.get("id") == "sentiment":
+                card["items"] = [
+                    {
+                        "label": "Mood",
+                        "value": f"{label} ({value})",
+                    }
+                ]
+                card["updated_at"] = now
+
+    # ---------------------------------------------
+    # 4) Persist updates (NO SCHEMA CHANGE)
+    # ---------------------------------------------
+    ref.set(
+        {
+            "carousel": carousel,
+            "quote_refreshed_at": now,
+        },
+        merge=True,
+    )
 
 # ---------------------------------------------------------
 # Main loop
