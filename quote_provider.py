@@ -111,7 +111,7 @@ def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
 
 
 # ---------------------------------------------------------
-# SECTOR SNAPSHOT (ETF proxies)
+# SECTOR SNAPSHOT (ETF proxies  )
 # ---------------------------------------------------------
 def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
     sectors = {
