@@ -1,36 +1,36 @@
 # quote_provider.py
 # ---------------------------------------------------------
-# Central Quote Provider (Production)
+# Central Quote Provider
 # - Stocks / ETFs via Finnhub
-# - Crypto via CoinGecko (coins/markets endpoint) ✅
+# - Crypto via CoinGecko (coins/markets endpoint - like your HomeScreen.js)
 # - Sector snapshot via ETF proxies
 # ---------------------------------------------------------
 
 import os
 import requests
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 
-# Reuse a session for performance
+# Use a session so headers are ALWAYS present (CoinGecko is picky)
 _SESSION = requests.Session()
 _SESSION.headers.update(
     {
-        "User-Agent": "BullSignalsAI/1.0 (+https://bullsignals.ai)",
+        "User-Agent": "BullSignalsAI/1.0 (homescreen quote worker)",
         "Accept": "application/json",
     }
 )
+
 
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
 def normalize_pct(v: Optional[float]) -> Optional[float]:
-    """
-    Normalizes change % into a consistent percent number.
-    (Some sources return 0.008 => 0.8)
-    """
     try:
+        if v is None:
+            return None
         v = float(v)
+        # If it's a decimal (e.g., 0.008 = 0.8%), convert
         if abs(v) <= 1.5:
             return v * 100.0
         return v
@@ -38,13 +38,23 @@ def normalize_pct(v: Optional[float]) -> Optional[float]:
         return None
 
 
+def _safe_json(resp: requests.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------
-# EQUITIES / ETFs (Finnhub quote)
+# EQUITIES / ETFs (Finnhub)
 # ---------------------------------------------------------
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
     """
     Returns:
-      {"price": float|None, "changePct": float|None}
+      {
+        "price": float | None,
+        "changePct": float | None
+      }
     """
     if not FINNHUB_KEY:
         return {}
@@ -55,60 +65,82 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
             params={"symbol": symbol, "token": FINNHUB_KEY},
             timeout=10,
         )
-        data = resp.json() if resp.ok else {}
+        data = _safe_json(resp)
+        if not isinstance(data, dict):
+            return {}
 
+        # Finnhub: c=current, pc=previous close
         price = data.get("c")
         prev = data.get("pc")
 
         change_pct = None
-        if isinstance(price, (int, float)) and isinstance(prev, (int, float)) and prev:
-            change_pct = ((price - prev) / prev) * 100.0
+        try:
+            if isinstance(price, (int, float)) and isinstance(prev, (int, float)) and prev != 0:
+                change_pct = ((float(price) - float(prev)) / float(prev)) * 100.0
+        except Exception:
+            change_pct = None
 
-        return {"price": price, "changePct": normalize_pct(change_pct)}
+        return {
+            "price": price if isinstance(price, (int, float)) else None,
+            "changePct": normalize_pct(change_pct),
+        }
+
     except Exception:
         return {}
 
 
 # ---------------------------------------------------------
-# CRYPTO SNAPSHOT (CoinGecko – coins/markets) ✅ your working style
+# CRYPTO SNAPSHOT (CoinGecko – free)
+# Mirrors your old HomeScreen.js coins/markets logic
 # ---------------------------------------------------------
-def fetch_crypto_snapshot(
-    symbols: Optional[List[str]] = None,
-    per_page: int = 10,
-) -> Dict[str, Optional[float]]:
+def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
     """
-    Mirrors HomeScreen.js logic using:
-      /coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1
-
-    Returns mapping: { "BTC": float|None, "ETH": ..., ... }
+    Returns top symbols (market-cap top10 scan) mapped to 24h % change.
+    Explicitly returns BTC/ETH/SOL/XRP/DOGE keys for your carousel.
     """
-    wanted = symbols or ["BTC", "ETH", "SOL", "XRP", "DOGE"]
-
     try:
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
             "order": "market_cap_desc",
-            "per_page": per_page,
+            "per_page": 10,
             "page": 1,
         }
 
+        # IMPORTANT: UA header must be present (CoinGecko blocks without it)
         resp = _SESSION.get(url, params=params, timeout=12)
-        data = resp.json() if resp.ok else None
+        data = _safe_json(resp)
 
-        out: Dict[str, Optional[float]] = {s: None for s in wanted}
+        out: Dict[str, float] = {}
 
         if isinstance(data, list):
             for row in data:
-                sym = (row.get("symbol") or "").upper()
+                if not isinstance(row, dict):
+                    continue
+                sym = (row.get("symbol") or "").upper().strip()
                 chg = row.get("price_change_percentage_24h")
-                if sym in out and isinstance(chg, (int, float)):
+
+                if sym and isinstance(chg, (int, float)):
                     out[sym] = float(chg)
 
-        return out
+        # Return only what your carousel expects (stable schema)
+        return {
+            "BTC": out.get("BTC"),
+            "ETH": out.get("ETH"),
+            "SOL": out.get("SOL"),
+            "XRP": out.get("XRP"),
+            "DOGE": out.get("DOGE"),
+        }
 
-    except Exception:
-        return {s: None for s in wanted}
+    except Exception as e:
+        print(f"[quote-provider] CoinGecko fetch failed: {e}", flush=True)
+        return {
+            "BTC": None,
+            "ETH": None,
+            "SOL": None,
+            "XRP": None,
+            "DOGE": None,
+        }
 
 
 # ---------------------------------------------------------
@@ -117,7 +149,11 @@ def fetch_crypto_snapshot(
 def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
     """
     Returns:
-      { "Technology": +1.2, "Energy": -0.7, ... }  (values are percent)
+      {
+        "Technology": +x.xx,
+        "Financials": +x.xx,
+        ...
+      }
     """
     sectors = {
         "Technology": "XLK",
@@ -130,6 +166,7 @@ def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {}
     for name, etf in sectors.items():
         q = fetch_equity_quote(etf)
-        out[name] = q.get("changePct") if isinstance(q, dict) else None
+        chg = q.get("changePct")
+        out[name] = chg if isinstance(chg, (int, float)) else None
 
     return out

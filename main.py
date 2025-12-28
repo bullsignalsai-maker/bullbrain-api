@@ -4291,3 +4291,128 @@ def get_homescreen_snapshot():
             "status": "error",
             "error": str(e),
         }
+
+
+# ---------------------------------------------------------
+# /homescreen-carousel — READ-ONLY carousel snapshot for Homescreen
+# ---------------------------------------------------------
+@app.get("/homescreen-carousel")
+def homescreen_mag7():
+    """
+    Returns the precomputed Mag7 snapshot from Firestore.
+
+    Source document:
+      bullsignals_ai/homescreen_snapshot
+
+    Response shape:
+    {
+        "count": 7,
+        "carousel": [
+      {
+        "items": [
+          {
+            "label": "S&P 500 (SPY)",
+            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
+            "value": "-1.01%"
+          },
+          {
+            "label": "Nasdaq (QQQ)",
+            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
+            "value": "-0.64%"
+          }
+        ],
+        "title": "AI Market Insights",
+        "updated_at": "2025-12-26T02:50:35.013634Z",
+        "id": "us_market",
+        "subtitle": "US Market snapshot"
+      },
+      {
+        "title": "Crypto Movers",
+        "id": "crypto",
+        "updated_at": "2025-12-28T05:41:31.338745Z",
+        "items": [
+          {
+            "label": "BTC",
+            "value": "--",
+            "quote_updated_at": "2025-12-28T05:41:31.338745Z"
+          },
+          {
+            "label": "ETH",
+            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
+            "value": "--"
+          },
+          {
+            "label": "SOL",
+            "value": "--",
+            "quote_updated_at": "2025-12-28T05:41:31.338745Z"
+          },
+          {
+            "label": "XRP",
+            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
+            "value": "--"
+          },
+          {
+            "label": "DOGE",
+            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
+            "value": "--"
+          }
+        ],
+        "subtitle": "24h change"
+      },
+      {
+        "id": "sentiment",
+        "items": [
+          {
+            "label": "Mood",
+            "value": "Slight Greed (55)"
+          }
+        ],
+        "updated_at": "2025-12-28T05:41:31.338745Z",
+        "title": "Market Sentiment",
+        "subtitle": "Fear & Greed (crypto proxy)"
+      },
+      {
+        "id": "commodities",
+        "items": [
+          {
+            "label": "Gold (GLD)",
+            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
+            "value": "+116.77%"
+          },
+          {
+            "label": "Oil (USO)",
+            "value": "-2.45%",
+            "quote_updated_at": "2025-12-28T05:41:30.801161Z"
+          },
+          {
+            "label": "Silver (SLV)",
+            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
+            "value": "+9.05%"
+          }
+        ],
+        "updated_at": "2025-12-26T02:50:36.352723Z",
+        "title": "Commodities Snapshot",
+        "subtitle": "ETF proxies"
+      }
+    ]
+  },
+    """
+
+    cache = read_market_cache("homescreen_snapshot")
+
+    if not cache:
+        return {
+            "count": 0,
+            "carousel": [],
+            "updated_at": None,
+            "version": None,
+        }
+
+    carousel = cache.get("carousel", [])
+
+    return {
+        "count": len(carousel),
+        "carousel": carousel,
+        "updated_at": cache.get("updated_at"),
+        "version": cache.get("version"),
+    }
