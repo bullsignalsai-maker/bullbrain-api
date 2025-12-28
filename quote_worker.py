@@ -7,16 +7,16 @@
 #  - MAG7 quotes
 #  - Hotlist quotes
 #  - Bearwatch quotes
-#  - Carousel: US market, commodities (from existing values w/ parentheses),
+#  - Carousel: proxy-based quotes (SPY/QQQ/GLD/USO/SLV etc.),
 #             Crypto card (BTC/ETH/SOL/XRP/DOGE),
-#             Sentiment card sync (from market_overview.fearGreed),
-#             Top Sectors card (5th carousel card)
+#             Sentiment card sync (market_overview.fearGreed),
+#             Top Sectors (5th carousel card)
 #
 # Enhancements:
-#  ✅ Market-hours aware throttling (30s open, slower after-hours)
-#  ✅ Weekend + Night throttling
+#  ✅ Market-hours aware throttling (30s open, 5m after-hours)
+#  ✅ Night + Weekend throttling
 #  ✅ US market holiday pause
-#  ✅ "Market Closed" badge on us_market card after-hours/weekends/holidays
+#  ✅ "Market Closed" badge on us_market after-hours/weekends/holidays
 #
 # IMPORTANT:
 #  - Safe Firestore merges
@@ -64,7 +64,6 @@ init_firebase()
 db = firestore.client()
 print("[quote-worker] ✅ Firestore client ready", flush=True)
 
-
 # ---------------------------------------------------------
 # Time helpers
 # ---------------------------------------------------------
@@ -83,18 +82,14 @@ def log(msg: str) -> None:
 def _get_et_tz():
     if ZoneInfo is not None:
         return ZoneInfo("America/New_York")
-    # Fallback: fixed offset if zoneinfo not available (should be available on Render)
     return datetime.timezone(datetime.timedelta(hours=-5))
 
 
 ET = _get_et_tz()
 
-
 # ---------------------------------------------------------
-# US Market holiday handling
+# US Market holiday handling (lightweight)
 # ---------------------------------------------------------
-# Keep it lightweight + safe. Update yearly as needed.
-# You can also extend using env var EXTRA_MARKET_HOLIDAYS="YYYY-MM-DD,YYYY-MM-DD"
 US_MARKET_HOLIDAYS = {
     # 2025
     "2025-01-01",
@@ -107,7 +102,7 @@ US_MARKET_HOLIDAYS = {
     "2025-09-01",
     "2025-11-27",
     "2025-12-25",
-    # 2026 (common NYSE holidays)
+    # 2026
     "2026-01-01",
     "2026-01-19",
     "2026-02-16",
@@ -150,14 +145,12 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
     et = now_utc.astimezone(ET)
     open_t = et.replace(hour=9, minute=30, second=0, microsecond=0)
     close_t = et.replace(hour=16, minute=0, second=0, microsecond=0)
-
     return open_t <= et <= close_t
 
 
 def is_night_et(now_utc: datetime.datetime) -> bool:
     """
-    Night throttling window (ET):
-      8:00pm - 7:00am
+    Night throttling window (ET): 8:00pm - 7:00am
     """
     et = now_utc.astimezone(ET)
     h = et.hour
@@ -166,22 +159,22 @@ def is_night_et(now_utc: datetime.datetime) -> bool:
 
 def choose_sleep_seconds(now_utc: datetime.datetime) -> int:
     """
-    Cost control policy:
+    Cost control policy (what you asked):
       - Market open: 30s
-      - After hours (weekday): 15 min
-      - Night (weekday): 1 hour
-      - Weekend: 6 hours
+      - After hours (weekday, not night): 5 min
+      - Night: 30 min
+      - Weekend: 2 hours
       - Holiday: 6 hours
     """
     if is_us_market_holiday(now_utc):
         return 6 * 3600
     if is_weekend(now_utc):
-        return 6 * 3600
+        return 2 * 3600
     if is_market_open(now_utc):
         return 30
     if is_night_et(now_utc):
-        return 3600
-    return 15 * 60
+        return 30 * 60
+    return 5 * 60
 
 
 # ---------------------------------------------------------
@@ -194,12 +187,10 @@ def collect_tickers(db) -> Set[str]:
     if snap.exists:
         d = snap.to_dict() or {}
 
-        # MAG7 list contains symbols directly
         for m in d.get("mag7", []):
             if isinstance(m, dict) and m.get("symbol"):
                 out.add(str(m["symbol"]).upper())
 
-        # Carousel proxies (only labels like "S&P 500 (SPY)" etc.)
         for card in d.get("carousel", []):
             if not isinstance(card, dict):
                 continue
@@ -215,7 +206,6 @@ def collect_tickers(db) -> Set[str]:
                     if sym:
                         out.add(sym)
 
-    # Hotlist / Bearwatch tickers
     for doc in ["market_hotlist", "market_bearwatch"]:
         s = db.collection("bullsignals_ai").document(doc).get()
         if s.exists:
@@ -227,6 +217,10 @@ def collect_tickers(db) -> Set[str]:
                     if isinstance(row, dict) and row.get("symbol"):
                         out.add(str(row["symbol"]).upper())
 
+    # Ensure sector ETF proxies are always refreshed (so sector card never shows stale "--")
+    for etf in ["XLK", "XLF", "XLE", "XLV", "XLY"]:
+        out.add(etf)
+
     return out
 
 
@@ -236,13 +230,11 @@ def collect_tickers(db) -> Set[str]:
 def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
     now = utc_now_iso()
 
-    # Home screen
     ref = db.collection("bullsignals_ai").document("homescreen_snapshot")
     snap = ref.get()
     if snap.exists:
         d = snap.to_dict() or {}
 
-        # MAG7 quote update
         mag7_list = d.get("mag7", [])
         if isinstance(mag7_list, list):
             for m in mag7_list:
@@ -254,7 +246,6 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                     m["changePct"] = quotes[sym].get("changePct")
                     m["quote_updated_at"] = now
 
-        # Carousel update for proxy symbols in parentheses (SPY/QQQ/GLD/USO/SLV etc.)
         carousel_list = d.get("carousel", [])
         if isinstance(carousel_list, list):
             for card in carousel_list:
@@ -283,7 +274,6 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
             merge=True,
         )
 
-    # Hotlist / Bearwatch
     for name in ["market_hotlist", "market_bearwatch"]:
         r = db.collection("bullsignals_ai").document(name)
         s = r.get()
@@ -303,35 +293,18 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
 
 
 # ---------------------------------------------------------
-# Market overview update (Crypto + Sentiment sync + Top Sectors + Market Closed badge)
+# Market overview update (Crypto + Sentiment + Top Sectors + Market Closed badge)
 # ---------------------------------------------------------
-def _ensure_card(carousel: List[Dict[str, Any]], card_id: str, default_card: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Ensures a card exists. If missing, append default.
-    Returns new list reference (safe).
-    """
-    exists = any(isinstance(c, dict) and c.get("id") == card_id for c in carousel)
-    if exists:
-        return carousel
+def _ensure_card(carousel: List[Dict[str, Any]], card_id: str, default_card: Dict[str, Any]) -> None:
+    if any(isinstance(c, dict) and c.get("id") == card_id for c in carousel):
+        return
     carousel.append(default_card)
-    return carousel
 
 
 def update_market_overview(db) -> None:
-    """
-    Updates ONLY dynamic quote-driven parts of homescreen snapshot:
-      - Crypto carousel card (BTC/ETH/SOL/XRP/DOGE) using CoinGecko markets endpoint ✅
-      - Sentiment card synced to market_overview.fearGreed (so mood matches)
-      - Top Sectors 5th carousel card (ETF proxies)
-      - Market Closed badge on us_market card after hours / weekends / holidays
-
-    Does NOT:
-      - Build base homescreen schema
-      - Touch MAG7 model fields
-    """
-
     now_iso = utc_now_iso()
     now_utc = datetime.datetime.now(datetime.timezone.utc)
+    market_open = is_market_open(now_utc)
 
     ref = db.collection("bullsignals_ai").document("homescreen_snapshot")
     snap = ref.get()
@@ -343,20 +316,13 @@ def update_market_overview(db) -> None:
     if not isinstance(carousel, list):
         carousel = []
 
-    # Ensure required cards exist (without breaking existing ones)
-    carousel = _ensure_card(
+    # Ensure cards exist (no schema break)
+    _ensure_card(
         carousel,
         "crypto",
-        {
-            "id": "crypto",
-            "title": "Crypto Movers",
-            "subtitle": "24h change",
-            "items": [],
-            "updated_at": now_iso,
-        },
+        {"id": "crypto", "title": "Crypto Movers", "subtitle": "24h change", "items": [], "updated_at": now_iso},
     )
-
-    carousel = _ensure_card(
+    _ensure_card(
         carousel,
         "sentiment",
         {
@@ -367,25 +333,14 @@ def update_market_overview(db) -> None:
             "updated_at": now_iso,
         },
     )
-
-    # 5th card: sectors
-    carousel = _ensure_card(
+    _ensure_card(
         carousel,
         "sectors",
-        {
-            "id": "sectors",
-            "title": "Top Sectors",
-            "subtitle": "ETF performance",
-            "items": [],
-            "updated_at": now_iso,
-        },
+        {"id": "sectors", "title": "Top Sectors", "subtitle": "ETF performance", "items": [], "updated_at": now_iso},
     )
 
-    # -----------------------------
-    # 1) Crypto card update ✅ (coins/markets logic)
-    # -----------------------------
+    # 1) Crypto card ✅
     crypto = fetch_crypto_snapshot(symbols=["BTC", "ETH", "SOL", "XRP", "DOGE"], per_page=10)
-
     for card in carousel:
         if isinstance(card, dict) and card.get("id") == "crypto":
             items = []
@@ -401,12 +356,9 @@ def update_market_overview(db) -> None:
             card["items"] = items
             card["updated_at"] = now_iso
 
-    # -----------------------------
-    # 2) Sentiment card sync (match market_overview.fearGreed)
-    # -----------------------------
+    # 2) Sentiment sync (match market_overview.fearGreed)
     overview = d.get("market_overview", {}) if isinstance(d.get("market_overview"), dict) else {}
     fg = overview.get("fearGreed") if isinstance(overview.get("fearGreed"), dict) else None
-
     if fg:
         label = fg.get("label", "Neutral")
         value = fg.get("value", 50)
@@ -415,10 +367,8 @@ def update_market_overview(db) -> None:
                 card["items"] = [{"label": "Mood", "value": f"{label} ({value})"}]
                 card["updated_at"] = now_iso
 
-    # -----------------------------
-    # 3) Top Sectors card update (ETF proxies)
-    # -----------------------------
-    sectors = fetch_sector_snapshot()  # { "Technology": 1.23, ... }
+    # 3) Top Sectors (5th card)
+    sectors = fetch_sector_snapshot()
     for card in carousel:
         if isinstance(card, dict) and card.get("id") == "sectors":
             items = []
@@ -434,21 +384,14 @@ def update_market_overview(db) -> None:
             card["items"] = items
             card["updated_at"] = now_iso
 
-    # -----------------------------
-    # 4) Market Closed badge on US Market card
-    # -----------------------------
-    market_open = is_market_open(now_utc)
-
+    # 4) Market Closed badge on us_market
     for card in carousel:
         if isinstance(card, dict) and card.get("id") == "us_market":
-            # Add badge only when closed; remove when open (clean)
             if market_open:
-                if "badge" in card:
-                    card.pop("badge", None)
+                card.pop("badge", None)
             else:
                 card["badge"] = "Market Closed"
 
-    # Persist (safe merge)
     ref.set(
         {
             "carousel": carousel,
@@ -467,24 +410,22 @@ def main() -> None:
     while True:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
 
-        # Holiday/weekend pause (saves cost)
+        # Holiday "auto-pause"
         if is_us_market_holiday(now_utc):
-            log("🎌 US Market Holiday — pausing quote worker")
-            time.sleep(choose_sleep_seconds(now_utc))
+            sleep_s = choose_sleep_seconds(now_utc)
+            log(f"🎌 US Market Holiday — pausing for {sleep_s}s")
+            time.sleep(sleep_s)
             continue
 
         try:
-            # Decide speed for this cycle (open vs after-hours)
-            sleep_seconds = choose_sleep_seconds(now_utc)
+            sleep_s = choose_sleep_seconds(now_utc)
 
-            # If market closed & we're in long sleep mode, still do ONE light refresh cycle
-            # (this keeps crypto/sector card reasonably current without burning resources)
             tickers = collect_tickers(db)
-            log(f"Refreshing quotes for {len(tickers)} tickers | next_sleep={sleep_seconds}s")
+            log(f"Refreshing quotes for {len(tickers)} tickers | next_sleep={sleep_s}s")
 
             quotes: Dict[str, Dict[str, Any]] = {}
 
-            # Gentle throttling; slightly faster during market open
+            # Gentle throttling (avoid API spikes)
             per_symbol_delay = 0.15 if is_market_open(now_utc) else 0.25
 
             for sym in sorted(tickers):
@@ -492,17 +433,13 @@ def main() -> None:
                 time.sleep(per_symbol_delay)
 
             update_quotes(db, quotes)
-
-            # Updates crypto + sentiment sync + sectors + market closed badge
             update_market_overview(db)
 
             log("✅ Quote refresh cycle completed")
-
-            time.sleep(sleep_seconds)
+            time.sleep(sleep_s)
 
         except Exception as e:
             log(f"❌ Quote worker error: {e}")
-            # Backoff on errors
             time.sleep(60)
 
 

@@ -2,13 +2,13 @@
 # ---------------------------------------------------------
 # Central Quote Provider (Production)
 # - Stocks / ETFs via Finnhub
-# - Crypto via CoinGecko (coins/markets endpoint)  ✅ (your working logic style)
+# - Crypto via CoinGecko (coins/markets endpoint) ✅
 # - Sector snapshot via ETF proxies
 # ---------------------------------------------------------
 
 import os
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 
@@ -70,15 +70,14 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# CRYPTO SNAPSHOT (CoinGecko – coins/markets) ✅ working-style
+# CRYPTO SNAPSHOT (CoinGecko – coins/markets) ✅ your working style
 # ---------------------------------------------------------
 def fetch_crypto_snapshot(
-    symbols: Optional[list[str]] = None,
+    symbols: Optional[List[str]] = None,
     per_page: int = 10,
 ) -> Dict[str, Optional[float]]:
     """
-    Backend-safe CoinGecko fetch.
-    Mirrors your HomeScreen.js logic using:
+    Mirrors HomeScreen.js logic using:
       /coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1
 
     Returns mapping: { "BTC": float|None, "ETH": ..., ... }
@@ -97,7 +96,6 @@ def fetch_crypto_snapshot(
         resp = _SESSION.get(url, params=params, timeout=12)
         data = resp.json() if resp.ok else None
 
-        # Build symbol -> 24h pct change map
         out: Dict[str, Optional[float]] = {s: None for s in wanted}
 
         if isinstance(data, list):
@@ -110,7 +108,6 @@ def fetch_crypto_snapshot(
         return out
 
     except Exception:
-        # Do NOT throw; worker will keep running
         return {s: None for s in wanted}
 
 
