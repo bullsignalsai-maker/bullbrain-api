@@ -4419,17 +4419,30 @@ def homescreen_mag7():
     
     
 # ---------------------------------------------------------
-# Stock Detail API
+# Stock Detail API (FINAL)
 # ---------------------------------------------------------
+from backend.stock_bootstrap import bootstrap_stock
+from backend.candle_store import get_candles
+from backend.technicals import build_technical_snapshot
+from backend.smart_patterns import (
+    detect_smart_pattern,
+    scan_smart_pattern_history,
+)
+
 @app.get("/stockdetail/{symbol}")
 def get_stock_detail(symbol: str):
     """
-    Returns full stock intelligence for Stock Detail screen.
-    Safe, cached, cost-efficient.
+    Full Stock Detail API
+    - Firestore-first
+    - Cost efficient
+    - Frontend-safe (no logic)
     """
 
     symbol = symbol.upper().strip()
 
+    # -------------------------
+    # Validate symbol
+    # -------------------------
     if not symbol.isalpha():
         return {
             "status": "error",
@@ -4437,12 +4450,77 @@ def get_stock_detail(symbol: str):
         }
 
     try:
+        # -------------------------
+        # 1️⃣ Stock intelligence (cached / bootstrap)
+        # -------------------------
         stock = bootstrap_stock(symbol)
 
+        # -------------------------
+        # 2️⃣ Candles (Firestore-backed)
+        # -------------------------
+        candles = get_candles(symbol, min_points=120)
+
+        if not candles:
+            raise RuntimeError("Candles unavailable")
+
+        # -------------------------
+        # 3️⃣ Technical snapshot
+        # -------------------------
+        technical = build_technical_snapshot(candles)
+
+        # -------------------------
+        # 4️⃣ Smart pattern (optional, safe)
+        # -------------------------
+        smart_pattern = None
+        pattern_dates = []
+        pattern_stats = None
+
+        try:
+            smart_pattern = detect_smart_pattern(candles)
+            if smart_pattern:
+                history = scan_smart_pattern_history(candles, smart_pattern)
+                pattern_dates = history.get("dates", [])
+                pattern_stats = history.get("stats")
+        except Exception:
+            pass  # smart pattern is non-critical
+
+        # -------------------------
+        # 5️⃣ News (existing helper)
+        # -------------------------
+        try:
+            news = backend.market_news(symbol=symbol).get("data", [])
+        except Exception:
+            news = []
+
+        # -------------------------
+        # FINAL RESPONSE (STABLE)
+        # -------------------------
         return {
             "status": "ok",
             "symbol": symbol,
-            "data": stock,
+
+            # Core intelligence
+            "stock": stock,
+
+            # Charts
+            "candles": {
+                "candles": candles,
+                "source": "firestore",
+            },
+
+            # Technicals
+            "technical": technical,
+
+            # Smart pattern
+            "smartPattern": smart_pattern,
+            "patternDates": pattern_dates,
+            "patternStats": pattern_stats,
+
+            # News
+            "news": news,
+
+            # Meta
+            "asOf": stock.get("computed_at"),
         }
 
     except Exception as e:
