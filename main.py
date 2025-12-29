@@ -2033,7 +2033,7 @@ def get_technical(symbol: str):
 # --------------------------------------------------------------------
 # STOCKDETAIL SUPER ENDPOINT
 # --------------------------------------------------------------------
-@app.get("/stockdetail/{symbol}")
+@app.get("/stockdetailOld/{symbol}")
 def stockdetail(symbol: str, limit_candles: int = 120, forceGrok: bool = False):
     symbol = symbol.upper()
     try:
@@ -4416,3 +4416,38 @@ def homescreen_mag7():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
     }
+    
+    
+# ---------------------------------------------------------
+# Stock Detail API
+# ---------------------------------------------------------
+@app.get("/stockdetail/{symbol}")
+def get_stock_detail(symbol: str):
+    """
+    Returns full stock intelligence for Stock Detail screen.
+    Safe, cached, cost-efficient.
+    """
+
+    symbol = symbol.upper().strip()
+
+    if not symbol.isalpha():
+        return {
+            "status": "error",
+            "error": "Invalid symbol"
+        }
+
+    try:
+        stock = bootstrap_stock(symbol)
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "data": stock,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "error": str(e),
+        }
