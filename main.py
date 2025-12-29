@@ -4529,3 +4529,83 @@ def get_stock_detail(symbol: str):
             "symbol": symbol,
             "error": str(e),
         }
+        
+        
+
+from backend.stock_bootstrap import bootstrap_stock  # uses candles+repo cache
+
+
+# -----------------------------
+# Firestore helpers
+# -----------------------------
+def _db():
+    return firestore.client()
+
+def _norm_symbol(symbol: str) -> str:
+    return (symbol or "").upper().strip().replace(".", "-")
+
+def _watchlist_col(user_id: str):
+    return (
+        _db()
+        .collection("Users")
+        .document(user_id)
+        .collection("watchlist")
+        .collection("symbols")
+    )
+
+# -----------------------------
+# 1) READ watchlist
+# -----------------------------
+@app.get("/watchlist/{user_id}")
+def get_watchlist(user_id: str):
+    docs = _watchlist_col(user_id).stream()
+    symbols = sorted({_norm_symbol(d.id) for d in docs if d.id})
+
+    items = []
+    for sym in symbols:
+        try:
+            stock = bootstrap_stock(sym)  # returns cached if fresh
+            items.append({
+                "symbol": sym,
+                "company_name": stock.get("company_name"),
+                "quote": stock.get("quote"),
+                "bullbrain": stock.get("bullbrain"),
+                "computed_at": stock.get("computed_at"),
+                "quote_updated_at": stock.get("quote_updated_at"),
+            })
+        except Exception as e:
+            items.append({"symbol": sym, "error": str(e)})
+
+    return {"status": "ok", "count": len(items), "watchlist": items}
+
+# -----------------------------
+# 2) ADD symbol to watchlist
+# -----------------------------
+@app.post("/watchlist/{user_id}/add/{symbol}")
+def add_watchlist_symbol(user_id: str, symbol: str):
+    sym = _norm_symbol(symbol)
+    if not sym.isalnum():  # supports BTC/ETH too (alnum), avoids weird chars
+        return {"status": "error", "error": "Invalid symbol"}
+
+    # write user's watchlist doc
+    _watchlist_col(user_id).document(sym).set(
+        {"symbol": sym, "added_at": firestore.SERVER_TIMESTAMP},
+        merge=True
+    )
+
+    # warm global cache (best effort)
+    try:
+        bootstrap_stock(sym)
+    except Exception:
+        pass
+
+    return {"status": "ok", "user_id": user_id, "symbol": sym}
+
+# -----------------------------
+# 3) REMOVE symbol from watchlist
+# -----------------------------
+@app.delete("/watchlist/{user_id}/remove/{symbol}")
+def remove_watchlist_symbol(user_id: str, symbol: str):
+    sym = _norm_symbol(symbol)
+    _watchlist_col(user_id).document(sym).delete()
+    return {"status": "ok", "user_id": user_id, "symbol": sym}
