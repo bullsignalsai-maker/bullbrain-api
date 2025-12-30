@@ -21,6 +21,7 @@ from firebase_admin import credentials, firestore
 import time
 from backend.candle_store import get_candles
 from backend.candle_store import get_candles as get_cached_candles
+from backend.stock_bootstrap import bootstrap_stock
 
 
 
@@ -4421,13 +4422,6 @@ def homescreen_mag7():
 # ---------------------------------------------------------
 # Stock Detail API (FINAL)
 # ---------------------------------------------------------
-from backend.stock_bootstrap import bootstrap_stock
-from backend.candle_store import get_candles
-from backend.technicals import build_technical_snapshot
-from backend.smart_patterns import (
-    detect_smart_pattern,
-    scan_smart_pattern_history,
-)
 
 @app.get("/stockdetail/{symbol}")
 def get_stock_detail(symbol: str):
@@ -4530,9 +4524,7 @@ def get_stock_detail(symbol: str):
             "error": str(e),
         }
         
-        
-
-from backend.stock_bootstrap import bootstrap_stock  # uses candles+repo cache
+    
 
 
 # -----------------------------
