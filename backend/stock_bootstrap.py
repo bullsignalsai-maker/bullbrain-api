@@ -8,7 +8,7 @@
 
 from typing import Dict, Any
 
-import backend.main as backend
+import main as backend
 from backend.candle_store import get_candles
 from backend.stock_repo import (
     get_stock,
