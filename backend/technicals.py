@@ -1,133 +1,223 @@
 # backend/technicals.py
+# ------------------------------------------------------------
+# Technical Indicators & Snapshot Builder
+# ------------------------------------------------------------
 
-import numpy as np
-import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import math
 
 
 # ------------------------------------------------------------
-# Core Technical Snapshot (UI + AI Friendly)
+# Interpretation helpers
+# ------------------------------------------------------------
+
+def _interpret_rsi(rsi: Optional[float]) -> Dict[str, Any]:
+    if rsi is None or math.isnan(rsi):
+        return {"label": "Unknown", "comment": ""}
+
+    if rsi >= 70:
+        return {
+            "label": "Overbought",
+            "comment": "Momentum is strong but the stock may be stretched to the upside.",
+        }
+    elif rsi <= 30:
+        return {
+            "label": "Oversold",
+            "comment": "Selling pressure looks exhausted and a bounce is possible.",
+        }
+    elif rsi >= 55:
+        return {
+            "label": "Bullish",
+            "comment": "Momentum favors buyers with healthy upside pressure.",
+        }
+    elif rsi <= 45:
+        return {
+            "label": "Bearish",
+            "comment": "Momentum favors sellers and downside risk remains.",
+        }
+
+    return {
+        "label": "Neutral",
+        "comment": "Momentum is balanced with no strong directional bias.",
+    }
+
+
+def _interpret_macd(macd: Optional[float], signal: Optional[float]) -> Dict[str, Any]:
+    if macd is None or signal is None:
+        return {"label": "Unknown", "comment": ""}
+
+    if macd > signal:
+        return {
+            "label": "Bullish",
+            "comment": "Trend momentum is positive and buyers remain in control.",
+        }
+    elif macd < signal:
+        return {
+            "label": "Bearish",
+            "comment": "Momentum is weakening and sellers may dominate.",
+        }
+
+    return {
+        "label": "Neutral",
+        "comment": "Momentum is flat with no clear trend direction.",
+    }
+
+
+def _interpret_volume(vol_vs_ma20: Optional[float]) -> Dict[str, Any]:
+    if vol_vs_ma20 is None or math.isnan(vol_vs_ma20):
+        return {"label": "Unknown", "comment": ""}
+
+    if vol_vs_ma20 > 20:
+        return {
+            "label": "High",
+            "comment": "Trading activity is well above average, showing strong interest.",
+        }
+    elif vol_vs_ma20 < -20:
+        return {
+            "label": "Low",
+            "comment": "Volume is light, so price moves may lack conviction.",
+        }
+
+    return {
+        "label": "Normal",
+        "comment": "Volume is in line with recent trading activity.",
+    }
+
+
+def _interpret_trend(trend_strength: Optional[float]) -> Dict[str, Any]:
+    if trend_strength is None or math.isnan(trend_strength):
+        return {"label": "Unknown", "comment": ""}
+
+    if trend_strength > 15:
+        return {
+            "label": "Strong Uptrend",
+            "comment": "Price is rising consistently with strong trend momentum.",
+        }
+    elif trend_strength > 5:
+        return {
+            "label": "Uptrend",
+            "comment": "The stock is trending higher with moderate strength.",
+        }
+    elif trend_strength < -15:
+        return {
+            "label": "Strong Downtrend",
+            "comment": "Price is falling sharply with strong selling pressure.",
+        }
+    elif trend_strength < -5:
+        return {
+            "label": "Downtrend",
+            "comment": "The stock is trending lower with persistent weakness.",
+        }
+
+    return {
+        "label": "Sideways",
+        "comment": "Price action is range-bound without a clear trend.",
+    }
+
+
+def _interpret_volatility(volatility_20d: Optional[float]) -> Dict[str, Any]:
+    if volatility_20d is None or math.isnan(volatility_20d):
+        return {"label": "Unknown", "comment": ""}
+
+    if volatility_20d > 4:
+        return {
+            "label": "High",
+            "comment": "Large price swings indicate elevated risk.",
+        }
+    elif volatility_20d < 1.5:
+        return {
+            "label": "Low",
+            "comment": "Price movement is calm and stable.",
+        }
+
+    return {
+        "label": "Moderate",
+        "comment": "Volatility is within a normal range.",
+    }
+
+
+# ------------------------------------------------------------
+# Public API — Technical Snapshot
 # ------------------------------------------------------------
 
 def build_technical_snapshot(
     symbol: str,
-    feature_dict: Dict[str, float],
-    last_close: float,
+    features: Dict[str, Any],
+    last_close: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
-    Builds a clean, UI-ready technical snapshot from feature dict.
+    Build a compact, explainable technical snapshot for UI & AI.
+
+    Input:
+      - symbol
+      - BullBrain feature_dict (48 features)
+      - last_close (optional)
+
+    Output:
+      - Human-readable technical analysis
     """
 
-    rsi = feature_dict.get("rsi14")
-    macd = feature_dict.get("macd")
-    macd_signal = feature_dict.get("macd_signal")
-    macd_hist = feature_dict.get("macd_hist")
+    rsi = features.get("rsi14")
+    macd = features.get("macd")
+    macd_signal = features.get("macd_signal")
+    vol_vs_ma20 = features.get("volume_vs_ma20_pct")
+    trend_strength = features.get("trend_strength_20")
+    volatility_20d = features.get("volatility_20d")
+    price_vs_sma20 = features.get("price_vs_sma20_pct")
 
-    sma20 = feature_dict.get("sma20")
-    sma50 = feature_dict.get("sma50")
-    sma200 = feature_dict.get("sma200")
+    rsi_block = _interpret_rsi(rsi)
+    macd_block = _interpret_macd(macd, macd_signal)
+    volume_block = _interpret_volume(vol_vs_ma20)
+    trend_block = _interpret_trend(trend_strength)
+    volatility_block = _interpret_volatility(volatility_20d)
 
-    price_vs_sma20 = feature_dict.get("price_vs_sma20_pct")
+    summary_parts = []
 
-    trend_strength = feature_dict.get("trend_strength_20")
-    volatility = feature_dict.get("volatility_20d")
+    if rsi_block["label"] != "Unknown":
+        summary_parts.append(f"RSI is {rsi_block['label'].lower()}.")
 
-    # ----------------------------
-    # RSI interpretation
-    # ----------------------------
-    if rsi is None:
-        rsi_signal = None
-    elif rsi >= 70:
-        rsi_signal = "Overbought"
-    elif rsi <= 30:
-        rsi_signal = "Oversold"
-    else:
-        rsi_signal = "Neutral"
+    if trend_block["label"] != "Unknown":
+        summary_parts.append(f"Trend is {trend_block['label'].lower()}.")
 
-    # ----------------------------
-    # MACD interpretation
-    # ----------------------------
-    if macd is None or macd_signal is None:
-        macd_trend = None
-    elif macd > macd_signal:
-        macd_trend = "Bullish"
-    else:
-        macd_trend = "Bearish"
+    if volume_block["label"] == "High":
+        summary_parts.append("Volume confirms the move.")
 
-    # ----------------------------
-    # Trend interpretation
-    # ----------------------------
-    if trend_strength is None:
-        trend_label = None
-    elif trend_strength > 0:
-        trend_label = "Uptrend"
-    else:
-        trend_label = "Downtrend"
+    if volatility_block["label"] == "High":
+        summary_parts.append("Risk is elevated due to volatility.")
 
-    # ----------------------------
-    # Volatility bucket
-    # ----------------------------
-    if volatility is None:
-        vol_bucket = None
-    elif volatility < 1.2:
-        vol_bucket = "Low"
-    elif volatility < 2.5:
-        vol_bucket = "Moderate"
-    else:
-        vol_bucket = "High"
+    summary = " ".join(summary_parts)
 
-    # ----------------------------
-    # Moving-average structure
-    # ----------------------------
-    ma_structure = None
-    if sma20 and sma50 and sma200:
-        if sma20 > sma50 > sma200:
-            ma_structure = "Strong Bullish"
-        elif sma20 < sma50 < sma200:
-            ma_structure = "Strong Bearish"
-        else:
-            ma_structure = "Mixed"
-
-    # ----------------------------
-    # Assemble snapshot
-    # ----------------------------
     return {
-        "symbol": symbol,
-        "price": round(last_close, 2) if last_close else None,
-
+        "symbol": symbol.upper(),
+        "lastClose": last_close,
         "rsi": {
-            "value": round(rsi, 2) if rsi is not None else None,
-            "signal": rsi_signal,
+            "value": rsi,
+            **rsi_block,
         },
-
         "macd": {
-            "macd": round(macd, 4) if macd is not None else None,
-            "signal": round(macd_signal, 4) if macd_signal is not None else None,
-            "histogram": round(macd_hist, 4) if macd_hist is not None else None,
-            "trend": macd_trend,
+            "value": macd,
+            "signal": macd_signal,
+            **macd_block,
         },
-
-        "movingAverages": {
-            "sma20": round(sma20, 2) if sma20 else None,
-            "sma50": round(sma50, 2) if sma50 else None,
-            "sma200": round(sma200, 2) if sma200 else None,
-            "structure": ma_structure,
-            "priceVsSMA20Pct": round(price_vs_sma20, 2)
-            if price_vs_sma20 is not None
-            else None,
+        "volume": {
+            "volume_vs_ma20_pct": vol_vs_ma20,
+            **volume_block,
         },
-
         "trend": {
-            "direction": trend_label,
-            "strength": round(trend_strength, 4)
-            if trend_strength is not None
-            else None,
+            "trend_strength_20": trend_strength,
+            **trend_block,
         },
-
         "volatility": {
-            "bucket": vol_bucket,
-            "value": round(volatility, 2)
-            if volatility is not None
-            else None,
+            "volatility_20d": volatility_20d,
+            **volatility_block,
         },
+        "pricePosition": {
+            "price_vs_sma20_pct": price_vs_sma20,
+            "label": (
+                "Above Trend"
+                if price_vs_sma20 is not None and price_vs_sma20 > 0
+                else "Below Trend"
+            ),
+        },
+        "summary": summary,
     }

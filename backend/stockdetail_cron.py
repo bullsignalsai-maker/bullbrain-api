@@ -5,12 +5,15 @@ BullSignalsAI — StockDetail Cron (Firestore Precompute)
 Purpose:
 - Precompute /stockdetail payloads
 - Store into Firestore so the mobile UI loads instantly
+
+Render Cron:
+  Command: python -m backend.stockdetail_cron
+  Schedule: */15 * * * 1-5   (or whatever you prefer)
 """
 
 import os
 import time
 import traceback
-import datetime
 from typing import List
 
 from backend.firestore_paths import get_db, stockdetail_doc_ref
@@ -30,13 +33,6 @@ STOCKDETAIL_UNIVERSE = os.getenv("STOCKDETAIL_UNIVERSE", "").strip()
 # ----------------------------
 # Helpers
 # ----------------------------
-def parse_iso(ts: str) -> datetime.datetime | None:
-    try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
 def get_universe() -> List[str]:
     if not STOCKDETAIL_UNIVERSE:
         return []
@@ -44,13 +40,9 @@ def get_universe() -> List[str]:
     return list(dict.fromkeys(syms))[:MAX_SYMBOLS_PER_RUN]
 
 
+import datetime
+
 def should_skip(existing: dict, force: bool) -> bool:
-    """
-    Skip if:
-    - doc exists
-    - not forced
-    - expiresAt is still in the future
-    """
     if force or not existing:
         return False
 
@@ -58,11 +50,13 @@ def should_skip(existing: dict, force: bool) -> bool:
     if not expires_at:
         return False
 
-    exp = parse_iso(expires_at)
-    if not exp:
+    try:
+        exp = datetime.datetime.fromisoformat(
+            expires_at.replace("Z", "+00:00")
+        )
+        return exp > datetime.datetime.utcnow()
+    except Exception:
         return False
-
-    return exp > datetime.datetime.utcnow()
 
 
 # ----------------------------

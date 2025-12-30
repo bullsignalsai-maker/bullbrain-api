@@ -7,22 +7,18 @@
 #   Schedule: */15 * * * 1-5
 # ---------------------------------------------------------
 # ADD near the top
-from main import (
-    _get_market_overview_quick,
-    _analyze_headline_sentiment_py,
-    _clean_text_py,
-    market_news,
-)
+import main as backend
 import pytz
-
 import datetime
 import math
-
+import requests
 import firebase_admin
 from firebase_admin import firestore  # type: ignore
-
-import main as backend
 from symbols_clean import REAL_TICKERS, COMPANY_NAMES
+from typing import Optional, Dict, Any, List
+import time
+import random
+from backend.candle_store import get_candles
 
 
 MARKET_KEYWORDS = [
@@ -52,21 +48,76 @@ ALLOWED_SOURCES = {
     "Yahoo",
 }
 
+# ---------------------------------------------------------
+# MAG-7 (mandatory on every cron run)
+# ---------------------------------------------------------
+MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
 
+print("✅ cron get_candles loaded from:", get_candles.__module__)
+
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+def utc_now_iso() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 # ---------------------------------------------------------
 # Logging helper
 # ---------------------------------------------------------
 def log(msg: str) -> None:
-    backend.log(f"[cron] {msg}")
-
+    try:
+        backend.log(f"[cron] {msg}")
+    except Exception:
+        pass
+    print(f"[cron] {msg}", flush=True)
 
 # ---------------------------------------------------------
-# Firestore handle
+# Firestore handle (SAFE, standalone)
 # ---------------------------------------------------------
 def get_db():
     if not firebase_admin._apps:
-        backend.init_firebase_admin()
-    return backend.db
+        firebase_admin.initialize_app()
+    return firestore.client()
+
+
+# ---------------------------------------------------------
+# Fetch previous MAG-7 snapshot from Firestore
+# ---------------------------------------------------------
+def get_previous_mag7_map() -> Dict[str, Dict[str, Any]]:
+    """
+    Returns:
+      {
+        "AAPL": { ... previous mag7 object ... },
+        "MSFT": { ... },
+        ...
+      }
+    """
+    try:
+        db = get_db()
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("homescreen_snapshot")
+              .get()
+        )
+
+        if not doc.exists:
+            return {}
+
+        data = doc.to_dict() or {}
+        prev_list = data.get("mag7", [])
+
+        return {
+            item.get("symbol"): item
+            for item in prev_list
+            if isinstance(item, dict) and item.get("symbol")
+        }
+
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------
@@ -124,6 +175,35 @@ def classify_signal(prob_up: float, prob_down: float) -> str:
         return "SELL"
 
     return "HOLD"
+
+# ---------------------------------------------------------
+# MAG-7 Trend Arrow Calculation
+# ---------------------------------------------------------
+def compute_trend_arrow(
+    current_confidence: float,
+    previous_confidence: Optional[float],
+) -> str:
+    """
+    Returns:
+      "UP"   -> ⬆️ Bullish momentum increasing
+      "DOWN" -> ⬇️ Momentum weakening
+      "FLAT" -> ➡️ No meaningful change
+    """
+    if previous_confidence is None:
+        return "FLAT"
+
+    try:
+        delta = float(current_confidence) - float(previous_confidence)
+    except Exception:
+        return "FLAT"
+
+    # Stable thresholds (avoid flip-flop)
+    if delta >= 3.0:
+        return "UP"
+    if delta <= -3.0:
+        return "DOWN"
+
+    return "FLAT"
 
 
 # ---------------------------------------------------------
@@ -296,11 +376,11 @@ def build_bear_explanations(symbol, prob_up, prob_down, kind, feat_dict):
     explanation_risk = tech_sentence + risk_sentence
     return short, explanation_risk
 
-
 # ---------------------------------------------------------
 # Main scan: build Hotlist + BearWatch docs
 # ---------------------------------------------------------
 def compute_hotlist_and_bearwatch():
+
     ensure_bullbrain_loaded()
 
     buy_candidates = []
@@ -308,32 +388,47 @@ def compute_hotlist_and_bearwatch():
     all_symbols = []
 
     total = len(REAL_TICKERS)
+
+    candles_none = 0
+    infer_ok = 0
+    buy_count = 0
+    sell_count = 0
+    hold_count = 0
+
     log(f"Scanning {total} tickers with BullBrain…")
 
     for i, sym in enumerate(REAL_TICKERS, start=1):
-        if i % 50 == 0:
-            log(f"...processed {i}/{total}")
+
+        if i % 25 == 0:
+            log(
+                f"[PROGRESS] {i}/{total} | buys={buy_count} sells={sell_count} holds={hold_count} | candle_none={candles_none}"
+            )
 
         try:
-            candles = backend.fetch_daily_candles(sym)
+            candles = get_candles(sym, min_points=120)
             if not candles:
-                log(f"No candles for {sym}, skipping…")
+                candles_none += 1
+                log(f"[SCAN] {sym} | candles=None → skip")
                 continue
+        except Exception as e:
+            log(f"[SCAN] {sym} | candle-error | {e}")
+            continue
 
-            feats_vec, feat_dict, last_close = backend.compute_bullbrain_features(
-                candles
-            )
+        try:
+            feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
             if feats_vec is None:
-                log(f"Feature generation failed for {sym}, skipping…")
+                log(f"[SCAN] {sym} | feature-fail")
                 continue
 
             infer = backend.bullbrain_infer(feats_vec)
             if infer is None:
-                log(f"bullbrain_infer returned None for {sym}, skipping…")
+                log(f"[SCAN] {sym} | infer-none")
                 continue
 
+            infer_ok += 1
+
         except Exception as e:
-            log(f"bullbrain_infer_single error for {sym}: {e}")
+            log(f"[SCAN] {sym} | infer-exception | {e}")
             continue
 
         prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
@@ -342,11 +437,13 @@ def compute_hotlist_and_bearwatch():
         kind = classify_signal(prob_up, prob_down)
         confidence = max(prob_up, prob_down) * 100.0
 
-        company_name = COMPANY_NAMES.get(sym, sym)
+        log(
+            f"[SCAN] {sym} | kind={kind} | up={prob_up:.3f} down={prob_down:.3f} conf={confidence:.1f}"
+        )
 
         base = {
             "symbol": sym,
-            "company_name": company_name,
+            "company_name": COMPANY_NAMES.get(sym, sym),
             "prob_up": round(prob_up, 4),
             "prob_down": round(prob_down, 4),
             "confidence": round(confidence, 2),
@@ -356,13 +453,13 @@ def compute_hotlist_and_bearwatch():
             {
                 **base,
                 "kind": kind,
-                "feat_dict": feat_dict,
                 "prob_up_raw": prob_up,
                 "prob_down_raw": prob_down,
             }
         )
 
         if kind in ("STRONG_BUY", "BUY"):
+            buy_count += 1
             short, risk = build_buy_explanations(
                 sym, prob_up, prob_down, kind, feat_dict
             )
@@ -376,68 +473,54 @@ def compute_hotlist_and_bearwatch():
                 }
             )
         else:
+            if kind in ("STRONG_SELL", "SELL"):
+                sell_count += 1
+            else:
+                hold_count += 1
+
             short, risk = build_bear_explanations(
                 sym, prob_up, prob_down, kind, feat_dict
             )
-            signal_label = "SELL" if kind in ("STRONG_SELL", "SELL") else "HOLD"
+
             bear_candidates.append(
                 {
                     **base,
-                    "signal": signal_label,
+                    "signal": "SELL" if kind in ("STRONG_SELL", "SELL") else "HOLD",
                     "kind": kind,
                     "explanation_short": short,
                     "explanation_risk": risk,
                 }
             )
 
+        time.sleep(random.uniform(0.15, 0.25))
+
     # ----------------------------
-    # Build Hotlist (Top 5 BUY)
+    # Hotlist
     # ----------------------------
     buy_candidates.sort(key=lambda x: x["prob_up"], reverse=True)
     hotlist = buy_candidates[:5]
 
-    # Fallback: if still <5, fill with top bullish names (WATCHLIST_BUY),
-    # even if the model is slightly bearish overall.
-    if len(hotlist) < 5:
-        already = {item["symbol"] for item in hotlist}
-        extras_pool = [c for c in all_symbols if c["symbol"] not in already]
-        extras_pool.sort(key=lambda x: x["prob_up_raw"], reverse=True)
-
-        needed = 5 - len(hotlist)
-        for extra in extras_pool[:needed]:
-            sym = extra["symbol"]
-            prob_up = extra["prob_up_raw"]
-            prob_down = extra["prob_down_raw"]
-            feat_dict = extra["feat_dict"]
-
-            short, risk = build_buy_explanations(
-                sym, prob_up, prob_down, "WATCHLIST_BUY", feat_dict
-            )
-
-            hotlist.append(
-                {
-                    "symbol": sym,
-                    "company_name": extra["company_name"],
-                    "prob_up": round(prob_up, 4),
-                    "prob_down": round(prob_down, 4),
-                    "confidence": extra["confidence"],
-                    "signal": "BUY",
-                    "kind": "WATCHLIST_BUY",
-                    "explanation_short": short,
-                    "explanation_risk": risk,
-                }
-            )
-
-    # Cap at 5
-    hotlist = hotlist[:5]
+    log("[HOTLIST] Final picks:")
+    for i, h in enumerate(hotlist, 1):
+        log(
+            f"[HOTLIST] #{i} {h['symbol']} | up={h['prob_up']} conf={h['confidence']} kind={h['kind']}"
+        )
 
     # ----------------------------
-    # Build BearWatch (Top 5 SELL / HOLD)
+    # BearWatch
     # ----------------------------
     bear_candidates.sort(key=lambda x: x["prob_down"], reverse=True)
     bearwatch = bear_candidates[:5]
 
-    log(f"Built Hotlist: {len(hotlist)} | BearWatch: {len(bearwatch)}")
+    log("[BEARWATCH] Final picks:")
+    for i, b in enumerate(bearwatch, 1):
+        log(
+            f"[BEARWATCH] #{i} {b['symbol']} | down={b['prob_down']} conf={b['confidence']} kind={b['kind']}"
+        )
+
+    log(
+        f"[SUMMARY] scan-done | total={total} | infer_ok={infer_ok} | candles_none={candles_none}"
+    )
 
     now = (
         datetime.datetime.now(datetime.timezone.utc)
@@ -445,19 +528,18 @@ def compute_hotlist_and_bearwatch():
         .replace("+00:00", "Z")
     )
 
-    hotlist_doc = {
-        "count": len(hotlist),
-        "hotlist": hotlist,
-        "updated_at": now,
-    }
-
-    bearwatch_doc = {
-        "count": len(bearwatch),
-        "bearwatch": bearwatch,
-        "updated_at": now,
-    }
-
-    return hotlist_doc, bearwatch_doc
+    return (
+        {
+            "count": len(hotlist),
+            "hotlist": hotlist,
+            "updated_at": now,
+        },
+        {
+            "count": len(bearwatch),
+            "bearwatch": bearwatch,
+            "updated_at": now,
+        },
+    )
 
 
 # ---------------------------------------------------------
@@ -747,44 +829,361 @@ def build_market_pulse():
     }
 
 
-def save_market_pulse_docs(overview_doc, pulse_doc):
+
+# ---------------------------------------------------------
+# Safe quote fetcher (cron)
+# ---------------------------------------------------------
+def fetch_quote_safe(symbol: str) -> dict:
+    """
+    Uses backend_fetch_quote from main.py.
+    Never throws inside cron.
+    """
+    try:
+        q = backend.backend_fetch_quote(symbol)
+        if isinstance(q, dict):
+            return q
+    except Exception as e:
+        log(f"Quote fetch failed for {symbol}: {e}")
+
+    return {}
+
+
+
+# =========================================================
+# HOME SCREEN SNAPSHOT (Firestore)
+# =========================================================
+def percent_str(x: Optional[float], digits: int = 2) -> str:
+    try:
+        if x is None:
+            return "--"
+        return f"{x:+.{digits}f}%"
+    except Exception:
+        return "--"
+
+
+def build_us_market_card() -> Dict[str, Any]:
+    # Use SPY + QQQ as "AI Market Insights" proxy
+    spy = fetch_quote_safe("SPY")
+    qqq = fetch_quote_safe("QQQ")
+
+    spy_chg = spy.get("changePct")
+    qqq_chg = qqq.get("changePct")
+
+    # Some providers return decimals; normalize if needed
+    def normalize_pct(v):
+        try:
+            v = float(v)
+            # if it's like 0.0086 => 0.86%
+            if abs(v) <= 1.5:
+                return v * 100.0
+            return v
+        except Exception:
+            return None
+
+    spy_chg = normalize_pct(spy_chg)
+    qqq_chg = normalize_pct(qqq_chg)
+
+    return {
+        "id": "us_market",
+        "title": "AI Market Insights",
+        "subtitle": "US Market snapshot",
+        "items": [
+            {"label": "S&P 500 (SPY)", "value": percent_str(spy_chg)},
+            {"label": "Nasdaq (QQQ)", "value": percent_str(qqq_chg)},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_crypto_movers_card() -> Dict[str, Any]:
+    # Free CoinGecko
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=dogecoin,ripple,solana"
+        "&vs_currencies=usd"
+        "&include_24hr_change=true"
+    )
+    data = requests.get(url, timeout=10).json()
+
+    def cg_change(id_):
+        try:
+            return float(data[id_]["usd_24h_change"])
+        except Exception:
+            return None
+
+    return {
+        "id": "crypto",
+        "title": "Crypto Movers",
+        "subtitle": "24h change",
+        "items": [
+            {"label": "DOGE", "value": percent_str(cg_change("dogecoin"))},
+            {"label": "XRP", "value": percent_str(cg_change("ripple"))},
+            {"label": "SOL", "value": percent_str(cg_change("solana"))},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_sentiment_card() -> Dict[str, Any]:
+    # Free alternative.me
+    url = "https://api.alternative.me/fng/?limit=1&format=json"
+    data = requests.get(url, timeout=10).json()
+
+    value = None
+    label = "Neutral"
+    try:
+        row = (data.get("data") or [])[0]
+        value = int(row.get("value"))
+        label = row.get("value_classification") or "Neutral"
+    except Exception:
+        value = 50
+        label = "Neutral"
+
+    return {
+        "id": "sentiment",
+        "title": "Market Sentiment",
+        "subtitle": "Fear & Greed (crypto proxy)",
+        "items": [
+            {"label": "Mood", "value": f"{label} ({value})"},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def build_commodities_card() -> Dict[str, Any]:
+    # Use ETFs as proxies (free quote source already in your backend)
+    gld = fetch_quote_safe("GLD")
+    slv = fetch_quote_safe("SLV")
+    uso = fetch_quote_safe("USO")
+
+    def norm(v):
+        try:
+            v = float(v)
+            if abs(v) <= 1.5:
+                return v * 100.0
+            return v
+        except Exception:
+            return None
+
+    return {
+        "id": "commodities",
+        "title": "Commodities Snapshot",
+        "subtitle": "ETF proxies",
+        "items": [
+            {"label": "Gold (GLD)", "value": percent_str(norm(gld.get("changePct")) )},
+            {"label": "Oil (USO)", "value": percent_str(norm(uso.get("changePct")) )},
+            {"label": "Silver (SLV)", "value": percent_str(norm(slv.get("changePct")) )},
+        ],
+        "updated_at": utc_now_iso(),
+    }
+
+
+def compute_homescreen_carousel() -> List[Dict[str, Any]]:
+    cards: List[Dict[str, Any]] = []
+
+    for builder in [build_us_market_card, build_crypto_movers_card, build_sentiment_card, build_commodities_card]:
+        try:
+            cards.append(builder())
+        except Exception as e:
+            log(f"Home carousel card failed ({builder.__name__}): {e}")
+
+    # Ensure exactly 4 cards (if any failed, add a static fallback)
+    while len(cards) < 4:
+        cards.append(
+            {
+                "id": f"fallback_{len(cards)+1}",
+                "title": "Trending Sectors",
+                "subtitle": "Quick view",
+                "items": [
+                    {"label": "AI", "value": "Watch"},
+                    {"label": "Tech", "value": "Watch"},
+                    {"label": "Energy", "value": "Watch"},
+                ],
+                "updated_at": utc_now_iso(),
+            }
+        )
+
+    return cards[:4]
+
+
+def build_mag7_summary(signal: str) -> str:
+    if signal == "BUY":
+        return "BullBrain detects favorable upside conditions with improving momentum."
+    if signal == "SELL":
+        return "BullBrain flags downside risk as selling pressure increases."
+    return "BullBrain sees mixed signals with no strong directional edge."
+
+
+def build_mag7_fallback(symbol: str) -> Dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "price": None,
+        "changePct": None,
+        "signal": "HOLD",
+        "confidence": 50.0,
+        "prob_up": 0.5,
+        "prob_down": 0.5,
+        "summary": "Data temporarily unavailable. Model defaults to neutral.",
+        "updated_at": utc_now_iso(),
+    }
+
+
+def compute_single_mag7(symbol: str) -> Dict[str, Any]:
+    ensure_bullbrain_loaded()
+
+    log(f"[MAG7] ▶ candle-fetch {symbol}")
+
+    candles = get_candles(symbol, min_points=120)
+
+    if not candles:
+        log(f"[MAG7] ❌ no candles for {symbol}")
+        raise RuntimeError("No candles")
+
+    log(
+        f"[MAG7] {symbol} | candles-ok | count={len(candles.get('close', []))}"
+    )
+
+    feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+    if feats_vec is None:
+        log(f"[MAG7] ❌ feature-gen failed {symbol}")
+        raise RuntimeError("Feature generation failed")
+
+    infer = backend.bullbrain_infer(feats_vec)
+    if infer is None:
+        log(f"[MAG7] ❌ inference failed {symbol}")
+        raise RuntimeError("Inference failed")
+
+    prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
+    prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
+
+    kind = classify_signal(prob_up, prob_down)
+
+    signal = (
+        "BUY" if kind in ("BUY", "STRONG_BUY")
+        else "SELL" if kind in ("SELL", "STRONG_SELL")
+        else "HOLD"
+    )
+
+    confidence = round(max(prob_up, prob_down) * 100.0, 1)
+
+    log(
+        f"[MAG7] {symbol} | signal={signal} | conf={confidence}"
+    )
+
+    q = fetch_quote_safe(symbol)
+    price = q.get("price") or q.get("close")
+    change_pct = q.get("changePct")
+
+    try:
+        if change_pct is not None:
+            change_pct = float(change_pct)
+            if abs(change_pct) <= 1.5:
+                change_pct *= 100.0
+    except Exception:
+        pass
+
+    return {
+        "symbol": symbol,
+        "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "price": price,
+        "changePct": change_pct,
+        "signal": signal,
+        "confidence": confidence,
+        "prob_up": round(prob_up, 4),
+        "prob_down": round(prob_down, 4),
+        "summary": build_mag7_summary(signal),
+        "updated_at": utc_now_iso(),
+    }
+
+
+
+def compute_mag7_snapshot() -> List[Dict[str, Any]]:
+    previous_map = get_previous_mag7_map()
+    results: List[Dict[str, Any]] = []
+
+    log("[MAG7] snapshot-start")
+
+    for sym in MAG7:
+        try:
+            current = compute_single_mag7(sym)
+
+            prev_conf = (
+                previous_map.get(sym, {})
+                .get("confidence")
+            )
+
+            trend = compute_trend_arrow(
+                current_confidence=current["confidence"],
+                previous_confidence=prev_conf,
+            )
+
+            current["trend"] = trend
+            results.append(current)
+
+            log(f"[MAG7] {sym} | trend={trend}")
+
+        except Exception as e:
+            log(f"[MAG7] fallback {sym} | {e}")
+            fallback = build_mag7_fallback(sym)
+            fallback["trend"] = "FLAT"
+            results.append(fallback)
+
+    log("[MAG7] snapshot-complete")
+    return results
+
+
+
+def build_homescreen_snapshot() -> Dict[str, Any]:
+    # reuse same market overview helper for consistency
+    overview = compute_market_overview()
+
+    return {
+        "market_overview": overview,
+        "carousel": compute_homescreen_carousel(),
+        "mag7": compute_mag7_snapshot(),
+        "updated_at": utc_now_iso(),
+        "version": "v1",
+    }
+
+
+def save_homescreen_snapshot(snapshot: Dict[str, Any]) -> None:
     db = get_db()
-    col = db.collection("bullsignals_ai")
-
-    col.document("market_overview_live").set(overview_doc, merge=True)
-    log("💾 Saved bullsignals_ai/market_overview_live")
-
-    col.document("market_pulse").set(pulse_doc, merge=True)
-    log("💾 Saved bullsignals_ai/market_pulse")
+    db.collection("bullsignals_ai").document("homescreen_snapshot").set(snapshot, merge=True)
+    log("💾 Saved bullsignals_ai/homescreen_snapshot")
 
 
 # =========================================================
 # ENTRYPOINT
 # =========================================================
 def main():
-    started = datetime.datetime.now(
-        datetime.timezone.utc
-    ).isoformat().replace("+00:00", "Z")
+    started = utc_now_iso()
     log(f"Market cron started at {started}")
 
     try:
-        # 🔒 Existing
+        # 🔥 1) MAG7 FIRST — mandatory
+        try:
+            hs = build_homescreen_snapshot()
+            save_homescreen_snapshot(hs)
+        except Exception as e:
+            log(f"MAG7/Home snapshot failed (non-fatal): {e}")
+
+        # ⏳ Small pause (rate-limit safety)
+        time.sleep(2)
+
+        # 2) SP500 scan (Hotlist + BearWatch)
         hotlist_doc, bearwatch_doc = compute_hotlist_and_bearwatch()
         save_docs_to_firestore(hotlist_doc, bearwatch_doc)
 
-        # 🆕 New
+        # 3) Market Pulse
         overview_doc = compute_market_overview()
         pulse_doc = compute_market_pulse()
         save_market_pulse_docs(overview_doc, pulse_doc)
 
-        finished = datetime.datetime.now(
-            datetime.timezone.utc
-        ).isoformat().replace("+00:00", "Z")
-        log(f"Market cron completed at {finished}")
+        log(f"Market cron completed at {utc_now_iso()}")
 
     except Exception as e:
         log(f"Fatal error in market_cron: {e}")
-
 
 if __name__ == "__main__":
     main()
