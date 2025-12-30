@@ -4470,7 +4470,7 @@ def get_stock_detail(symbol: str):
         # -------------------------
         # 3️⃣ Technical snapshot
         # -------------------------
-        technical = build_technical_snapshot(candles,feat_dict,candles["close"][-1])
+        technical = stock.get("technical") or {}
 
         # -------------------------
         # 4️⃣ Smart pattern (optional, safe)

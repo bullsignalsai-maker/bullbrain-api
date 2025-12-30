@@ -103,3 +103,50 @@ def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:
         return get_quote(symbol)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------
+# Pending quotes (on-demand support)
+# ---------------------------------------------------------
+
+def get_pending_quotes(limit: int = 50):
+    """
+    Returns symbols that requested quotes but are not fresh yet.
+    Used by quote_worker background job.
+    """
+    db = get_db()
+    now = utc_now()
+
+    pending = []
+
+    docs = (
+        db.collection("bullsignals_ai")
+        .document("quotes")
+        .collection("symbols")
+        .stream()
+    )
+
+    for doc in docs:
+        d = doc.to_dict() or {}
+        last = d.get("last_fetch")
+
+        # never fetched → pending
+        if not last:
+            pending.append(doc.id)
+            continue
+
+        try:
+            last_dt = datetime.datetime.fromisoformat(
+                last.replace("Z", "")
+            ).replace(tzinfo=datetime.timezone.utc)
+
+            age = (now - last_dt).total_seconds()
+            if age > QUOTE_TTL_SECONDS:
+                pending.append(doc.id)
+        except Exception:
+            pending.append(doc.id)
+
+        if len(pending) >= limit:
+            break
+
+    return pending
