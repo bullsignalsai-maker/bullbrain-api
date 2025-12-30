@@ -22,6 +22,7 @@ import time
 from backend.candle_store import get_candles
 from backend.candle_store import get_candles as get_cached_candles
 from backend.stock_bootstrap import bootstrap_stock
+from backend.quote_demand import ensure_quote
 
 
 
@@ -4442,6 +4443,15 @@ def get_stock_detail(symbol: str):
             "status": "error",
             "error": "Invalid symbol"
         }
+    
+        # -------------------------
+    # 🔔 Ensure quote refresh (non-blocking)
+    # -------------------------
+    try:
+        ensure_quote(symbol)
+    except Exception:
+        pass
+
 
     try:
         # -------------------------
@@ -4556,7 +4566,12 @@ def get_watchlist(user_id: str):
     items = []
     for sym in symbols:
         try:
-            stock = bootstrap_stock(sym)  # returns cached if fresh
+            # 🔔 Ensure quote refresh (non-blocking)
+            try:
+                ensure_quote(sym)
+            except Exception:
+                pass
+            stock = bootstrap_stock(sym)  # cached / fresh intelligence        
             items.append({
                 "symbol": sym,
                 "company_name": stock.get("company_name"),
@@ -4587,6 +4602,7 @@ def add_watchlist_symbol(user_id: str, symbol: str):
 
     # warm global cache (best effort)
     try:
+        ensure_quote(sym)
         bootstrap_stock(sym)
     except Exception:
         pass

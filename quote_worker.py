@@ -43,6 +43,11 @@ from quote_provider import (
     fetch_crypto_snapshot,
     fetch_sector_snapshot,
 )
+from backend.quote_repo import (
+    get_pending_quotes,
+    save_quote,
+    clear_needs_refresh,
+)
 
 # ---------------------------------------------------------
 # Firebase Init
@@ -223,6 +228,20 @@ def collect_tickers(db) -> Set[str]:
                         out.add(str(row["symbol"]).upper())
 
     return out
+
+# ---------------------------------------------------------
+# Collect on-demand quote refresh requests
+# ---------------------------------------------------------
+def collect_on_demand_quotes(db) -> Set[str]:
+    """
+    Returns symbols explicitly requested via quote_demand.ensure_quote()
+    """
+    try:
+        pending = get_pending_quotes()
+        return {sym.upper() for sym in pending if sym}
+    except Exception as e:
+        log(f"⚠️ Failed to read pending quotes: {e}")
+        return set()
 
 
 # ---------------------------------------------------------
@@ -489,15 +508,32 @@ def main() -> None:
                 continue
 
             tickers = collect_tickers(db)
-            log(f"Refreshing quotes for {len(tickers)} tickers | next_sleep={sleep_seconds}s")
+            on_demand = collect_on_demand_quotes(db)
+            all_tickers = tickers.union(on_demand)
+            log(f"Refreshing quotes | "f"homescreen={len(tickers)} "f"on_demand={len(on_demand)} "f"total={len(all_tickers)} "f"| next_sleep={sleep_seconds}s")
 
             quotes: Dict[str, Dict[str, Any]] = {}
 
             # Gentle throttling
             per_symbol_delay = 0.15 if is_market_open(now_utc) else 0.25
 
-            for sym in sorted(tickers):
-                quotes[sym] = fetch_equity_quote(sym)
+            for sym in sorted(all_tickers):
+                try:
+                    q = fetch_equity_quote(sym)
+
+                    if q:
+                        quotes[sym] = q
+
+                        # Persist into quote_repo (new)
+                        save_quote(sym, q)
+
+                        # Clear refresh flag if this was on-demand
+                        if sym in on_demand:
+                            clear_needs_refresh(sym)
+
+                except Exception as e:
+                    log(f"⚠️ Quote fetch failed for {sym}: {e}")
+
                 time.sleep(per_symbol_delay)
 
             update_quotes(db, quotes)
