@@ -1,20 +1,19 @@
 # backend/quote_repo.py
 # ---------------------------------------------------------
 # Quote Repository (Firestore)
-# - Global quote cache
-# - TTL-based freshness
-# - Worker signaling via needs_refresh
 # ---------------------------------------------------------
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import datetime
 
 import firebase_admin
 from firebase_admin import firestore  # type: ignore
 
+QUOTE_TTL_SECONDS = 30
+
 
 # ---------------------------------------------------------
-# Firestore init (safe)
+# Firestore
 # ---------------------------------------------------------
 def _db():
     if not firebase_admin._apps:
@@ -24,6 +23,10 @@ def _db():
 
 def _now_utc() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _now_iso() -> str:
+    return _now_utc().isoformat().replace("+00:00", "Z")
 
 
 def _parse_ts(ts: str) -> Optional[datetime.datetime]:
@@ -56,49 +59,39 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def is_quote_fresh(quote: Dict[str, Any]) -> bool:
-    try:
-        updated_at = _parse_ts(quote.get("updated_at"))
-        ttl = int(quote.get("ttl_seconds", 30))
-
-        if not updated_at:
-            return False
-
-        age = (_now_utc() - updated_at).total_seconds()
-        return age <= ttl
-    except Exception:
+    ts = _parse_ts(quote.get("updated_at"))
+    if not ts:
         return False
+    age = (_now_utc() - ts).total_seconds()
+    return age <= int(quote.get("ttl_seconds", QUOTE_TTL_SECONDS))
 
 
 def mark_needs_refresh(symbol: str) -> None:
     _quote_doc(symbol).set(
-        {
-            "needs_refresh": True,
-        },
+        {"needs_refresh": True},
+        merge=True,
+    )
+
+
+def clear_needs_refresh(symbol: str) -> None:
+    _quote_doc(symbol).set(
+        {"needs_refresh": False},
         merge=True,
     )
 
 
 def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
-    """
-    Used ONLY by quote_worker.
-    """
     payload = {
         **payload,
         "symbol": symbol.upper(),
-        "updated_at": _now_utc().isoformat().replace("+00:00", "Z"),
+        "updated_at": _now_iso(),
+        "ttl_seconds": QUOTE_TTL_SECONDS,
         "needs_refresh": False,
     }
-
     _quote_doc(symbol).set(payload, merge=True)
 
 
 def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:
-    """
-    Safe read:
-    - returns quote if exists
-    - never throws
-    - never marks refresh
-    """
     try:
         return get_quote(symbol)
     except Exception:
@@ -106,47 +99,37 @@ def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------
-# Pending quotes (on-demand support)
+# Pending quotes for worker
 # ---------------------------------------------------------
-
-def get_pending_quotes(limit: int = 50):
+def get_pending_quotes(limit: int = 50) -> List[str]:
     """
-    Returns symbols that requested quotes but are not fresh yet.
-    Used by quote_worker background job.
+    Quotes needing refresh:
+      - needs_refresh == True
+      - OR stale based on updated_at
     """
-    db = get_db()
-    now = utc_now()
-
-    pending = []
+    out: List[str] = []
 
     docs = (
-        db.collection("bullsignals_ai")
+        _db()
+        .collection("bullsignals_ai")
         .document("quotes")
         .collection("symbols")
         .stream()
     )
 
+    now = _now_utc()
+
     for doc in docs:
         d = doc.to_dict() or {}
-        last = d.get("last_fetch")
 
-        # never fetched → pending
-        if not last:
-            pending.append(doc.id)
-            continue
+        if d.get("needs_refresh") is True:
+            out.append(doc.id)
+        else:
+            ts = _parse_ts(d.get("updated_at"))
+            if not ts or (now - ts).total_seconds() > QUOTE_TTL_SECONDS:
+                out.append(doc.id)
 
-        try:
-            last_dt = datetime.datetime.fromisoformat(
-                last.replace("Z", "")
-            ).replace(tzinfo=datetime.timezone.utc)
-
-            age = (now - last_dt).total_seconds()
-            if age > QUOTE_TTL_SECONDS:
-                pending.append(doc.id)
-        except Exception:
-            pending.append(doc.id)
-
-        if len(pending) >= limit:
+        if len(out) >= limit:
             break
 
-    return pending
+    return out

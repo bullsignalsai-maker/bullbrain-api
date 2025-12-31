@@ -18,6 +18,7 @@ from backend.stock_repo import (
 )
 
 from symbols_clean import COMPANY_NAMES
+from backend.bull_insights import generate_bull_insights
 
 
 # ---------------------------------------------------------
@@ -97,10 +98,33 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
     # 6️⃣ Quote (safe)
     quote = backend.backend_fetch_quote(symbol) or {}
 
+# ---------------------------------------------------------
+# Bull Insights (backend single source of truth)
+# ---------------------------------------------------------
+try:
+    insights = generate_bull_insights(
+        symbol=symbol,
+        features=feat_dict,
+        bullbrain={
+            "signal": signal,
+            "kind": kind,
+            "confidence": confidence,
+            "prob_up": prob_up,
+            "prob_down": prob_down,
+        },
+        technical=None,  # stock_bootstrap does not compute /technical
+        seed_key=f"{symbol}:{utc_now_iso()}",
+    )
+except Exception as e:
+    print(f"[bull_insights] failed for {symbol}: {e}")
+    insights = None
+
+
     # 7️⃣ Build document
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "insights": insights,
 
         "quote": {
             "price": quote.get("price") or quote.get("close"),

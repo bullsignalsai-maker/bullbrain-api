@@ -19,6 +19,8 @@ from typing import Optional, Dict, Any, List
 import time
 import random
 from backend.candle_store import get_candles
+from backend.bull_insights import generate_bull_insights
+
 
 
 MARKET_KEYWORDS = [
@@ -436,6 +438,31 @@ def compute_hotlist_and_bearwatch():
 
         kind = classify_signal(prob_up, prob_down)
         confidence = max(prob_up, prob_down) * 100.0
+        # ---------------------------------------------------------
+        # Bull Insights (shared language with StockDetail)
+        # ---------------------------------------------------------
+        try:
+            insights = generate_bull_insights(
+                symbol=sym,
+                features=feat_dict,
+                bullbrain={
+                    "signal": (
+                        "BUY" if kind in ("BUY", "STRONG_BUY")
+                        else "SELL" if kind in ("SELL", "STRONG_SELL")
+                        else "HOLD"
+                    ),
+                    "kind": kind,
+                    "confidence": confidence,
+                    "prob_up": prob_up,
+                    "prob_down": prob_down,
+                },
+                technical=None,  # cron does not build /technical
+                seed_key=f"{sym}:{utc_now_iso()}",
+            )
+        except Exception as e:
+            log(f"[bull_insights] cron failed for {sym}: {e}")
+            insights = None
+
 
         log(
             f"[SCAN] {sym} | kind={kind} | up={prob_up:.3f} down={prob_down:.3f} conf={confidence:.1f}"
@@ -470,6 +497,8 @@ def compute_hotlist_and_bearwatch():
                     "kind": kind,
                     "explanation_short": short,
                     "explanation_risk": risk,
+                    "insights": insights,
+
                 }
             )
         else:
@@ -489,6 +518,8 @@ def compute_hotlist_and_bearwatch():
                     "kind": kind,
                     "explanation_short": short,
                     "explanation_risk": risk,
+                    "insights": insights,
+
                 }
             )
 
