@@ -4419,18 +4419,18 @@ def homescreen_mag7():
         "version": cache.get("version"),
     }
     
-    
-# ---------------------------------------------------------
-# Stock Detail API (FINAL)
-# ---------------------------------------------------------
 
+# ---------------------------------------------------------
+# Stock Detail API (FINAL – CORRECTED)
+# ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def get_stock_detail(symbol: str):
     """
     Full Stock Detail API
     - Firestore-first
+    - Runtime enrichment (technical + patterns)
     - Cost efficient
-    - Frontend-safe (no logic)
+    - Frontend-safe
     """
 
     symbol = symbol.upper().strip()
@@ -4438,20 +4438,11 @@ def get_stock_detail(symbol: str):
     # -------------------------
     # Validate symbol
     # -------------------------
-    if not symbol.isalpha():
+    if not symbol.isalnum():
         return {
             "status": "error",
-            "error": "Invalid symbol"
+            "error": "Invalid symbol",
         }
-    
-        # -------------------------
-    # 🔔 Ensure quote refresh (non-blocking)
-    # -------------------------
-    try:
-        ensure_quote(symbol)
-    except Exception:
-        pass
-
 
     try:
         # -------------------------
@@ -4463,17 +4454,28 @@ def get_stock_detail(symbol: str):
         # 2️⃣ Candles (Firestore-backed)
         # -------------------------
         candles = get_candles(symbol, min_points=120)
-
         if not candles:
             raise RuntimeError("Candles unavailable")
 
         # -------------------------
-        # 3️⃣ Technical snapshot
+        # 3️⃣ Recompute features (runtime-safe)
+        #     (needed for technical + patterns)
         # -------------------------
-        technical = stock.get("technical") or {}
+        feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+        if feat_dict is None:
+            raise RuntimeError("Feature computation failed")
 
         # -------------------------
-        # 4️⃣ Smart pattern (optional, safe)
+        # 4️⃣ Technical snapshot (FULL)
+        # -------------------------
+        technical = build_technical_snapshot(
+            candles=candles,
+            feat=feat_dict,
+            last_close=candles["close"][-1],
+        )
+
+        # -------------------------
+        # 5️⃣ Smart pattern detection (optional)
         # -------------------------
         smart_pattern = None
         pattern_dates = []
@@ -4486,10 +4488,10 @@ def get_stock_detail(symbol: str):
                 pattern_dates = history.get("dates", [])
                 pattern_stats = history.get("stats")
         except Exception:
-            pass  # smart pattern is non-critical
+            pass  # non-critical
 
         # -------------------------
-        # 5️⃣ News (existing helper)
+        # 6️⃣ News (existing helper)
         # -------------------------
         try:
             news = backend.market_news(symbol=symbol).get("data", [])
@@ -4497,25 +4499,25 @@ def get_stock_detail(symbol: str):
             news = []
 
         # -------------------------
-        # FINAL RESPONSE (STABLE)
+        # ✅ FINAL RESPONSE (LOCKED)
         # -------------------------
         return {
             "status": "ok",
             "symbol": symbol,
 
-            # Core intelligence
+            # Firestore-backed intelligence
             "stock": stock,
 
-            # Charts
+            # Candles
             "candles": {
                 "candles": candles,
                 "source": "firestore",
             },
 
-            # Technicals
+            # Runtime technicals
             "technical": technical,
 
-            # Smart pattern
+            # Smart patterns
             "smartPattern": smart_pattern,
             "patternDates": pattern_dates,
             "patternStats": pattern_stats,
@@ -4533,8 +4535,7 @@ def get_stock_detail(symbol: str):
             "symbol": symbol,
             "error": str(e),
         }
-        
-    
+
 
 
 # -----------------------------
