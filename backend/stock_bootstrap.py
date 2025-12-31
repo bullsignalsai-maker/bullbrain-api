@@ -49,6 +49,7 @@ def classify_signal(prob_up: float, prob_down: float) -> str:
     return "HOLD"
 
 
+
 # ---------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------
@@ -98,27 +99,26 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
     # 6️⃣ Quote (safe)
     quote = backend.backend_fetch_quote(symbol) or {}
 
-# ---------------------------------------------------------
-# Bull Insights (backend single source of truth)
-# ---------------------------------------------------------
-try:
-    insights = generate_bull_insights(
-        symbol=symbol,
-        features=feat_dict,
-        bullbrain={
-            "signal": signal,
-            "kind": kind,
-            "confidence": confidence,
-            "prob_up": prob_up,
-            "prob_down": prob_down,
-        },
-        technical=None,  # stock_bootstrap does not compute /technical
-        seed_key=f"{symbol}:{utc_now_iso()}",
-    )
-except Exception as e:
-    print(f"[bull_insights] failed for {symbol}: {e}")
-    insights = None
-
+    # ---------------------------------------------------------
+    # 6.5️⃣ Bull Insights (backend single source of truth)
+    # ---------------------------------------------------------
+    try:
+        insights = generate_bull_insights(
+            symbol=symbol,
+            features=feat_dict,
+            bullbrain={
+                "signal": signal,
+                "kind": kind,
+                "confidence": confidence,
+                "prob_up": prob_up,
+                "prob_down": prob_down,
+            },
+            technical=None,  # stock_bootstrap does not compute /technical
+            seed_key=f"{symbol}:{utc_now_iso()}",
+        )
+    except Exception as e:
+        print(f"[bull_insights] failed for {symbol}: {e}")
+        insights = None
 
     # 7️⃣ Build document
     doc = {
@@ -159,4 +159,5 @@ except Exception as e:
 
     # 8️⃣ Persist
     save_stock(symbol, doc)
+
     return doc
