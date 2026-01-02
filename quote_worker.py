@@ -344,6 +344,99 @@ def _ensure_card_after(
     else:
         carousel.insert(insert_at, default_card)
 
+def ensure_homescreen_base(d: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
+    """
+    Ensures REQUIRED homescreen schema always exists.
+    Never overwrites populated data.
+    """
+
+    # -----------------------------
+    # Market overview (header data)
+    # -----------------------------
+    if not isinstance(d.get("market_overview"), dict):
+        d["market_overview"] = {
+            "marketStatus": "Unknown",
+            "marketMood": "Unknown",
+            "risk_level": "Unknown",
+            "fearGreed": None,
+            "updated_at": now_iso,
+        }
+
+    # -----------------------------
+    # Carousel base
+    # -----------------------------
+    carousel = d.get("carousel")
+    if not isinstance(carousel, list):
+        carousel = []
+        d["carousel"] = carousel
+
+    def has(card_id: str) -> bool:
+        return any(isinstance(c, dict) and c.get("id") == card_id for c in carousel)
+
+    # 1️⃣ US Market
+    if not has("us_market"):
+        carousel.insert(
+            0,
+            {
+                "id": "us_market",
+                "title": "US Market",
+                "subtitle": "S&P 500 / Nasdaq",
+                "items": [],
+                "updated_at": now_iso,
+            },
+        )
+
+    # 2️⃣ Commodities
+    if not has("commodities"):
+        carousel.insert(
+            1,
+            {
+                "id": "commodities",
+                "title": "Commodities",
+                "subtitle": "Gold, Oil, Silver",
+                "items": [],
+                "updated_at": now_iso,
+            },
+        )
+
+    # 3️⃣ Crypto
+    if not has("crypto"):
+        carousel.append(
+            {
+                "id": "crypto",
+                "title": "Crypto Movers",
+                "subtitle": "24h change",
+                "items": [],
+                "updated_at": now_iso,
+            }
+        )
+
+    # 4️⃣ Sentiment
+    if not has("sentiment"):
+        carousel.append(
+            {
+                "id": "sentiment",
+                "title": "Market Sentiment",
+                "subtitle": "Fear & Greed (crypto proxy)",
+                "items": [{"label": "Mood", "value": "--"}],
+                "updated_at": now_iso,
+            }
+        )
+
+    # 5️⃣ Sectors
+    if not has("sectors"):
+        carousel.append(
+            {
+                "id": "sectors",
+                "title": "Top Sectors",
+                "subtitle": "ETF performance",
+                "items": [],
+                "updated_at": now_iso,
+            }
+        )
+
+    return d
+
 
 def update_market_overview(db) -> None:
     now_iso = utc_now_iso()
@@ -355,7 +448,8 @@ def update_market_overview(db) -> None:
         return
 
     d = snap.to_dict() or {}
-    carousel = d.get("carousel", [])
+    d = ensure_homescreen_base(d, now_iso)
+    carousel = d["carousel"]
     if not isinstance(carousel, list):
         carousel = []
 
@@ -479,6 +573,7 @@ def update_market_overview(db) -> None:
         {
             "carousel": carousel,
             "quote_refreshed_at": now_iso,
+            "market_overview": d.get("market_overview"),
         },
         merge=True,
     )
