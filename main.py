@@ -23,7 +23,7 @@ from backend.candle_store import get_candles
 from backend.candle_store import get_candles as get_cached_candles
 from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
-
+from backend.ui_stock_builder import build_and_save_stock_ui_doc
 
 
 app = FastAPI()
@@ -4421,148 +4421,64 @@ def homescreen_mag7():
 import inspect
 
 # ---------------------------------------------------------
-# Stock Detail API — FINAL (SIGNATURE-SAFE)
+# Stock Detail API — FINAL (FIRESTORE-FIRST)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def get_stockdetail(symbol: str):
     symbol = str(symbol or "").upper().strip()
 
     if not symbol.isalnum():
-        return {"status": "error", "symbol": symbol, "error": "Invalid symbol"}
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "error": "Invalid symbol",
+        }
 
-    # -----------------------------
-    # helper: safe function call
-    # -----------------------------
-    def _safe_call(fn, *args):
-        try:
-            return fn(*args)
-        except Exception:
-            return None
-
-    def _detect_pattern(candles):
-        # detect_smart_pattern(candles) OR detect_smart_pattern(symbol, candles)
-        try:
-            n = len(inspect.signature(detect_smart_pattern).parameters)
-        except Exception:
-            n = 1
-        if n >= 2:
-            return _safe_call(detect_smart_pattern, symbol, candles)
-        return _safe_call(detect_smart_pattern, candles)
-
-    def _pattern_history(candles, pattern_obj):
-        # scan_smart_pattern_history(symbol, candles, ...) OR scan_smart_pattern_history(candles, pattern)
-        # We will try (symbol, candles, pattern_obj) then (symbol, candles) then (candles, pattern_obj)
-        try:
-            params = list(inspect.signature(scan_smart_pattern_history).parameters)
-            n = len(params)
-        except Exception:
-            n = 2
-
-        # Most common based on your old code:
-        out = _safe_call(scan_smart_pattern_history, symbol, candles, pattern_obj)
-        if out is not None:
-            return out
-
-        out = _safe_call(scan_smart_pattern_history, symbol, candles)
-        if out is not None:
-            return out
-
-        return _safe_call(scan_smart_pattern_history, candles, pattern_obj)
+    # -------------------------------------------------
+    # Firestore handle
+    # -------------------------------------------------
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app()
+    db = firestore.client()
 
     try:
         # -------------------------------------------------
-        # 1) Firestore-first meta
+        # 1️⃣ Try Firestore UI document first
         # -------------------------------------------------
-        stock = bootstrap_stock(symbol) or {}
-
-        # -------------------------------------------------
-        # 2) Candles (Firestore-backed)
-        # -------------------------------------------------
-        candles = get_candles(symbol, min_points=180)
-        if not candles or not candles.get("close"):
-            raise RuntimeError("Candles unavailable")
-
-        # -------------------------------------------------
-        # 3) Features (runtime)
-        # -------------------------------------------------
-        feats_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-        if feat_dict is None:
-            raise RuntimeError("Feature computation failed")
-        if last_close is None:
-            last_close = float(candles["close"][-1])
-
-        # -------------------------------------------------
-        # 4) Technical snapshot (✅ correct signature)
-        # -------------------------------------------------
-        technical = build_technical_snapshot(
-            symbol=symbol,
-            feat=feat_dict,
-            last_close=float(last_close),
+        doc_ref = (
+            db.collection("bullsignals_ai")
+              .document("stocks")
+              .collection("symbols")
+              .document(symbol)
         )
 
-        # -------------------------------------------------
-        # 5) Smart pattern (signature-safe)
-        # -------------------------------------------------
-        smart_pattern = None
-        pattern_dates = []
-        pattern_stats = None
-
-        sp = _detect_pattern(candles)
-        if sp:
-            hist = _pattern_history(candles, sp) or {}
-
-            # Support multiple possible shapes
-            pattern_dates = hist.get("dates") or hist.get("samples") or []
-            pattern_stats = hist
-
-            smart_pattern = {
-                "pattern": sp.get("pattern") if isinstance(sp, dict) else None,
-                "headline": sp.get("headline") if isinstance(sp, dict) else None,
-                "winRate": sp.get("winRate") if isinstance(sp, dict) else None,
-                "occurrences": hist.get("occurrences", 0) if isinstance(hist, dict) else 0,
-                "samples": hist.get("samples", []) if isinstance(hist, dict) else [],
-                "forwardReturns": hist.get("forwardReturns", {}) if isinstance(hist, dict) else {},
+        doc = doc_ref.get()
+        if doc.exists:
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "source": "firestore",
+                "data": doc.to_dict(),
             }
 
         # -------------------------------------------------
-        # 6) News (ticker-specific)
+        # 2️⃣ Lazy build (ONE-TIME)
         # -------------------------------------------------
-        news = []
-        try:
-            n = get_symbol_news(symbol, limit=8)
-            if isinstance(n, dict):
-                news = n.get("data", []) or []
-            elif isinstance(n, list):
-                news = n
-        except Exception:
-            news = []
+        ui_doc = build_and_save_stock_ui_doc(symbol)
 
-        # -------------------------------------------------
-        # ✅ FINAL response
-        # -------------------------------------------------
         return {
             "status": "ok",
             "symbol": symbol,
-            "stock": stock,
-
-            "candles": {
-                "source": "firestore",
-                "candles": candles,
-            },
-
-            "technical": technical,
-
-            "smartPattern": smart_pattern,
-            "patternDates": pattern_dates,
-            "patternStats": pattern_stats,
-
-            "news": news,
-
-            "asOf": stock.get("computed_at"),
+            "source": "builder",
+            "data": ui_doc,
         }
 
     except Exception as e:
-        return {"status": "error", "symbol": symbol, "error": str(e)}
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "error": str(e),
+        }
 
 
 # -----------------------------
@@ -4577,7 +4493,7 @@ def _norm_symbol(symbol: str) -> str:
 def _watchlist_col(user_id: str):
     return (
         _db()
-        .collection("Users")
+        .collection("users")
         .document(user_id)
         .collection("watchlist")
         
