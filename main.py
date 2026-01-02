@@ -4461,7 +4461,7 @@ def get_stock_detail(symbol: str):
         # 3️⃣ Recompute features (runtime-safe)
         #     (needed for technical + patterns)
         # -------------------------
-        feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+        feats_vec, feat_dict, _ = compute_bullbrain_features(candles)
         if feat_dict is None:
             raise RuntimeError("Feature computation failed")
 
@@ -4494,7 +4494,7 @@ def get_stock_detail(symbol: str):
         # 6️⃣ News (existing helper)
         # -------------------------
         try:
-            news = backend.market_news(symbol=symbol).get("data", [])
+            news = market_news(symbol=symbol).get("data", [])
         except Exception:
             news = []
 
