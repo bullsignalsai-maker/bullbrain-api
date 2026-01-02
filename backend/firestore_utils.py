@@ -74,5 +74,14 @@ def is_expired(expires_at: Optional[str]) -> bool:
     except Exception:
         return True
 
+
+# -------------------------------------------------------------------
+# Backward-compatibility alias (CRITICAL — DO NOT REMOVE)
+# -------------------------------------------------------------------
+
 def utc_now_iso() -> str:
+    """
+    Backward-compatible alias for legacy code.
+    Safe to use anywhere.
+    """
     return iso_now()
