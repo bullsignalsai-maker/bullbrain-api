@@ -4583,10 +4583,13 @@ def _watchlist_col(user_id: str):
         
     )
 # -----------------------------
-# 1) READ watchlist
+# 1) READ watchlist (FINAL)
 # -----------------------------
 @app.get("/watchlist/{user_id}")
 def get_watchlist(user_id: str):
+    db = firestore.client()
+
+    # 1️⃣ Read user's watchlist symbols
     docs = _watchlist_col(user_id).stream()
     symbols = sorted({_norm_symbol(d.id) for d in docs if d.id})
 
@@ -4594,41 +4597,67 @@ def get_watchlist(user_id: str):
 
     for sym in symbols:
         try:
-            # Best-effort quote refresh
-            try:
-                ensure_quote(sym)
-            except Exception:
-                pass
+            # -------------------------------------------------
+            # 2️⃣ REAL-TIME QUOTE (SOURCE OF TRUTH)
+            # -------------------------------------------------
+            quote_doc = (
+                db.collection("bullsignals_ai")
+                  .collection("quotes")
+                  .collection("symbols")
+                  .document(sym)
+                  .get()
+            )
+            quote = quote_doc.to_dict() if quote_doc.exists else {}
 
-            stock = bootstrap_stock(sym)  # cached / fresh intelligence
+            # -------------------------------------------------
+            # 3️⃣ STOCK INTELLIGENCE (BULLBRAIN)
+            # -------------------------------------------------
+            stock_doc = (
+                db.collection("stocks")
+                  .document(sym)
+                  .get()
+            )
+            stock = stock_doc.to_dict() if stock_doc.exists else {}
 
-            quote = stock.get("quote") or {}
             bullbrain = stock.get("bullbrain") or {}
+            insights = stock.get("insights") or {}
+            stock_quote = stock.get("quote") or {}
 
+            # -------------------------------------------------
+            # 4️⃣ FINAL MERGED RESPONSE (UI CONTRACT)
+            # -------------------------------------------------
             items.append({
                 # identity
                 "symbol": sym,
                 "companyName": stock.get("company_name"),
 
-                # price + change (flattened for UI)
+                # 🔥 LIVE PRICE (30s cadence)
                 "price": quote.get("price"),
                 "changePct": quote.get("changePct"),
 
-                # hybrid fields (what UI expects)
+                # 🧠 AI SIGNAL
                 "hybridSignal": bullbrain.get("signal", "HOLD"),
                 "hybridScore": bullbrain.get("confidence", 0),
 
-                # OHLC for Watchlist cards
+                # 📊 OHLC (fallback-safe)
                 "features": {
-                    "open": quote.get("open"),
-                    "high": quote.get("high"),
-                    "low": quote.get("low"),
+                    "open":  stock_quote.get("open")  or quote.get("price"),
+                    "high":  stock_quote.get("high")  or quote.get("price"),
+                    "low":   stock_quote.get("low")   or quote.get("price"),
                     "close": quote.get("price"),
                 },
 
+                # 💬 WHY THIS SIGNAL
+                "grokSummary": insights.get("oneLiner")
+                    or insights.get("summaryLine")
+                    or (
+                        f"{bullbrain.get('signal', 'HOLD')} signal "
+                        f"based on trend, momentum, volatility, and price action."
+                    ),
+
                 # timestamps
+                "quote_updated_at": quote.get("updated_at"),
                 "computed_at": stock.get("computed_at"),
-                "quote_updated_at": stock.get("quote_updated_at"),
             })
 
         except Exception as e:
