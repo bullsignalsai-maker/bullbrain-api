@@ -24,7 +24,7 @@ from backend.candle_store import get_candles as get_cached_candles
 from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
 from backend.ui_stock_builder import build_and_save_stock_ui_doc
-
+from backend.active_symbols import touch_active_symbol
 
 app = FastAPI()
 
@@ -4433,7 +4433,11 @@ def get_stockdetail(symbol: str):
             "symbol": symbol,
             "error": "Invalid symbol",
         }
-
+        # ✅ USER INTENT: stock tapped / opened
+    try:
+        touch_active_symbol(symbol)
+    except Exception:
+        pass
     # -------------------------------------------------
     # Firestore handle
     # -------------------------------------------------
@@ -4591,17 +4595,24 @@ def get_watchlist(user_id: str):
 # -----------------------------
 # 2) ADD symbol to watchlist
 # -----------------------------
+from backend.active_symbols import touch_active_symbol
+
 @app.post("/watchlist/{user_id}/add/{symbol}")
 def add_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
-    if not sym.isalnum():  # supports BTC/ETH too (alnum), avoids weird chars
+    if not sym.isalnum():
         return {"status": "error", "error": "Invalid symbol"}
 
-    # write user's watchlist doc
     _watchlist_col(user_id).document(sym).set(
         {"symbol": sym, "added_at": firestore.SERVER_TIMESTAMP},
         merge=True
     )
+
+    # ✅ USER INTENT: explicit subscription
+    try:
+        touch_active_symbol(sym)
+    except Exception:
+        pass
 
     # warm global cache (best effort)
     try:
