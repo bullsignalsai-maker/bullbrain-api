@@ -50,11 +50,8 @@ def _safe_json(resp: requests.Response) -> Any:
 # ---------------------------------------------------------
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
     """
-    Returns:
-      {
-        "price": float | None,
-        "changePct": float | None
-      }
+    Finnhub equity quote
+    TRUST dp directly — do NOT recompute
     """
     if not FINNHUB_KEY:
         return {}
@@ -69,23 +66,20 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
         if not isinstance(data, dict):
             return {}
 
-        # Finnhub: c=current, pc=previous close
         price = data.get("c")
-        prev = data.get("pc")
-
-        change_pct = None
-        try:
-            if isinstance(price, (int, float)) and isinstance(prev, (int, float)) and prev != 0:
-                change_pct = ((float(price) - float(prev)) / float(prev)) * 100.0
-        except Exception:
-            change_pct = None
+        change_pct = data.get("dp")  # ✅ SOURCE OF TRUTH
 
         return {
             "price": price if isinstance(price, (int, float)) else None,
-            "changePct": normalize_pct(change_pct),
+            "changePct": (
+                float(change_pct)
+                if isinstance(change_pct, (int, float))
+                else None
+            ),
         }
 
-    except Exception:
+    except Exception as e:
+        print(f"[quote-provider] Finnhub failed for {symbol}: {e}", flush=True)
         return {}
 
 
