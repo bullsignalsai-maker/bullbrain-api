@@ -73,3 +73,6 @@ def is_expired(expires_at: Optional[str]) -> bool:
         return exp <= utcnow()
     except Exception:
         return True
+
+def utc_now_iso() -> str:
+    return iso_now()

@@ -1,7 +1,8 @@
 # backend/active_symbols.py
 
 from typing import Optional
-from backend.firestore_utils import get_db, utc_now_iso
+from backend.firestore_utils import get_db, iso_now
+
 import datetime
 
 THROTTLE_MINUTES = 30
@@ -16,7 +17,7 @@ def touch_active_symbol(symbol: str) -> None:
     db = get_db()
     ref = db.collection("bullsignals_ai").document("active_symbols")
 
-    now = utc_now_iso()
+    now = iso_now()
 
     def txn(tx):
         snap = ref.get(transaction=tx)
