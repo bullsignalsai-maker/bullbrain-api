@@ -4418,163 +4418,146 @@ def homescreen_mag7():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
     }
-    
+import inspect
+
 # ---------------------------------------------------------
-# Stock Detail API — FINAL (PRODUCTION SAFE)
-# - Firestore-first
-# - No fragile kwargs to main.py helpers
-# - Never crashes if optional sections fail
+# Stock Detail API — FINAL (SIGNATURE-SAFE)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def get_stockdetail(symbol: str):
-    symbol = (symbol or "").upper().strip()
+    symbol = str(symbol or "").upper().strip()
 
     if not symbol.isalnum():
         return {"status": "error", "symbol": symbol, "error": "Invalid symbol"}
 
-    # -------------------------
-    # Helper: call build_technical_snapshot safely
-    # -------------------------
-    def _build_technical_snapshot_safe(symbol: str, candles: dict, feat_dict: dict, last_close: float):
-        """
-        Your build_technical_snapshot() lives in main.py and its signature differs.
-        This wrapper tries multiple known signatures safely.
-        """
-        # 1) candles, feat_dict, last_close
+    # -----------------------------
+    # helper: safe function call
+    # -----------------------------
+    def _safe_call(fn, *args):
         try:
-            return build_technical_snapshot(candles, feat_dict, last_close)
-        except TypeError:
-            pass
+            return fn(*args)
+        except Exception:
+            return None
 
-        # 2) symbol, feat_dict, last_close  (matches your old stockdetailOld)
+    def _detect_pattern(candles):
+        # detect_smart_pattern(candles) OR detect_smart_pattern(symbol, candles)
         try:
-            return build_technical_snapshot(symbol, feat_dict, last_close)
-        except TypeError:
-            pass
+            n = len(inspect.signature(detect_smart_pattern).parameters)
+        except Exception:
+            n = 1
+        if n >= 2:
+            return _safe_call(detect_smart_pattern, symbol, candles)
+        return _safe_call(detect_smart_pattern, candles)
 
-        # 3) feat_dict, last_close
+    def _pattern_history(candles, pattern_obj):
+        # scan_smart_pattern_history(symbol, candles, ...) OR scan_smart_pattern_history(candles, pattern)
+        # We will try (symbol, candles, pattern_obj) then (symbol, candles) then (candles, pattern_obj)
         try:
-            return build_technical_snapshot(feat_dict, last_close)
-        except TypeError:
-            pass
+            params = list(inspect.signature(scan_smart_pattern_history).parameters)
+            n = len(params)
+        except Exception:
+            n = 2
 
-        # If none matched, return None (do NOT crash endpoint)
-        return None
+        # Most common based on your old code:
+        out = _safe_call(scan_smart_pattern_history, symbol, candles, pattern_obj)
+        if out is not None:
+            return out
+
+        out = _safe_call(scan_smart_pattern_history, symbol, candles)
+        if out is not None:
+            return out
+
+        return _safe_call(scan_smart_pattern_history, candles, pattern_obj)
 
     try:
-        # -------------------------
-        # 1️⃣ Firestore-backed stock intelligence (should include bullbrain + insights)
-        # -------------------------
+        # -------------------------------------------------
+        # 1) Firestore-first meta
+        # -------------------------------------------------
         stock = bootstrap_stock(symbol) or {}
 
-        # -------------------------
-        # 2️⃣ Quote (Firestore-first)
-        # Prefer quote from stock if present, else fallback to quote repo
-        # -------------------------
-        quote = stock.get("quote")
-        if not quote:
-            try:
-                quote = get_latest_quote(symbol)
-            except Exception:
-                quote = None
-
-        # -------------------------
-        # 3️⃣ Candles (Firestore-backed)
-        # -------------------------
+        # -------------------------------------------------
+        # 2) Candles (Firestore-backed)
+        # -------------------------------------------------
         candles = get_candles(symbol, min_points=180)
         if not candles or not candles.get("close"):
             raise RuntimeError("Candles unavailable")
 
-        # -------------------------
-        # 4️⃣ Features (runtime, uses your main.py helper)
-        # -------------------------
+        # -------------------------------------------------
+        # 3) Features (runtime)
+        # -------------------------------------------------
         feats_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-
         if feat_dict is None:
             raise RuntimeError("Feature computation failed")
-
         if last_close is None:
             last_close = float(candles["close"][-1])
 
-        # -------------------------
-        # 5️⃣ Technical snapshot (signature-safe)
-        # -------------------------
-        technical = _build_technical_snapshot_safe(symbol, candles, feat_dict, float(last_close))
+        # -------------------------------------------------
+        # 4) Technical snapshot (✅ correct signature)
+        # -------------------------------------------------
+        technical = build_technical_snapshot(
+            symbol=symbol,
+            feat=feat_dict,
+            last_close=float(last_close),
+        )
 
-        # -------------------------
-        # 6️⃣ Smart pattern detection (optional, never crashes)
-        # -------------------------
+        # -------------------------------------------------
+        # 5) Smart pattern (signature-safe)
+        # -------------------------------------------------
         smart_pattern = None
         pattern_dates = []
         pattern_stats = None
 
-        try:
-            sp = detect_smart_pattern(candles)
-            if sp:
-                # Your newer flow indicates scan_smart_pattern_history(candles, sp)
-                # But older versions used scan_smart_pattern_history(symbol, candles)
-                try:
-                    history = scan_smart_pattern_history(candles, sp)
-                except TypeError:
-                    history = scan_smart_pattern_history(symbol, candles)
+        sp = _detect_pattern(candles)
+        if sp:
+            hist = _pattern_history(candles, sp) or {}
 
-                history = history or {}
-                smart_pattern = {
-                    "pattern": sp.get("pattern"),
-                    "headline": sp.get("headline"),
-                    "winRate": sp.get("winRate"),
-                    "occurrences": history.get("occurrences", 0),
-                    "samples": history.get("samples", []),
-                    "forwardReturns": history.get("forwardReturns", {}),
-                }
-                pattern_dates = history.get("dates", []) or []
-                pattern_stats = history
-        except Exception:
-            pass
+            # Support multiple possible shapes
+            pattern_dates = hist.get("dates") or hist.get("samples") or []
+            pattern_stats = hist
 
-        # -------------------------
-        # 7️⃣ News (ticker-specific)
-        # -------------------------
+            smart_pattern = {
+                "pattern": sp.get("pattern") if isinstance(sp, dict) else None,
+                "headline": sp.get("headline") if isinstance(sp, dict) else None,
+                "winRate": sp.get("winRate") if isinstance(sp, dict) else None,
+                "occurrences": hist.get("occurrences", 0) if isinstance(hist, dict) else 0,
+                "samples": hist.get("samples", []) if isinstance(hist, dict) else [],
+                "forwardReturns": hist.get("forwardReturns", {}) if isinstance(hist, dict) else {},
+            }
+
+        # -------------------------------------------------
+        # 6) News (ticker-specific)
+        # -------------------------------------------------
+        news = []
         try:
-            news = get_symbol_news(symbol, limit=8)
-            if isinstance(news, dict) and "data" in news:
-                news = news.get("data", [])
-            if not isinstance(news, list):
-                news = []
+            n = get_symbol_news(symbol, limit=8)
+            if isinstance(n, dict):
+                news = n.get("data", []) or []
+            elif isinstance(n, list):
+                news = n
         except Exception:
             news = []
 
-        # -------------------------
-        # ✅ FINAL RESPONSE
-        # -------------------------
+        # -------------------------------------------------
+        # ✅ FINAL response
+        # -------------------------------------------------
         return {
             "status": "ok",
             "symbol": symbol,
-
-            # Firestore intelligence (bullbrain + insights etc.)
             "stock": stock,
 
-            # Quote (Firestore)
-            "quote": quote,
-
-            # Candles (Firestore)
             "candles": {
                 "source": "firestore",
                 "candles": candles,
             },
 
-            # Runtime (optional-safe)
             "technical": technical,
 
-            # Patterns (optional-safe)
             "smartPattern": smart_pattern,
             "patternDates": pattern_dates,
             "patternStats": pattern_stats,
 
-            # News
             "news": news,
 
-            # Meta
             "asOf": stock.get("computed_at"),
         }
 
