@@ -17,7 +17,7 @@ from firebase_admin import firestore  # type: ignore
 
 from backend.stock_repo import get_stock
 from backend.candle_store import get_candles
-from backend.firestore_utils import utc_now_iso
+from backend.firestore_utils import iso_now
 from backend.technicals import build_technical_snapshot
 from backend.smart_patterns import scan_smart_pattern_history
 from backend.news import fetch_symbol_news
