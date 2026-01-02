@@ -4597,7 +4597,7 @@ def _watchlist_col(user_id: str):
         .collection("Users")
         .document(user_id)
         .collection("watchlist")
-        .collection("symbols")
+        
     )
 
 # -----------------------------
