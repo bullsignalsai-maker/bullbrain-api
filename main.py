@@ -4582,7 +4582,6 @@ def _watchlist_col(user_id: str):
         .collection("watchlist")
         
     )
-
 # -----------------------------
 # 1) READ watchlist
 # -----------------------------
@@ -4592,26 +4591,57 @@ def get_watchlist(user_id: str):
     symbols = sorted({_norm_symbol(d.id) for d in docs if d.id})
 
     items = []
+
     for sym in symbols:
         try:
-            # 🔔 Ensure quote refresh (non-blocking)
+            # Best-effort quote refresh
             try:
                 ensure_quote(sym)
             except Exception:
                 pass
-            stock = bootstrap_stock(sym)  # cached / fresh intelligence        
+
+            stock = bootstrap_stock(sym)  # cached / fresh intelligence
+
+            quote = stock.get("quote") or {}
+            bullbrain = stock.get("bullbrain") or {}
+
             items.append({
+                # identity
                 "symbol": sym,
-                "company_name": stock.get("company_name"),
-                "quote": stock.get("quote"),
-                "bullbrain": stock.get("bullbrain"),
+                "companyName": stock.get("company_name"),
+
+                # price + change (flattened for UI)
+                "price": quote.get("price"),
+                "changePct": quote.get("changePct"),
+
+                # hybrid fields (what UI expects)
+                "hybridSignal": bullbrain.get("signal", "HOLD"),
+                "hybridScore": bullbrain.get("confidence", 0),
+
+                # OHLC for Watchlist cards
+                "features": {
+                    "open": quote.get("open"),
+                    "high": quote.get("high"),
+                    "low": quote.get("low"),
+                    "close": quote.get("price"),
+                },
+
+                # timestamps
                 "computed_at": stock.get("computed_at"),
                 "quote_updated_at": stock.get("quote_updated_at"),
             })
-        except Exception as e:
-            items.append({"symbol": sym, "error": str(e)})
 
-    return {"status": "ok", "count": len(items), "watchlist": items}
+        except Exception as e:
+            items.append({
+                "symbol": sym,
+                "error": str(e),
+            })
+
+    return {
+        "status": "ok",
+        "count": len(items),
+        "watchlist": items,
+    }
 
 # -----------------------------
 # 2) ADD symbol to watchlist
