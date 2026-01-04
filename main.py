@@ -25,7 +25,7 @@ from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
 from backend.ui_stock_builder import build_and_save_stock_ui_doc
 from backend.active_symbols import touch_active_symbol
-
+from backend.firestore_utils import get_db
 app = FastAPI()
 
 # CORS for Expo / mobile
@@ -4421,34 +4421,24 @@ def homescreen_mag7():
 import inspect
 
 # ---------------------------------------------------------
-# Stock Detail API — FINAL (FIRESTORE-FIRST)
+# Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def get_stockdetail(symbol: str):
     symbol = str(symbol or "").upper().strip()
 
     if not symbol.isalnum():
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "error": "Invalid symbol",
-        }
-        # ✅ USER INTENT: stock tapped / opened
-    try:
-        touch_active_symbol(symbol)
-    except Exception:
-        pass
-    # -------------------------------------------------
-    # Firestore handle
-    # -------------------------------------------------
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
-    db = firestore.client()
+        return {"status": "error", "symbol": symbol, "error": "Invalid symbol"}
 
     try:
-        # -------------------------------------------------
-        # 1️⃣ Try Firestore UI document first
-        # -------------------------------------------------
+        # Optional: mark symbol as active (if you use this system)
+        try:
+            touch_active_symbol(symbol)
+        except Exception:
+            pass
+
+        db = get_db()
+
         doc_ref = (
             db.collection("bullsignals_ai")
               .document("stocks")
@@ -4456,34 +4446,26 @@ def get_stockdetail(symbol: str):
               .document(symbol)
         )
 
-        doc = doc_ref.get()
-        if doc.exists:
+        snap = doc_ref.get()
+        if not snap.exists:
             return {
-                "status": "ok",
+                "status": "error",
                 "symbol": symbol,
-                "source": "firestore",
-                "data": doc.to_dict(),
+                "error": "UI doc not found in Firestore. Run builder/cron for this symbol.",
             }
 
-        # -------------------------------------------------
-        # 2️⃣ Lazy build (ONE-TIME)
-        # -------------------------------------------------
-        ui_doc = build_and_save_stock_ui_doc(symbol)
+        ui_doc = snap.to_dict() or {}
 
+        # Guaranteed shape
         return {
             "status": "ok",
             "symbol": symbol,
-            "source": "builder",
-            "data": ui_doc,
+            "source": "firestore",
+            "stockdetail": ui_doc,
         }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "error": str(e),
-        }
-
+        return {"status": "error", "symbol": symbol, "error": str(e)}
 
 # -----------------------------
 # Firestore helpers
@@ -4631,3 +4613,11 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
     _watchlist_col(user_id).document(sym).delete()
     return {"status": "ok", "user_id": user_id, "symbol": sym}
+
+
+@app.post("/admin/build-stock/{symbol}")
+def admin_build_stock(symbol: str):
+    from backend.ui_stock_builder import build_and_save_stock_ui_doc
+    symbol = symbol.upper().strip()
+    doc = build_and_save_stock_ui_doc(symbol)
+    return {"status": "ok", "symbol": symbol}
