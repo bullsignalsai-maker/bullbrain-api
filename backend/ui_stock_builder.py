@@ -1,6 +1,6 @@
 # backend/ui_stock_builder.py
 # ---------------------------------------------------------
-# UI Stock Builder (PLAN B — FINAL)
+# UI Stock Builder (PLAN B — FINAL, SAFE)
 # ---------------------------------------------------------
 # Builds ONE canonical StockDetail UI document per symbol
 # All computation happens HERE
@@ -12,12 +12,11 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List
 import datetime
 import math
-import inspect
 
-# Firestore (DO NOT change — uses existing credentials)
+# Firestore (DO NOT change)
 from backend.firestore_utils import get_db, iso_now
 
-# Data sources (Firestore-backed)
+# Data sources
 from backend.stock_repo import get_stock
 from backend.candle_store import get_candles
 from backend.technicals import build_technical_snapshot
@@ -58,7 +57,7 @@ def _iso_from_ms(ts_ms: Optional[int]) -> Optional[str]:
 def _build_candles_payload(
     symbol: str,
     candles: Dict[str, Any],
-    limit: int = 180
+    limit: int = 180,
 ) -> Dict[str, Any]:
 
     closes = candles.get("close") or []
@@ -78,18 +77,21 @@ def _build_candles_payload(
     for i in range(start, n):
         t = _iso_from_ms(ts[i]) if i < len(ts) else None
         if not t:
-            t = (datetime.datetime.utcnow() - datetime.timedelta(days=(n - i))).replace(
-                microsecond=0
-            ).isoformat() + "Z"
+            t = (
+                datetime.datetime.utcnow()
+                - datetime.timedelta(days=(n - i))
+            ).replace(microsecond=0).isoformat() + "Z"
 
-        out.append({
-            "t": t,
-            "open": _safe_float(opens[i]),
-            "high": _safe_float(highs[i]),
-            "low": _safe_float(lows[i]),
-            "close": _safe_float(closes[i]),
-            "volume": _safe_float(vols[i]),
-        })
+        out.append(
+            {
+                "t": t,
+                "open": _safe_float(opens[i]),
+                "high": _safe_float(highs[i]),
+                "low": _safe_float(lows[i]),
+                "close": _safe_float(closes[i]),
+                "volume": _safe_float(vols[i]),
+            }
+        )
 
     return {
         "symbol": symbol,
@@ -102,7 +104,10 @@ def _build_candles_payload(
 # Sparkline
 # ---------------------------------------------------------
 
-def build_sparkline(candles: Dict[str, Any], max_points: int = 60) -> Optional[Dict[str, Any]]:
+def build_sparkline(
+    candles: Dict[str, Any], max_points: int = 60
+) -> Optional[Dict[str, Any]]:
+
     closes = candles.get("close") or []
     if len(closes) < 2:
         return None
@@ -131,10 +136,15 @@ def build_sparkline(candles: Dict[str, Any], max_points: int = 60) -> Optional[D
 
 
 # ---------------------------------------------------------
-# Quote + OHLCV (header)
+# Quote + OHLCV
 # ---------------------------------------------------------
 
-def _build_quote_block(symbol: str, quote: Dict[str, Any], candles: Dict[str, Any]) -> Dict[str, Any]:
+def _build_quote_block(
+    symbol: str,
+    quote: Dict[str, Any],
+    candles: Dict[str, Any],
+) -> Dict[str, Any]:
+
     closes = candles.get("close") or []
     if not closes:
         return {}
@@ -170,7 +180,10 @@ def _build_quote_block(symbol: str, quote: Dict[str, Any], candles: Dict[str, An
 # Main Builder (FINAL)
 # ---------------------------------------------------------
 
-def build_and_save_stock_ui_doc(symbol: str, *, candle_limit: int = 180, news_limit: int = 8) -> Dict[str, Any]:
+def build_and_save_stock_ui_doc(
+    symbol: str, *, candle_limit: int = 180, news_limit: int = 8
+) -> Dict[str, Any]:
+
     symbol = (symbol or "").upper().strip()
     if not symbol.isalnum():
         raise RuntimeError("Invalid symbol")
@@ -184,9 +197,9 @@ def build_and_save_stock_ui_doc(symbol: str, *, candle_limit: int = 180, news_li
     # --- Quote cache ---
     quote_ref = (
         db.collection("bullsignals_ai")
-          .document("quotes")
-          .collection("symbols")
-          .document(symbol)
+        .document("quotes")
+        .collection("symbols")
+        .document(symbol)
     )
     quote_doc = quote_ref.get()
     quote_cache = quote_doc.to_dict() if quote_doc.exists else {}
@@ -212,46 +225,57 @@ def build_and_save_stock_ui_doc(symbol: str, *, candle_limit: int = 180, news_li
     # --- Candles payload ---
     candles_payload = _build_candles_payload(symbol, candles, candle_limit)
 
-    # --- Smart Pattern ---
+    # --- Smart Pattern (SAFE ADAPTER) ---
     smart_pattern = None
     pattern_dates = []
     pattern_stats = None
+
     try:
-        sp = detect_smart_pattern(stock.get("features_meta") or {}, quote_block, technical)
-        if sp:
+        quote_for_pattern = {
+            "price": quote_block.get("price"),
+            "changePct": quote_block.get("changePct"),
+        }
+
+        sp = detect_smart_pattern(
+            stock.get("features_meta") or {},
+            quote_for_pattern,
+            technical,
+        )
+
+        if sp and sp.get("pattern") != "NO CLEAR PATTERN":
             hist = scan_smart_pattern_history(symbol, candles) or {}
             smart_pattern = sp
             pattern_stats = hist
-            pattern_dates = (hist.get("samples") or [])[:5]
+
+            hf = hist.get("historyForCurrent") or {}
+            pattern_dates = (hf.get("samples") or [])[:5]
+
     except Exception:
         pass
 
     # --- News ---
-    news = fetch_symbol_news(symbol, limit=news_limit)
+    news = fetch_symbol_news(
+        symbol=symbol,
+        company_name=stock.get("company_name"),
+        limit=news_limit,
+    )
 
     # --- Final UI doc ---
     ui_doc: Dict[str, Any] = {
         "schemaVersion": "stockdetail_ui_v1",
         "computedAt": iso_now(),
-
         "symbol": symbol,
         "companyName": company_name,
-
         "quote": quote_block,
         "sparkline": sparkline,
-
         "bullbrain": stock.get("bullbrain"),
         "insights": stock.get("insights"),
-
         "technical": technical,
         "candles": candles_payload,
-
         "smartPattern": smart_pattern,
         "patternDates": pattern_dates,
         "patternStats": pattern_stats,
-
         "news": news,
-
         "ttl": {
             "quoteSeconds": 30,
             "candlesMinutes": 30,
@@ -264,10 +288,10 @@ def build_and_save_stock_ui_doc(symbol: str, *, candle_limit: int = 180, news_li
     # --- Persist ---
     (
         db.collection("bullsignals_ai")
-          .document("stocks")
-          .collection("symbols")
-          .document(symbol)
-          .set(ui_doc, merge=True)
+        .document("stocks")
+        .collection("symbols")
+        .document(symbol)
+        .set(ui_doc, merge=True)
     )
 
     return ui_doc

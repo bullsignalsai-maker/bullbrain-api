@@ -1,43 +1,42 @@
 # backend/news_repo.py
 # ---------------------------------------------------------
-# Standalone News Fetcher (NO imports from main.py)
-# ---------------------------------------------------------
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import os
 import time
 import requests
+import re
 
 FINNHUB_KEY = os.getenv("FINNHUB_KEY")
 
 
-def fetch_symbol_news(symbol: str, limit: int = 8) -> List[Dict[str, Any]]:
+def fetch_symbol_news(
+    symbol: str,
+    company_name: str | None = None,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
     """
-    Fetch recent company news from Finnhub.
-    Returns a lightweight list safe for UI.
-    No Firestore read/write here. No main.py imports.
+    Fetch STRICT company-only news from Finnhub.
 
-    Output item shape:
-      {
-        "headline": str,
-        "summary": str,
-        "url": str,
-        "source": str,
-        "datetime": int,
-        "image": str|None
-      }
+    Filters out:
+      - ETFs
+      - Market-wide articles
+      - Other tickers (QQQ, AMD, AMZN, etc.)
     """
+
     symbol = (symbol or "").upper().strip()
-    if not symbol:
+    if not symbol or not FINNHUB_KEY:
         return []
 
-    if not FINNHUB_KEY:
-        return []
+    name_tokens = []
+    if company_name:
+        name_tokens = [
+            t.lower()
+            for t in re.split(r"[ ,.&]", company_name)
+            if len(t) > 3
+        ]
 
-    # Finnhub needs from/to dates (YYYY-MM-DD)
-    # We'll take ~14 days window; UI only needs a few.
     now = int(time.time())
-    days = 14 * 86400
-    frm = time.strftime("%Y-%m-%d", time.gmtime(now - days))
+    frm = time.strftime("%Y-%m-%d", time.gmtime(now - 14 * 86400))
     to = time.strftime("%Y-%m-%d", time.gmtime(now))
 
     url = "https://finnhub.io/api/v1/company-news"
@@ -47,15 +46,23 @@ def fetch_symbol_news(symbol: str, limit: int = 8) -> List[Dict[str, Any]]:
         r = requests.get(url, params=params, timeout=12)
         if r.status_code != 200:
             return []
+
         data = r.json()
         if not isinstance(data, list):
             return []
 
-        items: List[Dict[str, Any]] = []
-        for it in data[: max(1, limit)]:
-            if not isinstance(it, dict):
-                continue
-            items.append(
+        results: List[Dict[str, Any]] = []
+
+        for it in data:
+            headline = (it.get("headline") or "").lower()
+            summary = (it.get("summary") or "").lower()
+
+            # STRICT relevance filter
+            if symbol.lower() not in headline and symbol.lower() not in summary:
+                if not any(t in headline or t in summary for t in name_tokens):
+                    continue
+
+            results.append(
                 {
                     "headline": it.get("headline") or "",
                     "summary": it.get("summary") or "",
@@ -65,6 +72,11 @@ def fetch_symbol_news(symbol: str, limit: int = 8) -> List[Dict[str, Any]]:
                     "image": it.get("image") or None,
                 }
             )
-        return items
+
+            if len(results) >= limit:
+                break
+
+        return results
+
     except Exception:
         return []
