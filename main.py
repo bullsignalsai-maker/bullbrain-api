@@ -4615,7 +4615,7 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
     return {"status": "ok", "user_id": user_id, "symbol": sym}
 
 
-@app.post("/admin/build-stock/{symbol}")
+@app.get("/admin/build-stock/{symbol}")
 def admin_build_stock(symbol: str):
     from backend.ui_stock_builder import build_and_save_stock_ui_doc
     symbol = symbol.upper().strip()
