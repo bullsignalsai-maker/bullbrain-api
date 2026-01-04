@@ -201,9 +201,9 @@ def build_and_save_stock_ui_doc(symbol: str, *, candle_limit: int = 180, news_li
 
     # --- Technical ---
     technical = build_technical_snapshot(
-        symbol=symbol,
-        feat=stock.get("features_meta") or {},
-        last_close=quote_block.get("price"),
+        symbol,
+        stock.get("features_meta") or {},
+        quote_block.get("price"),
     )
 
     # --- Sparkline ---
