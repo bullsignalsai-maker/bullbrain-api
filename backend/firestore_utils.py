@@ -67,19 +67,21 @@ def is_expired(expires_at: Optional[str]) -> bool:
     if not expires_at:
         return True
     try:
-        exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        exp = datetime.datetime.fromisoformat(
+            expires_at.replace("Z", "+00:00")
+        )
         return exp <= utcnow()
     except Exception:
         return True
 
 
 # -------------------------------------------------------------------
-# Backward-compatible alias (many files expect this name)
+# Backward-compatibility alias (CRITICAL — DO NOT REMOVE)
 # -------------------------------------------------------------------
 
 def utc_now_iso() -> str:
+    """
+    Backward-compatible alias for legacy code.
+    Safe to use anywhere.
+    """
     return iso_now()
-
-
-# Some files might import utc_now_iso specifically
-utc_now_iso = utc_now_iso
