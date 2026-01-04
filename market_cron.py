@@ -247,7 +247,6 @@ def build_scan_universe() -> List[str]:
 # =========================================================
 # PER-SYMBOL COMPUTE
 # =========================================================
-
 def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     candles = get_candles(symbol, min_points=120)
     if not candles:
@@ -273,6 +272,44 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
     confidence = round(max(prob_up, prob_down) * 100.0, 2)
 
+    # -------------------------
+    # ✅ TECHNICAL SNAPSHOT
+    # -------------------------
+    technical = build_technical_snapshot(
+        symbol=symbol,
+        feat=feat_dict,
+        last_close=feat_dict.get("close"),
+    )
+
+    # -------------------------
+    # ✅ SMART PATTERN
+    # -------------------------
+    smart_pattern = None
+    pattern_stats = None
+
+    try:
+        quote_for_pattern = {
+            "price": feat_dict.get("close"),
+            "changePct": feat_dict.get("return_1d"),
+        }
+
+        sp = detect_smart_pattern(
+            feat_dict,
+            quote_for_pattern,
+            technical,
+        )
+
+        if sp and sp.get("pattern") != "NO CLEAR PATTERN":
+            hist = scan_smart_pattern_history(symbol, candles) or {}
+            smart_pattern = sp
+            pattern_stats = hist
+
+    except Exception:
+        pass
+
+    # -------------------------
+    # INSIGHTS (unchanged)
+    # -------------------------
     insights = generate_bull_insights(
         symbol=symbol,
         features=feat_dict,
@@ -282,13 +319,15 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "prob_up": prob_up,
             "prob_down": prob_down,
         },
-        technical=None,
+        technical=technical,
         seed_key=f"{symbol}:{utc_now_iso()}",
     )
 
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
+
+        # CORE
         "bullbrain": {
             "signal": signal,
             "confidence": confidence,
@@ -297,6 +336,13 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         },
         "features_meta": feat_dict,
         "insights": insights,
+
+        # ✅ NEW (critical)
+        "technical": technical,
+        "smartPattern": smart_pattern,
+        "patternStats": pattern_stats,
+
+        # META
         "computed_at": utc_now_iso(),
         "schema_version": "v1",
     }
@@ -307,7 +353,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         .set(doc, merge=True)
 
     return doc
-
 
 # =========================================================
 # PHASE 2 — HOTLIST + BEARWATCH
