@@ -392,7 +392,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     try:
         technical = build_technical_snapshot(
             symbol=symbol,
-            feat=feat_dict,
+            features=feat_dict,
             last_close=feat_dict.get("close"),
         )
     except Exception as e:
