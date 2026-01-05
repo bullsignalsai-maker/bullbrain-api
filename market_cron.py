@@ -1,3 +1,4 @@
+# market_cron.py
 # =========================================================
 # BullSignalsAI — Market Intelligence Cron
 #
@@ -22,17 +23,19 @@
 #        - marketMood
 #        - fearGreed (simple proxy)
 #
-# DOES NOT:
-#   - Fetch news
-#   - Do per-article sentiment
-#   - Change UI contract
+# HARDENING (THIS PATCH):
+#   ✅ Add FULL logging visibility (no silent failures)
+#   ✅ Guarantee stock docs repopulate after accidental deletion
+#   ✅ Write an index marker doc under bullsignals_ai/stocks (optional but useful)
+#   ✅ Defensive checks for NaN/invalid feature vectors
 # =========================================================
 
 import datetime
 import math
 import random
 import time
-from typing import Dict, Any, List, Optional
+import traceback
+from typing import Dict, Any, List, Optional, Tuple
 
 import firebase_admin
 from firebase_admin import firestore
@@ -46,6 +49,11 @@ from backend.bull_insights import generate_bull_insights
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
 from quote_provider import fetch_equity_quote
+
+# ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
+# If they already exist elsewhere, keep these imports here (no breaking).
+from backend.technicals import build_technical_snapshot
+from backend.smart_patterns import detect_smart_pattern, scan_smart_pattern_history
 
 try:
     from zoneinfo import ZoneInfo  # py3.9+
@@ -66,12 +74,30 @@ TOTAL_SCAN_LIMIT = 120
 DISCOVERY_SHARDS = 8
 
 COL_ROOT = "bullsignals_ai"
-COL_STOCKS = "stocks"
+COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
 DOC_DISCOVERY = "discovery_cursor"
 DOC_HOTLIST = "market_hotlist"
 DOC_BEARWATCH = "market_bearwatch"
 DOC_HOMESCREEN = "homescreen_snapshot"
+
+# Logging / behavior toggles (safe defaults)
+LOG_EVERY_N = int((__import__("os").getenv("CRON_LOG_EVERY_N") or "1").strip() or "1")
+DEBUG_FEATURES_SAMPLE = int((__import__("os").getenv("CRON_DEBUG_FEATURES_SAMPLE") or "0").strip() or "0")
+FAIL_FAST = ((__import__("os").getenv("CRON_FAIL_FAST") or "0").strip() == "1")
+
+
+# =========================================================
+# LOGGING HELPERS
+# =========================================================
+
+def log(msg: str) -> None:
+    print(f"[market-cron] {msg}", flush=True)
+
+
+def log_exc(prefix: str, e: BaseException) -> None:
+    tb = traceback.format_exc()
+    log(f"❌ {prefix}: {e}\n{tb}")
 
 
 # =========================================================
@@ -81,6 +107,7 @@ DOC_HOMESCREEN = "homescreen_snapshot"
 def get_db():
     if not firebase_admin._apps:
         firebase_admin.initialize_app()
+        log("🔥 Firebase initialized")
     return firestore.client()
 
 
@@ -159,6 +186,11 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
 def ensure_bullbrain_loaded():
     if backend.bullbrain_model is None:
         backend.bullbrain_model = backend.load_bullbrain_model()
+        try:
+            nf = getattr(backend, "BULLBRAIN_NUM_FEATURES", None)
+            log(f"🧠 BullBrain loaded | num_features={nf}")
+        except Exception:
+            log("🧠 BullBrain loaded")
 
 
 # =========================================================
@@ -169,6 +201,7 @@ def load_active_symbols() -> Dict[str, Dict[str, Any]]:
     db = get_db()
     snap = db.collection(COL_ROOT).document(DOC_ACTIVE).get()
     if not snap.exists:
+        log("ℹ️ active_symbols doc not found (yet) → using empty active list")
         return {}
     return (snap.to_dict() or {}).get("symbols", {})
 
@@ -190,13 +223,9 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
             pass
         return base + boost
 
-    ranked = sorted(
-        active.items(),
-        key=lambda kv: score(kv[1]),
-        reverse=True,
-    )
-
-    return [sym for sym, _ in ranked[:ACTIVE_SYMBOL_LIMIT]]
+    ranked = sorted(active.items(), key=lambda kv: score(kv[1]), reverse=True)
+    top = [sym for sym, _ in ranked[:ACTIVE_SYMBOL_LIMIT]]
+    return [s.upper() for s in top if s]
 
 
 # =========================================================
@@ -229,39 +258,123 @@ def get_discovery_symbols() -> List[str]:
         merge=True,
     )
 
-    return shard
+    return [s.upper() for s in shard if s]
 
 
 # =========================================================
 # SCAN UNIVERSE
 # =========================================================
 
-def build_scan_universe() -> List[str]:
-    active = rank_active_symbols(load_active_symbols())
+def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
+    active_raw = load_active_symbols()
+    active = rank_active_symbols(active_raw)
     discovery = get_discovery_symbols()
 
-    universe = list(dict.fromkeys(MAG7 + active + discovery))
-    return universe[:TOTAL_SCAN_LIMIT]
+    universe = list(dict.fromkeys([s.upper() for s in (MAG7 + active + discovery) if s]))
+    meta = {
+        "mag7": len(MAG7),
+        "active_ranked": len(active),
+        "discovery": len(discovery),
+        "universe": len(universe),
+    }
+    return universe[:TOTAL_SCAN_LIMIT], meta
+
+
+# =========================================================
+# VALIDATION HELPERS
+# =========================================================
+
+def _is_finite_number(x: Any) -> bool:
+    try:
+        v = float(x)
+        return not (math.isnan(v) or math.isinf(v))
+    except Exception:
+        return False
+
+
+def _validate_feature_dict(symbol: str, feat_dict: Dict[str, Any]) -> bool:
+    # Minimal sanity checks to avoid NaN poisoning.
+    critical = ["close", "rsi14", "macd", "macd_signal", "atr14", "volatility_20d"]
+    missing = [k for k in critical if k not in feat_dict]
+    if missing:
+        log(f"⚠️ {symbol} features missing keys: {missing}")
+        # do not hard-fail; model may not need them all depending on implementation
+    # Check a sample of numeric values for finiteness
+    bad = []
+    for k in critical:
+        if k in feat_dict and feat_dict[k] is not None and not _is_finite_number(feat_dict[k]):
+            bad.append(k)
+    if bad:
+        log(f"❌ {symbol} features contain non-finite values: {bad}")
+        return False
+    return True
 
 
 # =========================================================
 # PER-SYMBOL COMPUTE
 # =========================================================
+
 def compute_symbol(symbol: str) -> Dict[str, Any] | None:
-    candles = get_candles(symbol, min_points=120)
+    t0 = time.time()
+    symbol = symbol.upper()
+
+    log(f"▶ {symbol} compute start")
+
+    candles = None
+    try:
+        candles = get_candles(symbol, min_points=120)
+    except Exception as e:
+        log_exc(f"{symbol} get_candles failed", e)
+        return None
+
     if not candles:
+        log(f"⛔ {symbol} no candles returned → skip")
+        return None
+    log(f"✅ {symbol} candles={len(candles)}")
+
+    # ---- features
+    try:
+        feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+    except Exception as e:
+        log_exc(f"{symbol} compute_bullbrain_features threw", e)
         return None
 
-    feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
-    if feats_vec is None:
+    if feats_vec is None or feat_dict is None:
+        log(f"⛔ {symbol} features_vec/feat_dict is None → skip")
         return None
 
-    infer = backend.bullbrain_infer(feats_vec)
-    if infer is None:
+    if not isinstance(feat_dict, dict) or len(feat_dict) < 10:
+        log(f"⛔ {symbol} feat_dict invalid or too small (len={len(feat_dict) if isinstance(feat_dict, dict) else 'NA'}) → skip")
         return None
 
+    if not _validate_feature_dict(symbol, feat_dict):
+        log(f"⛔ {symbol} feature validation failed → skip")
+        return None
+
+    # optional debug sample
+    if DEBUG_FEATURES_SAMPLE > 0:
+        sample_keys = sorted(list(feat_dict.keys()))[:DEBUG_FEATURES_SAMPLE]
+        log(f"🔎 {symbol} feat sample: " + ", ".join([f"{k}={feat_dict.get(k)}" for k in sample_keys]))
+
+    # ---- inference
+    infer = None
+    try:
+        infer = backend.bullbrain_infer(feats_vec)
+    except Exception as e:
+        log_exc(f"{symbol} bullbrain_infer threw", e)
+        return None
+
+    if infer is None or not isinstance(infer, dict):
+        log(f"⛔ {symbol} infer is None/invalid → skip")
+        return None
+
+    # Some versions store probability_up, others raw_output
     prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
     prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
+
+    if not _is_finite_number(prob_up) or not _is_finite_number(prob_down):
+        log(f"⛔ {symbol} inference produced non-finite probs (up={prob_up}, down={prob_down}) → skip")
+        return None
 
     if prob_up >= 0.58:
         signal = "BUY"
@@ -275,11 +388,16 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     # -------------------------
     # ✅ TECHNICAL SNAPSHOT
     # -------------------------
-    technical = build_technical_snapshot(
-        symbol=symbol,
-        feat=feat_dict,
-        last_close=feat_dict.get("close"),
-    )
+    technical = None
+    try:
+        technical = build_technical_snapshot(
+            symbol=symbol,
+            feat=feat_dict,
+            last_close=feat_dict.get("close"),
+        )
+    except Exception as e:
+        log_exc(f"{symbol} build_technical_snapshot failed", e)
+        technical = None
 
     # -------------------------
     # ✅ SMART PATTERN
@@ -304,24 +422,38 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             smart_pattern = sp
             pattern_stats = hist
 
-    except Exception:
-        pass
+    except Exception as e:
+        log_exc(f"{symbol} smart pattern failed", e)
 
     # -------------------------
     # INSIGHTS (unchanged)
     # -------------------------
-    insights = generate_bull_insights(
-        symbol=symbol,
-        features=feat_dict,
-        bullbrain={
-            "signal": signal,
-            "confidence": confidence,
-            "prob_up": prob_up,
-            "prob_down": prob_down,
-        },
-        technical=technical,
-        seed_key=f"{symbol}:{utc_now_iso()}",
-    )
+    insights = None
+    try:
+        insights = generate_bull_insights(
+            symbol=symbol,
+            features=feat_dict,
+            bullbrain={
+                "signal": signal,
+                "confidence": confidence,
+                "prob_up": prob_up,
+                "prob_down": prob_down,
+            },
+            technical=technical,
+            seed_key=f"{symbol}:{utc_now_iso()}",
+        )
+    except Exception as e:
+        # insights should never block persistence
+        log_exc(f"{symbol} generate_bull_insights failed", e)
+        insights = {
+            "oneLiner": "Insights unavailable.",
+            "summaryLine": "Insights unavailable.",
+            "trendSummary": "Insights unavailable.",
+            "momentumSummary": "Insights unavailable.",
+            "volumeSummary": "Insights unavailable.",
+            "volatilitySummary": "Insights unavailable.",
+            "combinedTechnicalSummary": "Insights unavailable.",
+        }
 
     doc = {
         "symbol": symbol,
@@ -347,12 +479,33 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "schema_version": "v1",
     }
 
-    db = get_db()
-    db.collection(COL_ROOT).document(COL_STOCKS) \
-        .collection("symbols").document(symbol) \
-        .set(doc, merge=True)
+    # ---- Firestore write (with visibility)
+    try:
+        db = get_db()
 
-    return doc
+        # Optional "index marker" doc: bullsignals_ai/stocks
+        # This is not required, but it makes the document visible in console and helps debugging.
+        db.collection(COL_ROOT).document(COL_STOCKS).set(
+            {
+                "schema_version": "v1",
+                "updated_at": utc_now_iso(),
+                "note": "stocks document is an index marker; symbol docs live in stocks/symbols/*",
+            },
+            merge=True,
+        )
+
+        db.collection(COL_ROOT).document(COL_STOCKS) \
+            .collection("symbols").document(symbol) \
+            .set(doc, merge=True)
+
+        dt = time.time() - t0
+        log(f"✅ {symbol} wrote stocks/symbols/{symbol} | signal={signal} conf={confidence}% | {dt:.2f}s")
+        return doc
+
+    except Exception as e:
+        log_exc(f"{symbol} Firestore write failed", e)
+        return None
+
 
 # =========================================================
 # PHASE 2 — HOTLIST + BEARWATCH
@@ -396,6 +549,8 @@ def save_market_lists(hotlist, bearwatch):
         merge=True,
     )
 
+    log(f"✅ saved hotlist={len(hotlist)} bearwatch={len(bearwatch)}")
+
 
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
@@ -419,7 +574,8 @@ def _get_quote_change_pct(symbol: str) -> Optional[float]:
         q = fetch_equity_quote(symbol)
         chg = q.get("changePct") if isinstance(q, dict) else None
         return float(chg) if isinstance(chg, (int, float)) else None
-    except Exception:
+    except Exception as e:
+        log(f"⚠️ quote change pct failed for {symbol}: {e}")
         return None
 
 
@@ -442,8 +598,6 @@ def ensure_market_overview_and_baseline_carousel():
     if not isinstance(carousel, list):
         carousel = []
 
-    # ---- Build baseline items (with labels containing "(SYMBOL)")
-    # These labels are IMPORTANT because quote_worker extracts symbol from parentheses.
     spy = _get_quote_change_pct("SPY")
     qqq = _get_quote_change_pct("QQQ")
     gld = _get_quote_change_pct("GLD")
@@ -460,40 +614,26 @@ def ensure_market_overview_and_baseline_carousel():
         {"label": "Silver (SLV)", "value": _fmt_pct(slv), "quote_updated_at": now_iso},
     ]
 
-    # ---- Ensure card exists or update items if it exists
     def upsert_card(card_id: str, title: str, subtitle: str, items: List[Dict[str, Any]]):
         nonlocal carousel
-        found = False
         for c in carousel:
             if isinstance(c, dict) and c.get("id") == card_id:
-                # Keep title/subtitle if already present, but ensure items exist
                 c.setdefault("title", title)
                 c.setdefault("subtitle", subtitle)
-                # Update items if empty or missing
                 if not isinstance(c.get("items"), list) or len(c.get("items")) == 0:
                     c["items"] = items
                 c["updated_at"] = now_iso
-                found = True
-                break
-        if not found:
-            carousel.append(
-                {
-                    "id": card_id,
-                    "title": title,
-                    "subtitle": subtitle,
-                    "items": items,
-                    "updated_at": now_iso,
-                }
-            )
+                return
+        carousel.append(
+            {"id": card_id, "title": title, "subtitle": subtitle, "items": items, "updated_at": now_iso}
+        )
 
     upsert_card("us_market", "US Market", "S&P 500 / Nasdaq", us_market_items)
     upsert_card("commodities", "Commodities", "Gold, Oil, Silver", commodities_items)
 
-    # ---- Market Overview for UI header (NOT unknown)
     market_open = is_market_open(now_utc)
     market_status = "Market Open" if market_open else "Market Closed"
 
-    # Simple, stable mood proxy (based on SPY/QQQ average)
     vals = [v for v in [spy, qqq] if isinstance(v, (int, float))]
     avg = sum(vals) / len(vals) if vals else None
 
@@ -511,18 +651,13 @@ def ensure_market_overview_and_baseline_carousel():
             mood = "Neutral"
             fg_label, fg_val = "Neutral", 50
 
-    # Write market_overview (quote_worker reads fearGreed)
     market_overview = {
         "marketStatus": market_status,
         "marketMood": mood,
-        "fearGreed": {
-            "label": fg_label,
-            "value": fg_val,
-        },
+        "fearGreed": {"label": fg_label, "value": fg_val},
         "updated_at": now_iso,
     }
 
-    # Persist safely
     ref.set(
         {
             "carousel": carousel,
@@ -532,6 +667,8 @@ def ensure_market_overview_and_baseline_carousel():
         },
         merge=True,
     )
+
+    log(f"✅ homescreen market_overview set | status={market_status} mood={mood}")
 
 
 # =========================================================
@@ -566,6 +703,7 @@ def save_homescreen_snapshot():
         },
         merge=True,
     )
+    log("✅ homescreen_snapshot mag7 updated")
 
 
 # =========================================================
@@ -573,33 +711,54 @@ def save_homescreen_snapshot():
 # =========================================================
 
 def main():
+    run_id = utc_now_iso()
+    log(f"🚀 cron start | run_id={run_id}")
+
     ensure_bullbrain_loaded()
 
-    scan_symbols = build_scan_universe()
-    results = []
+    scan_symbols, meta = build_scan_universe()
+    log(f"📦 scan universe | total={len(scan_symbols)} | meta={meta}")
 
-    for sym in scan_symbols:
+    results: List[Dict[str, Any]] = []
+    success = 0
+    failed = 0
+    skipped = 0
+
+    for i, sym in enumerate(scan_symbols, start=1):
         try:
             r = compute_symbol(sym)
             if r:
                 results.append(r)
-        except Exception:
-            pass
+                success += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            failed += 1
+            log_exc(f"{sym} unhandled exception", e)
+            if FAIL_FAST:
+                raise
+
+        # Progress logging
+        if LOG_EVERY_N > 0 and (i % LOG_EVERY_N == 0):
+            log(f"… progress {i}/{len(scan_symbols)} | ok={success} skip={skipped} fail={failed}")
 
         time.sleep(random.uniform(0.15, 0.25))
+
+    log(f"✅ compute complete | ok={success} skip={skipped} fail={failed} | results={len(results)}")
 
     hotlist, bearwatch = build_hotlist_bearwatch(results)
     save_market_lists(hotlist, bearwatch)
 
-    # ✅ Keep your existing homescreen MAG7 snapshot behavior
+    # ✅ Keep existing homescreen MAG7 snapshot behavior
     save_homescreen_snapshot()
 
-    # ✅ Restore old behavior: market header + US Market + Commodities baseline
-    # (safe merge; does not remove anything)
+    # ✅ Restore old behavior (header + baseline)
     try:
         ensure_market_overview_and_baseline_carousel()
-    except Exception:
-        pass
+    except Exception as e:
+        log_exc("ensure_market_overview_and_baseline_carousel failed", e)
+
+    log("🏁 cron done")
 
 
 if __name__ == "__main__":
