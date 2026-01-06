@@ -810,3 +810,13 @@ def main():
     save_homescreen_snapshot()
 
     log("🏁 cron done")
+
+# =========================================================
+# RUNNER (DO NOT REMOVE)
+# =========================================================
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log_exc("FATAL: cron crashed", e)
+        raise
