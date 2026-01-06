@@ -310,6 +310,52 @@ def _validate_feature_dict(symbol: str, feat_dict: Dict[str, Any]) -> bool:
     return True
 
 
+def _normalize_candles_list(raw: Any) -> List[Dict[str, Any]]:
+    """
+    get_candles() may return:
+      A) list[dict] candles  ✅
+      B) dict with key 'candles' holding list[dict]  ✅
+      C) dict-of-arrays (open/high/low/close/volume/timestamp)  ✅ (convert)
+    This function returns list[dict] always.
+    """
+    if raw is None:
+        return []
+
+    # A) already a list of candle dicts
+    if isinstance(raw, list):
+        return [c for c in raw if isinstance(c, dict)]
+
+    # B) dict wrapper: {"candles": [...]}
+    if isinstance(raw, dict):
+        if isinstance(raw.get("candles"), list):
+            return [c for c in raw["candles"] if isinstance(c, dict)]
+
+        # C) dict-of-arrays
+        keys = ["open", "high", "low", "close"]
+        if all(k in raw for k in keys) and isinstance(raw.get("close"), list):
+            o = raw.get("open") or []
+            h = raw.get("high") or []
+            l = raw.get("low") or []
+            cl = raw.get("close") or []
+            v = raw.get("volume") or []
+            ts = raw.get("timestamp") or []
+
+            n = min(len(o), len(h), len(l), len(cl))
+            out: List[Dict[str, Any]] = []
+            for i in range(n):
+                out.append({
+                    "t": ts[i] if i < len(ts) else None,
+                    "open": o[i],
+                    "high": h[i],
+                    "low": l[i],
+                    "close": cl[i],
+                    "volume": v[i] if i < len(v) else 0.0,
+                })
+            return out
+
+    return []
+
+
 def _candles_list_to_arrays(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Convert get_candles() output (list of candle dicts) into the dict-of-arrays
@@ -401,64 +447,64 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
     log(f"▶ {symbol} compute start")
 
-    candles = None
+    # --------------------------------------------------
+    # 1️⃣ CANDLES (SINGLE CALL, NORMALIZED)
+    # --------------------------------------------------
     try:
-        candles = get_candles(symbol, min_points=120)
+        raw_candles = get_candles(symbol, min_points=120)
     except Exception as e:
         log_exc(f"{symbol} get_candles failed", e)
         return None
 
+    candles = _normalize_candles_list(raw_candles)
+
     if not candles:
         log(f"⛔ {symbol} no candles returned → skip")
         return None
+
     log(f"✅ {symbol} candles={len(candles)}")
-        # ✅ Minimal persisted candle summary for UI + sparkline
+
+    # --------------------------------------------------
+    # 2️⃣ UI-SAFE CANDLE SUMMARY + SPARKLINE
+    # --------------------------------------------------
     candle_summary = _build_candle_summary(candles, cap=120)
     sparkline = _build_sparkline(candles, points=30)
 
-
-    # ---- features
+    # --------------------------------------------------
+    # 3️⃣ FEATURE ENGINEERING
+    # --------------------------------------------------
     try:
         feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
     except Exception as e:
         log_exc(f"{symbol} compute_bullbrain_features threw", e)
         return None
 
-    if feats_vec is None or feat_dict is None:
-        log(f"⛔ {symbol} features_vec/feat_dict is None → skip")
-        return None
-
-    if not isinstance(feat_dict, dict) or len(feat_dict) < 10:
-        log(f"⛔ {symbol} feat_dict invalid or too small (len={len(feat_dict) if isinstance(feat_dict, dict) else 'NA'}) → skip")
+    if feats_vec is None or not isinstance(feat_dict, dict):
+        log(f"⛔ {symbol} invalid feature output → skip")
         return None
 
     if not _validate_feature_dict(symbol, feat_dict):
         log(f"⛔ {symbol} feature validation failed → skip")
         return None
 
-    # optional debug sample
-    if DEBUG_FEATURES_SAMPLE > 0:
-        sample_keys = sorted(list(feat_dict.keys()))[:DEBUG_FEATURES_SAMPLE]
-        log(f"🔎 {symbol} feat sample: " + ", ".join([f"{k}={feat_dict.get(k)}" for k in sample_keys]))
-
-    # ---- inference
-    infer = None
+    # --------------------------------------------------
+    # 4️⃣ MODEL INFERENCE
+    # --------------------------------------------------
     try:
         infer = backend.bullbrain_infer(feats_vec)
     except Exception as e:
         log_exc(f"{symbol} bullbrain_infer threw", e)
         return None
 
-    if infer is None or not isinstance(infer, dict):
-        log(f"⛔ {symbol} infer is None/invalid → skip")
+    if not isinstance(infer, dict):
+        log(f"⛔ {symbol} invalid inference → skip")
         return None
 
-    # Some versions store probability_up, others raw_output
     prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
     prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
 
     if not _is_finite_number(prob_up) or not _is_finite_number(prob_down):
-        log(f"⛔ {symbol} inference produced non-finite probs (up={prob_up}, down={prob_down}) → skip")
+        log(f"⛔ {symbol} non-finite probabilities → skip")
         return None
 
     if prob_up >= 0.58:
@@ -470,10 +516,9 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
     confidence = round(max(prob_up, prob_down) * 100.0, 2)
 
-    # -------------------------
-    # ✅ TECHNICAL SNAPSHOT
-    # -------------------------
-    technical = None
+    # --------------------------------------------------
+    # 5️⃣ TECHNICAL SNAPSHOT
+    # --------------------------------------------------
     try:
         technical = build_technical_snapshot(
             symbol=symbol,
@@ -484,50 +529,56 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} build_technical_snapshot failed", e)
         technical = None
 
-    # -------------------------
-    # ✅ SMART PATTERN (ALWAYS PERSIST, NEVER NULL)
-    # -------------------------
-    smart_pattern = None
-    pattern_stats = None
-
+    # --------------------------------------------------
+    # 6️⃣ SMART PATTERNS (ALWAYS NON-NULL)
+    # --------------------------------------------------
     try:
         quote_for_pattern = {
             "price": feat_dict.get("close"),
             "changePct": feat_dict.get("return_1d"),
         }
 
-        # 1) Single-day pattern (may be NO CLEAR PATTERN — still valid)
-        sp = detect_smart_pattern(
+        smart_pattern = detect_smart_pattern(
             feat_dict,
             quote_for_pattern,
             technical,
         )
-        smart_pattern = sp  # ✅ always persist
 
-        # 2) History stats (requires dict-of-arrays)
         candles_arrays = _candles_list_to_arrays(candles)
-        hist = scan_smart_pattern_history(symbol, candles_arrays) or {}
-        pattern_stats = hist  # ✅ always persist (even if currentPattern=None)
+        pattern_stats = scan_smart_pattern_history(symbol, candles_arrays)
+
+        if not smart_pattern:
+            smart_pattern = {
+                "pattern": "NO CLEAR PATTERN",
+                "winRate": None,
+                "explanation": "No dominant institutional pattern detected.",
+            }
+
+        if not pattern_stats:
+            pattern_stats = {
+                "currentPattern": None,
+                "historyForCurrent": None,
+                "allPatterns": [],
+                "note": "Pattern stats unavailable.",
+            }
 
     except Exception as e:
-        log_exc(f"{symbol} smart pattern failed", e)
-        # provide safe non-null fallbacks
-        smart_pattern = smart_pattern or {
+        log_exc(f"{symbol} smart pattern computation failed", e)
+        smart_pattern = {
             "pattern": "NO CLEAR PATTERN",
             "winRate": None,
-            "explanation": "Pattern engine unavailable for this run.",
+            "explanation": "Pattern engine error during this run.",
         }
-        pattern_stats = pattern_stats or {
+        pattern_stats = {
             "currentPattern": None,
             "historyForCurrent": None,
             "allPatterns": [],
-            "note": "Pattern stats unavailable for this run.",
+            "note": "Pattern engine error.",
         }
 
-    # -------------------------
-    # INSIGHTS (unchanged)
-    # -------------------------
-    insights = None
+    # --------------------------------------------------
+    # 7️⃣ INSIGHTS (NON-BLOCKING)
+    # --------------------------------------------------
     try:
         insights = generate_bull_insights(
             symbol=symbol,
@@ -542,7 +593,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             seed_key=f"{symbol}:{utc_now_iso()}",
         )
     except Exception as e:
-        # insights should never block persistence
         log_exc(f"{symbol} generate_bull_insights failed", e)
         insights = {
             "oneLiner": "Insights unavailable.",
@@ -554,56 +604,59 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "combinedTechnicalSummary": "Insights unavailable.",
         }
 
-        doc = {
+    # --------------------------------------------------
+    # 8️⃣ FINAL DOCUMENT (ALWAYS BUILT)
+    # --------------------------------------------------
+    doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
 
-        # CORE
         "bullbrain": {
             "signal": signal,
             "confidence": confidence,
             "prob_up": round(prob_up, 4),
             "prob_down": round(prob_down, 4),
         },
+
         "features_meta": feat_dict,
         "insights": insights,
 
-        # ✅ Candle summary + sparkline (fix missing candles/sparklines in response)
         "candles": candle_summary,
         "sparkline": sparkline,
 
-        # ✅ Technical + Patterns
         "technical": technical,
         "smartPattern": smart_pattern,
         "patternStats": pattern_stats,
 
-        # META
         "computed_at": utc_now_iso(),
         "schema_version": "v1",
     }
 
-
-    # ---- Firestore write (with visibility)
+    # --------------------------------------------------
+    # 9️⃣ FIRESTORE WRITE
+    # --------------------------------------------------
     try:
         db = get_db()
 
-        # Optional "index marker" doc: bullsignals_ai/stocks
-        # This is not required, but it makes the document visible in console and helps debugging.
         db.collection(COL_ROOT).document(COL_STOCKS).set(
             {
                 "schema_version": "v1",
                 "updated_at": utc_now_iso(),
-                "note": "stocks document is an index marker; symbol docs live in stocks/symbols/*",
+                "note": "Index marker for stocks collection",
             },
             merge=True,
         )
 
-        db.collection(COL_ROOT).document(COL_STOCKS) \
-            .collection("symbols").document(symbol) \
+        db.collection(COL_ROOT) \
+            .document(COL_STOCKS) \
+            .collection("symbols") \
+            .document(symbol) \
             .set(doc, merge=True)
 
-        dt = time.time() - t0
-        log(f"✅ {symbol} wrote stocks/symbols/{symbol} | signal={signal} conf={confidence}% | {dt:.2f}s")
+        log(
+            f"✅ {symbol} written | signal={signal} conf={confidence}% "
+            f"| {time.time() - t0:.2f}s"
+        )
         return doc
 
     except Exception as e:
