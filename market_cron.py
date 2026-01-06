@@ -310,6 +310,87 @@ def _validate_feature_dict(symbol: str, feat_dict: Dict[str, Any]) -> bool:
     return True
 
 
+def _candles_list_to_arrays(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Convert get_candles() output (list of candle dicts) into the dict-of-arrays
+    format expected by scan_smart_pattern_history().
+    """
+    out = {
+        "open": [],
+        "high": [],
+        "low": [],
+        "close": [],
+        "volume": [],
+        "timestamp": [],  # ms epoch expected by your scanner
+    }
+
+    for c in candles:
+        if not isinstance(c, dict):
+            continue
+
+        # tolerate multiple key names
+        t = c.get("t") or c.get("timestamp") or c.get("time")
+        o = c.get("open")
+        h = c.get("high")
+        l = c.get("low")
+        cl = c.get("close")
+        v = c.get("volume")
+
+        # require the core OHLC
+        if o is None or h is None or l is None or cl is None:
+            continue
+
+        out["open"].append(float(o))
+        out["high"].append(float(h))
+        out["low"].append(float(l))
+        out["close"].append(float(cl))
+        out["volume"].append(float(v) if v is not None else 0.0)
+
+        # normalize timestamp to ms epoch if possible
+        try:
+            if isinstance(t, (int, float)):
+                # if it's seconds, convert to ms
+                t_ms = int(t * 1000) if t < 10_000_000_000 else int(t)
+                out["timestamp"].append(t_ms)
+            else:
+                out["timestamp"].append(None)
+        except Exception:
+            out["timestamp"].append(None)
+
+    return out
+
+
+def _build_candle_summary(candles: List[Dict[str, Any]], cap: int = 120) -> Dict[str, Any]:
+    """
+    Persist minimal candle data in stocks doc (UI-safe and cost-safe).
+    """
+    tail = [c for c in candles if isinstance(c, dict)][-cap:]
+    return {
+        "count": len(candles),
+        "candles": [
+            {
+                "t": c.get("t") or c.get("timestamp") or c.get("time"),
+                "close": c.get("close"),
+            }
+            for c in tail
+        ],
+    }
+
+
+def _build_sparkline(candles: List[Dict[str, Any]], points: int = 30) -> List[float]:
+    """
+    Small sparkline array for UI (last N closes).
+    """
+    closes: List[float] = []
+    for c in candles[-max(points * 2, points):]:
+        if isinstance(c, dict) and c.get("close") is not None:
+            try:
+                closes.append(float(c["close"]))
+            except Exception:
+                pass
+    return closes[-points:]
+
+
 # =========================================================
 # PER-SYMBOL COMPUTE
 # =========================================================
@@ -331,6 +412,10 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log(f"⛔ {symbol} no candles returned → skip")
         return None
     log(f"✅ {symbol} candles={len(candles)}")
+        # ✅ Minimal persisted candle summary for UI + sparkline
+    candle_summary = _build_candle_summary(candles, cap=120)
+    sparkline = _build_sparkline(candles, points=30)
+
 
     # ---- features
     try:
@@ -400,7 +485,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         technical = None
 
     # -------------------------
-    # ✅ SMART PATTERN
+    # ✅ SMART PATTERN (ALWAYS PERSIST, NEVER NULL)
     # -------------------------
     smart_pattern = None
     pattern_stats = None
@@ -411,19 +496,33 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "changePct": feat_dict.get("return_1d"),
         }
 
+        # 1) Single-day pattern (may be NO CLEAR PATTERN — still valid)
         sp = detect_smart_pattern(
             feat_dict,
             quote_for_pattern,
             technical,
         )
+        smart_pattern = sp  # ✅ always persist
 
-        if sp and sp.get("pattern") != "NO CLEAR PATTERN":
-            hist = scan_smart_pattern_history(symbol, candles) or {}
-            smart_pattern = sp
-            pattern_stats = hist
+        # 2) History stats (requires dict-of-arrays)
+        candles_arrays = _candles_list_to_arrays(candles)
+        hist = scan_smart_pattern_history(symbol, candles_arrays) or {}
+        pattern_stats = hist  # ✅ always persist (even if currentPattern=None)
 
     except Exception as e:
         log_exc(f"{symbol} smart pattern failed", e)
+        # provide safe non-null fallbacks
+        smart_pattern = smart_pattern or {
+            "pattern": "NO CLEAR PATTERN",
+            "winRate": None,
+            "explanation": "Pattern engine unavailable for this run.",
+        }
+        pattern_stats = pattern_stats or {
+            "currentPattern": None,
+            "historyForCurrent": None,
+            "allPatterns": [],
+            "note": "Pattern stats unavailable for this run.",
+        }
 
     # -------------------------
     # INSIGHTS (unchanged)
@@ -455,7 +554,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "combinedTechnicalSummary": "Insights unavailable.",
         }
 
-    doc = {
+        doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
 
@@ -469,7 +568,11 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "features_meta": feat_dict,
         "insights": insights,
 
-        # ✅ NEW (critical)
+        # ✅ Candle summary + sparkline (fix missing candles/sparklines in response)
+        "candles": candle_summary,
+        "sparkline": sparkline,
+
+        # ✅ Technical + Patterns
         "technical": technical,
         "smartPattern": smart_pattern,
         "patternStats": pattern_stats,
@@ -478,6 +581,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "computed_at": utc_now_iso(),
         "schema_version": "v1",
     }
+
 
     # ---- Firestore write (with visibility)
     try:

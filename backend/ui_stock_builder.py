@@ -182,7 +182,7 @@ def build_trend_alignment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 # Freshness indicator
 # -------------------------------------------------
 def build_freshness(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
-    ts = stockdetail.get("computed_at") or stockdetail.get("computedAt")
+    ts = stockdetail.get("computed_at")
     if not ts:
         return {}
 
