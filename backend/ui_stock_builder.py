@@ -131,15 +131,23 @@ def build_risk_meter(technical: Dict[str, Any]) -> Dict[str, str]:
     if not technical:
         return {}
 
-    volatility = technical.get("volatility") or 0
+    vol = technical.get("volatility") or {}
+    volatility_value = None
+
+    # Handle both numeric and object forms safely
+    if isinstance(vol, (int, float)):
+        volatility_value = vol
+    elif isinstance(vol, dict):
+        volatility_value = vol.get("volatility_20d")
+
     atr = technical.get("atr") or technical.get("atr14") or 0
 
-    # NOTE: your "volatility_20d" in features_meta is numeric,
-    # but technical.volatility.label exists too.
-    # Here we only do a simple derived meter as UI helper.
-    if volatility > 0.05 or atr > 5:
+    if volatility_value is None:
+        return {}
+
+    if volatility_value > 3 or atr > 20:
         level = "High"
-    elif volatility > 0.025:
+    elif volatility_value > 1.5:
         level = "Medium"
     else:
         level = "Low"
