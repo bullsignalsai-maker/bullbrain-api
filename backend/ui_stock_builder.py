@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 
 # -------------------------------------------------
-# Sparkline (visual-only)
+# Sparkline (FALLBACK-ONLY)
 # -------------------------------------------------
 def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not candles:
@@ -43,7 +43,7 @@ def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # -------------------------------------------------
-# UI badges derived from Firestore data
+# UI badges
 # -------------------------------------------------
 def build_ui_badges(stockdetail: Dict[str, Any]) -> List[Dict[str, str]]:
     badges: List[Dict[str, str]] = []
@@ -51,31 +51,22 @@ def build_ui_badges(stockdetail: Dict[str, Any]) -> List[Dict[str, str]]:
     bullbrain = stockdetail.get("bullbrain") or {}
     signal = bullbrain.get("signal")
     if signal:
-        badges.append({
-            "type": "signal",
-            "label": signal.replace("_", " "),
-        })
+        badges.append({"type": "signal", "label": signal.replace("_", " ")})
 
     technical = stockdetail.get("technical") or {}
     trend_label = technical.get("trend", {}).get("label")
     if trend_label:
-        badges.append({
-            "type": "trend",
-            "label": trend_label,
-        })
+        badges.append({"type": "trend", "label": trend_label})
 
     smart = stockdetail.get("smartPattern")
     if smart and smart.get("pattern"):
-        badges.append({
-            "type": "pattern",
-            "label": smart.get("pattern"),
-        })
+        badges.append({"type": "pattern", "label": smart.get("pattern")})
 
     return badges
 
 
 # -------------------------------------------------
-# UI sentiment summary (from existing insights)
+# Sentiment summary
 # -------------------------------------------------
 def build_ui_sentiment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     insights = stockdetail.get("insights") or {}
@@ -83,22 +74,14 @@ def build_ui_sentiment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if not summary:
         return {}
 
-    summary_l = summary.lower()
+    s = summary.lower()
+    tone = "bearish" if "bear" in s else "bullish" if "bull" in s else "neutral"
 
-    tone = (
-        "bearish" if "bear" in summary_l
-        else "bullish" if "bull" in summary_l
-        else "neutral"
-    )
-
-    return {
-        "headline": summary,
-        "tone": tone,
-    }
+    return {"headline": summary, "tone": tone}
 
 
 # -------------------------------------------------
-# Confidence tier (human-readable)
+# Confidence tier
 # -------------------------------------------------
 def build_confidence_tier(confidence: float | None) -> Dict[str, Any]:
     if confidence is None:
@@ -113,14 +96,11 @@ def build_confidence_tier(confidence: float | None) -> Dict[str, Any]:
     else:
         tier = "Low"
 
-    return {
-        "value": round(confidence, 2),
-        "tier": tier,
-    }
+    return {"value": round(confidence, 2), "tier": tier}
 
 
 # -------------------------------------------------
-# Signal strength label
+# Signal strength
 # -------------------------------------------------
 def build_signal_strength(bullbrain: Dict[str, Any]) -> Dict[str, str]:
     if not bullbrain:
@@ -136,14 +116,11 @@ def build_signal_strength(bullbrain: Dict[str, Any]) -> Dict[str, str]:
     else:
         label = "Neutral"
 
-    return {
-        "signal": signal,
-        "label": label,
-    }
+    return {"signal": signal, "label": label}
 
 
 # -------------------------------------------------
-# Risk meter (derived from technicals)
+# Risk meter
 # -------------------------------------------------
 def build_risk_meter(technical: Dict[str, Any]) -> Dict[str, str]:
     if not technical:
@@ -159,13 +136,11 @@ def build_risk_meter(technical: Dict[str, Any]) -> Dict[str, str]:
     else:
         level = "Low"
 
-    return {
-        "level": level,
-    }
+    return {"level": level}
 
 
 # -------------------------------------------------
-# Trend alignment (BullBrain vs Technicals)
+# Trend alignment
 # -------------------------------------------------
 def build_trend_alignment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     bullbrain = stockdetail.get("bullbrain") or {}
@@ -182,14 +157,11 @@ def build_trend_alignment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         (signal == "SELL" and direction == "down")
     )
 
-    return {
-        "aligned": aligned,
-        "label": "Aligned" if aligned else "Diverging",
-    }
+    return {"aligned": aligned, "label": "Aligned" if aligned else "Diverging"}
 
 
 # -------------------------------------------------
-# Freshness indicator
+# Freshness
 # -------------------------------------------------
 def build_freshness(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     ts = stockdetail.get("computed_at")
@@ -202,59 +174,127 @@ def build_freshness(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         return {}
 
-    if minutes < 5:
-        label = "Just now"
-    elif minutes < 30:
-        label = "Recent"
+    label = "Just now" if minutes < 5 else "Recent" if minutes < 30 else "Stale"
+    return {"minutesAgo": minutes, "label": label}
+
+
+# -------------------------------------------------
+# Smart Pattern Insight (UI)
+# -------------------------------------------------
+def build_ui_pattern_insight(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    sp = stockdetail.get("smartPattern")
+    stats = stockdetail.get("patternStats", {}).get("historyForCurrent")
+    current = stockdetail.get("currentPattern")
+
+    if not sp:
+        return {}
+
+    win_rate = sp.get("winRate", 0)
+    confidence_pct = round(win_rate * 100)
+
+    avg10 = None
+    if stats:
+        avg10 = stats.get("forwardReturns", {}).get("days10", {}).get("avg")
+
+    if avg10 is not None:
+        edge_label = "Historically Strong" if avg10 >= 3 else "Moderate Edge" if avg10 >= 1 else "Weak / Neutral"
     else:
-        label = "Stale"
+        edge_label = "Unknown"
 
     return {
-        "minutesAgo": minutes,
-        "label": label,
+        "pattern": sp.get("pattern"),
+        "confidencePct": confidence_pct,
+        "label": edge_label,
+        "explanation": sp.get("explanation"),
+        "history": {
+            "occurrences": stats.get("occurrences") if stats else None,
+            "avgReturn5d": stats.get("forwardReturns", {}).get("days5", {}).get("avg") if stats else None,
+            "avgReturn10d": avg10,
+        },
+        "recent": {
+            "date": current.get("date") if current else None,
+            "headline": current.get("headline") if current else None,
+            "bias": current.get("bias") if current else None,
+        }
     }
 
 
 # -------------------------------------------------
-# Master UI Enhancer (SAFE ENTRY POINT)
+# Probability Cone (EXPECTED RANGE UI)
+# -------------------------------------------------
+def build_probability_cone(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    stats = stockdetail.get("patternStats", {}).get("historyForCurrent")
+    last_price = stockdetail.get("technical", {}).get("lastClose")
+
+    if not stats or not last_price:
+        return {}
+
+    fr = stats.get("forwardReturns", {})
+    d5 = fr.get("days5", {})
+    d10 = fr.get("days10", {})
+
+    def band(ret):
+        if ret is None:
+            return None
+        return round(last_price * (1 + ret / 100), 2)
+
+    cone = {
+        "days5": {
+            "low": band(d5.get("worst")),
+            "mid": band(d5.get("avg")),
+            "high": band(d5.get("best")),
+        },
+        "days10": {
+            "low": band(d10.get("worst")),
+            "mid": band(d10.get("avg")),
+            "high": band(d10.get("best")),
+        }
+    }
+
+    return {
+        "type": "expected-range",
+        "anchorPrice": last_price,
+        "ranges": cone,
+        "note": "Historical probability range, not a prediction",
+    }
+
+
+# -------------------------------------------------
+# MASTER UI ENHANCER
 # -------------------------------------------------
 def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    IMPORTANT GUARANTEES:
-    - Uses Firestore data only
-    - Adds UI helpers only
-    - NEVER overwrites stockdetail fields
-    - Safe for real-time endpoints
-    """
-
     ui: Dict[str, Any] = {}
 
-    # Sparkline
-    candles = stockdetail.get("candles", {}).get("candles", [])
-    if candles:
-        ui["sparkline"] = build_sparkline(candles)
+    # Sparkline (fallback-only)
+    if "sparkline" not in stockdetail:
+        candles = stockdetail.get("candles", {}).get("candles", [])
+        if candles:
+            ui["sparkline"] = build_sparkline(candles)
 
-    # Badges
     ui["badges"] = build_ui_badges(stockdetail)
 
-    # Sentiment
     sentiment = build_ui_sentiment(stockdetail)
     if sentiment:
         ui["sentiment"] = sentiment
 
-    # Confidence + signal strength
     bullbrain = stockdetail.get("bullbrain") or {}
     if bullbrain:
         ui["confidence"] = build_confidence_tier(bullbrain.get("confidence"))
         ui["signalStrength"] = build_signal_strength(bullbrain)
 
-    # Risk + alignment
     technical = stockdetail.get("technical") or {}
     if technical:
         ui["risk"] = build_risk_meter(technical)
         ui["trendAlignment"] = build_trend_alignment(stockdetail)
 
-    # Freshness
     ui["freshness"] = build_freshness(stockdetail)
+
+    pattern_ui = build_ui_pattern_insight(stockdetail)
+    if pattern_ui:
+        ui["patternInsight"] = pattern_ui
+
+    cone = build_probability_cone(stockdetail)
+    if cone:
+        ui["probabilityCone"] = cone
 
     return ui
