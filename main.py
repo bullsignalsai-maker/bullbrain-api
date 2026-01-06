@@ -4437,22 +4437,17 @@ def stock_detail(symbol: str):
     )
 
     if not doc.exists:
-        # Stock not computed yet (cron hasn’t populated it)
         return {
             "status": "not_ready",
             "symbol": sym,
         }
 
     payload = doc.to_dict() or {}
-    payload["symbol"] = sym  # defensive (guaranteed for UI)
+    payload["symbol"] = sym  # defensive
 
-    # 2️⃣ UI ENHANCEMENTS (pure python, zero I/O, zero latency)
     # ---------------------------------------------------------
-    # IMPORTANT:
-    # - Firestore-only
-    # - No API calls
-    # - No DB writes
-    # - Safe for real-time usage
+    # 2️⃣ UI ENHANCEMENTS (pure python, zero I/O)
+    # ---------------------------------------------------------
     from backend.ui_stock_builder import build_ui_enhancements
 
     try:
@@ -4460,10 +4455,37 @@ def stock_detail(symbol: str):
         if ui:
             payload["ui"] = ui
     except Exception:
-        # UI helpers must NEVER break stock detail
         payload["ui"] = {}
 
-    # 3️⃣ Return final payload
+    # ---------------------------------------------------------
+    # 3️⃣ LIVE COMPANY NEWS (Finnhub — symbol only)
+    # ---------------------------------------------------------
+    from backend.news_repo import fetch_symbol_news
+
+    try:
+        company_name = (
+            payload.get("company_name")
+            or payload.get("companyName")
+            or payload.get("name")
+        )
+
+        news = fetch_symbol_news(
+            symbol=sym,
+            company_name=company_name,
+            limit=8,
+        )
+
+        if news:
+            payload["news"] = news
+        else:
+            payload["news"] = []
+
+    except Exception:
+        payload["news"] = []
+
+    # ---------------------------------------------------------
+    # 4️⃣ Return final payload
+    # ---------------------------------------------------------
     return payload
 
 # -----------------------------
