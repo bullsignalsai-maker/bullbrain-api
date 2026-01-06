@@ -1,297 +1,260 @@
 # backend/ui_stock_builder.py
-# ---------------------------------------------------------
-# UI Stock Builder (PLAN B — FINAL, SAFE)
-# ---------------------------------------------------------
-# Builds ONE canonical StockDetail UI document per symbol
-# All computation happens HERE
-# /stockdetail reads Firestore only
-# ---------------------------------------------------------
+# -------------------------------------------------
+# UI Enhancement Layer (READ-ONLY, ADDITIVE ONLY)
+#
+# Purpose:
+# - Convert Firestore stockdetail JSON into UI-friendly helpers
+# - NO background jobs
+# - NO Firestore writes
+# - NO schema changes
+# -------------------------------------------------
 
-from __future__ import annotations
-
-from typing import Dict, Any, Optional, List
-import datetime
-import math
-
-# Firestore (DO NOT change)
-from backend.firestore_utils import get_db, iso_now
-
-# Data sources
-from backend.stock_repo import get_stock
-from backend.candle_store import get_candles
-from backend.technicals import build_technical_snapshot
-from backend.smart_patterns import detect_smart_pattern, scan_smart_pattern_history
-from backend.news_repo import fetch_symbol_news
+from typing import Dict, Any, List
+from datetime import datetime, timezone
 
 
-# ---------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------
-
-def _safe_float(x) -> Optional[float]:
-    try:
-        if x is None:
-            return None
-        v = float(x)
-        if math.isnan(v):
-            return None
-        return v
-    except Exception:
-        return None
-
-
-def _iso_from_ms(ts_ms: Optional[int]) -> Optional[str]:
-    try:
-        if not ts_ms:
-            return None
-        dt = datetime.datetime.utcfromtimestamp(ts_ms / 1000).replace(microsecond=0)
-        return dt.isoformat() + "Z"
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------
-# Candles → UI payload
-# ---------------------------------------------------------
-
-def _build_candles_payload(
-    symbol: str,
-    candles: Dict[str, Any],
-    limit: int = 180,
-) -> Dict[str, Any]:
-
-    closes = candles.get("close") or []
-    if not closes:
-        return {"symbol": symbol, "source": candles.get("source"), "candles": []}
-
-    opens = candles.get("open") or []
-    highs = candles.get("high") or []
-    lows = candles.get("low") or []
-    vols = candles.get("volume") or []
-    ts = candles.get("timestamp") or []
-
-    n = len(closes)
-    start = max(0, n - limit)
-
-    out: List[Dict[str, Any]] = []
-    for i in range(start, n):
-        t = _iso_from_ms(ts[i]) if i < len(ts) else None
-        if not t:
-            t = (
-                datetime.datetime.utcnow()
-                - datetime.timedelta(days=(n - i))
-            ).replace(microsecond=0).isoformat() + "Z"
-
-        out.append(
-            {
-                "t": t,
-                "open": _safe_float(opens[i]),
-                "high": _safe_float(highs[i]),
-                "low": _safe_float(lows[i]),
-                "close": _safe_float(closes[i]),
-                "volume": _safe_float(vols[i]),
-            }
-        )
-
-    return {
-        "symbol": symbol,
-        "source": candles.get("source", "firestore"),
-        "candles": out,
-    }
-
-
-# ---------------------------------------------------------
-# Sparkline
-# ---------------------------------------------------------
-
-def build_sparkline(
-    candles: Dict[str, Any], max_points: int = 60
-) -> Optional[Dict[str, Any]]:
-
-    closes = candles.get("close") or []
-    if len(closes) < 2:
-        return None
-
-    step = max(1, len(closes) // max_points)
-    data = [float(v) for v in closes[::step] if v is not None]
-    if len(data) < 2:
-        return None
-
-    lo, hi = min(data), max(data)
-    rng = hi - lo or 1.0
-
-    pts = []
-    for i, v in enumerate(data):
-        x = i * (100 / max(len(data) - 1, 1))
-        y = 32 - ((v - lo) / rng) * 32
-        pts.append(f"{x:.1f},{y:.1f}")
-
-    return {
-        "path": "M " + " L ".join(pts),
-        "min": lo,
-        "max": hi,
-        "direction": "up" if data[-1] >= data[0] else "down",
-        "updatedAt": iso_now(),
-    }
-
-
-# ---------------------------------------------------------
-# Quote + OHLCV
-# ---------------------------------------------------------
-
-def _build_quote_block(
-    symbol: str,
-    quote: Dict[str, Any],
-    candles: Dict[str, Any],
-) -> Dict[str, Any]:
-
-    closes = candles.get("close") or []
-    if not closes:
+# -------------------------------------------------
+# Sparkline (visual-only)
+# -------------------------------------------------
+def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not candles:
         return {}
 
-    last = len(closes) - 1
-    prev = last - 1 if last > 0 else None
+    closes = [c.get("close") for c in candles if c.get("close") is not None]
+    if len(closes) < 2:
+        return {}
 
-    price = _safe_float(quote.get("price")) or _safe_float(closes[last])
-    prev_close = _safe_float(closes[prev]) if prev is not None else None
+    min_p = min(closes)
+    max_p = max(closes)
+    span = max_p - min_p or 1
 
-    change_pct = _safe_float(quote.get("changePct"))
-    if change_pct is None and price and prev_close:
-        change_pct = ((price / prev_close) - 1) * 100
+    points = []
+    for i, price in enumerate(closes):
+        x = round(i * 100 / (len(closes) - 1), 1)
+        y = round((max_p - price) * 30 / span, 1)
+        points.append(f"{x},{y}")
 
     return {
-        "symbol": symbol,
-        "price": price,
-        "changePct": change_pct,
-        "updatedAt": quote.get("updated_at") or iso_now(),
-        "ohlcv": {
-            "t": _iso_from_ms((candles.get("timestamp") or [None])[last]),
-            "open": _safe_float((candles.get("open") or [None])[last]),
-            "high": _safe_float((candles.get("high") or [None])[last]),
-            "low": _safe_float((candles.get("low") or [None])[last]),
-            "close": _safe_float((candles.get("close") or [None])[last]),
-            "prevClose": prev_close,
-            "volume": _safe_float((candles.get("volume") or [None])[last]),
-        },
+        "path": "M " + " L ".join(points),
+        "min": round(min_p, 2),
+        "max": round(max_p, 2),
+        "direction": "up" if closes[-1] >= closes[0] else "down",
     }
 
 
-# ---------------------------------------------------------
-# Main Builder (FINAL)
-# ---------------------------------------------------------
+# -------------------------------------------------
+# UI badges derived from Firestore data
+# -------------------------------------------------
+def build_ui_badges(stockdetail: Dict[str, Any]) -> List[Dict[str, str]]:
+    badges: List[Dict[str, str]] = []
 
-def build_and_save_stock_ui_doc(
-    symbol: str, *, candle_limit: int = 180, news_limit: int = 8
-) -> Dict[str, Any]:
+    bullbrain = stockdetail.get("bullbrain") or {}
+    signal = bullbrain.get("signal")
+    if signal:
+        badges.append({
+            "type": "signal",
+            "label": signal.replace("_", " "),
+        })
 
-    symbol = (symbol or "").upper().strip()
-    if not symbol.isalnum():
-        raise RuntimeError("Invalid symbol")
+    technical = stockdetail.get("technical") or {}
+    trend_label = technical.get("trend", {}).get("label")
+    if trend_label:
+        badges.append({
+            "type": "trend",
+            "label": trend_label,
+        })
 
-    db = get_db()
+    smart = stockdetail.get("smartPattern")
+    if smart and smart.get("pattern"):
+        badges.append({
+            "type": "pattern",
+            "label": smart.get("pattern"),
+        })
 
-    # --- BullBrain cache ---
-    stock = get_stock(symbol) or {}
-    company_name = stock.get("company_name") or stock.get("companyName") or symbol
+    return badges
 
-    # --- Quote cache ---
-    quote_ref = (
-        db.collection("bullsignals_ai")
-        .document("quotes")
-        .collection("symbols")
-        .document(symbol)
+
+# -------------------------------------------------
+# UI sentiment summary (from existing insights)
+# -------------------------------------------------
+def build_ui_sentiment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    insights = stockdetail.get("insights") or {}
+    summary = insights.get("summaryLine")
+    if not summary:
+        return {}
+
+    summary_l = summary.lower()
+
+    tone = (
+        "bearish" if "bear" in summary_l
+        else "bullish" if "bull" in summary_l
+        else "neutral"
     )
-    quote_doc = quote_ref.get()
-    quote_cache = quote_doc.to_dict() if quote_doc.exists else {}
 
-    # --- Candles ---
-    candles = get_candles(symbol, min_points=candle_limit)
-    if not candles or not candles.get("close"):
-        raise RuntimeError("Candles unavailable")
+    return {
+        "headline": summary,
+        "tone": tone,
+    }
 
-    # --- Header ---
-    quote_block = _build_quote_block(symbol, quote_cache, candles)
 
-    # --- Technical ---
-    technical = build_technical_snapshot(
-        symbol,
-        stock.get("features_meta") or {},
-        quote_block.get("price"),
+# -------------------------------------------------
+# Confidence tier (human-readable)
+# -------------------------------------------------
+def build_confidence_tier(confidence: float | None) -> Dict[str, Any]:
+    if confidence is None:
+        return {}
+
+    if confidence >= 75:
+        tier = "Very High"
+    elif confidence >= 65:
+        tier = "High"
+    elif confidence >= 55:
+        tier = "Moderate"
+    else:
+        tier = "Low"
+
+    return {
+        "value": round(confidence, 2),
+        "tier": tier,
+    }
+
+
+# -------------------------------------------------
+# Signal strength label
+# -------------------------------------------------
+def build_signal_strength(bullbrain: Dict[str, Any]) -> Dict[str, str]:
+    if not bullbrain:
+        return {}
+
+    signal = bullbrain.get("signal")
+    confidence = bullbrain.get("confidence", 0)
+
+    if signal == "BUY":
+        label = "Strong Buy" if confidence >= 70 else "Buy"
+    elif signal == "SELL":
+        label = "Strong Sell" if confidence >= 70 else "Sell"
+    else:
+        label = "Neutral"
+
+    return {
+        "signal": signal,
+        "label": label,
+    }
+
+
+# -------------------------------------------------
+# Risk meter (derived from technicals)
+# -------------------------------------------------
+def build_risk_meter(technical: Dict[str, Any]) -> Dict[str, str]:
+    if not technical:
+        return {}
+
+    volatility = technical.get("volatility") or 0
+    atr = technical.get("atr") or 0
+
+    if volatility > 0.05 or atr > 5:
+        level = "High"
+    elif volatility > 0.025:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    return {
+        "level": level,
+    }
+
+
+# -------------------------------------------------
+# Trend alignment (BullBrain vs Technicals)
+# -------------------------------------------------
+def build_trend_alignment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    bullbrain = stockdetail.get("bullbrain") or {}
+    technical = stockdetail.get("technical") or {}
+
+    signal = bullbrain.get("signal")
+    direction = technical.get("trend", {}).get("direction")
+
+    if not signal or not direction:
+        return {}
+
+    aligned = (
+        (signal == "BUY" and direction == "up") or
+        (signal == "SELL" and direction == "down")
     )
 
-    # --- Sparkline ---
-    sparkline = build_sparkline(candles)
+    return {
+        "aligned": aligned,
+        "label": "Aligned" if aligned else "Diverging",
+    }
 
-    # --- Candles payload ---
-    candles_payload = _build_candles_payload(symbol, candles, candle_limit)
 
-    # --- Smart Pattern (SAFE ADAPTER) ---
-    smart_pattern = None
-    pattern_dates = []
-    pattern_stats = None
+# -------------------------------------------------
+# Freshness indicator
+# -------------------------------------------------
+def build_freshness(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    ts = stockdetail.get("computed_at")
+    if not ts:
+        return {}
 
     try:
-        quote_for_pattern = {
-            "price": quote_block.get("price"),
-            "changePct": quote_block.get("changePct"),
-        }
-
-        sp = detect_smart_pattern(
-            stock.get("features_meta") or {},
-            quote_for_pattern,
-            technical,
-        )
-
-        if sp and sp.get("pattern") != "NO CLEAR PATTERN":
-            hist = scan_smart_pattern_history(symbol, candles) or {}
-            smart_pattern = sp
-            pattern_stats = hist
-
-            hf = hist.get("historyForCurrent") or {}
-            pattern_dates = (hf.get("samples") or [])[:5]
-
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        minutes = int((datetime.now(timezone.utc) - dt).total_seconds() / 60)
     except Exception:
-        pass
+        return {}
 
-    # --- News ---
-    news = fetch_symbol_news(
-        symbol=symbol,
-        company_name=stock.get("company_name"),
-        limit=news_limit,
-    )
+    if minutes < 5:
+        label = "Just now"
+    elif minutes < 30:
+        label = "Recent"
+    else:
+        label = "Stale"
 
-    # --- Final UI doc ---
-    ui_doc: Dict[str, Any] = {
-        "schemaVersion": "stockdetail_ui_v1",
-        "computedAt": iso_now(),
-        "symbol": symbol,
-        "companyName": company_name,
-        "quote": quote_block,
-        "sparkline": sparkline,
-        "bullbrain": stock.get("bullbrain"),
-        "insights": stock.get("insights"),
-        "technical": technical,
-        "candles": candles_payload,
-        "smartPattern": smart_pattern,
-        "patternDates": pattern_dates,
-        "patternStats": pattern_stats,
-        "news": news,
-        "ttl": {
-            "quoteSeconds": 30,
-            "candlesMinutes": 30,
-            "technicalMinutes": 60,
-            "signalMinutes": 60,
-            "newsMinutes": 30,
-        },
+    return {
+        "minutesAgo": minutes,
+        "label": label,
     }
 
-    # --- Persist ---
-    (
-        db.collection("bullsignals_ai")
-        .document("stocks")
-        .collection("symbols")
-        .document(symbol)
-        .set(ui_doc, merge=True)
-    )
 
-    return ui_doc
+# -------------------------------------------------
+# Master UI Enhancer (SAFE ENTRY POINT)
+# -------------------------------------------------
+def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    IMPORTANT GUARANTEES:
+    - Uses Firestore data only
+    - Adds UI helpers only
+    - NEVER overwrites stockdetail fields
+    - Safe for real-time endpoints
+    """
+
+    ui: Dict[str, Any] = {}
+
+    # Sparkline
+    candles = stockdetail.get("candles", {}).get("candles", [])
+    if candles:
+        ui["sparkline"] = build_sparkline(candles)
+
+    # Badges
+    ui["badges"] = build_ui_badges(stockdetail)
+
+    # Sentiment
+    sentiment = build_ui_sentiment(stockdetail)
+    if sentiment:
+        ui["sentiment"] = sentiment
+
+    # Confidence + signal strength
+    bullbrain = stockdetail.get("bullbrain") or {}
+    if bullbrain:
+        ui["confidence"] = build_confidence_tier(bullbrain.get("confidence"))
+        ui["signalStrength"] = build_signal_strength(bullbrain)
+
+    # Risk + alignment
+    technical = stockdetail.get("technical") or {}
+    if technical:
+        ui["risk"] = build_risk_meter(technical)
+        ui["trendAlignment"] = build_trend_alignment(stockdetail)
+
+    # Freshness
+    ui["freshness"] = build_freshness(stockdetail)
+
+    return ui

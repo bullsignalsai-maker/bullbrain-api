@@ -4423,49 +4423,51 @@ import inspect
 # ---------------------------------------------------------
 # Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# Stock Detail API — Plan B (Firestore-only, ultra fast)
+# ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
-def get_stockdetail(symbol: str):
-    symbol = str(symbol or "").upper().strip()
+def stock_detail(symbol: str):
+    sym = symbol.upper()
 
-    if not symbol.isalnum():
-        return {"status": "error", "symbol": symbol, "error": "Invalid symbol"}
+    # 1️⃣ Read stock snapshot from Firestore (single document read)
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
+    )
 
-    try:
-        # Optional: mark symbol as active (if you use this system)
-        try:
-            touch_active_symbol(symbol)
-        except Exception:
-            pass
-
-        db = get_db()
-
-        doc_ref = (
-            db.collection("bullsignals_ai")
-              .document("stocks")
-              .collection("symbols")
-              .document(symbol)
-        )
-
-        snap = doc_ref.get()
-        if not snap.exists:
-            return {
-                "status": "error",
-                "symbol": symbol,
-                "error": "UI doc not found in Firestore. Run builder/cron for this symbol.",
-            }
-
-        ui_doc = snap.to_dict() or {}
-
-        # Guaranteed shape
+    if not doc.exists:
+        # Stock not computed yet (cron hasn’t populated it)
         return {
-            "status": "ok",
-            "symbol": symbol,
-            "source": "firestore",
-            "stockdetail": ui_doc,
+            "status": "not_ready",
+            "symbol": sym,
         }
 
-    except Exception as e:
-        return {"status": "error", "symbol": symbol, "error": str(e)}
+    payload = doc.to_dict() or {}
+    payload["symbol"] = sym  # defensive (guaranteed for UI)
+
+    # 2️⃣ UI ENHANCEMENTS (pure python, zero I/O, zero latency)
+    # ---------------------------------------------------------
+    # IMPORTANT:
+    # - Firestore-only
+    # - No API calls
+    # - No DB writes
+    # - Safe for real-time usage
+    from backend.ui_stock_builder import build_ui_enhancements
+
+    try:
+        ui = build_ui_enhancements(payload)
+        if ui:
+            payload["ui"] = ui
+    except Exception:
+        # UI helpers must NEVER break stock detail
+        payload["ui"] = {}
+
+    # 3️⃣ Return final payload
+    return payload
 
 # -----------------------------
 # Firestore helpers

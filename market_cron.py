@@ -709,20 +709,67 @@ def save_homescreen_snapshot():
 # =========================================================
 # ENTRYPOINT
 # =========================================================
-
 def main():
     run_id = utc_now_iso()
     log(f"🚀 cron start | run_id={run_id}")
 
     ensure_bullbrain_loaded()
 
-    scan_symbols, meta = build_scan_universe()
-    log(f"📦 scan universe | total={len(scan_symbols)} | meta={meta}")
+    # ---------------------------------------------------------
+    # 0️⃣ HOMESCREEN BASELINE FIRST (SPY / QQQ / Commodities)
+    # ---------------------------------------------------------
+    try:
+        ensure_market_overview_and_baseline_carousel()
+        log("🏠 homescreen baseline ensured (us_market + commodities)")
+    except Exception as e:
+        log_exc("homescreen baseline failed", e)
 
+    # ---------------------------------------------------------
+    # 1️⃣ MAG-7 FIRST (ALWAYS)
+    # ---------------------------------------------------------
+    mag7 = [s.upper() for s in MAG7 if s]
+    log(f"🧲 PHASE 1 — MAG7 | count={len(mag7)} | symbols={mag7}")
+
+    # ---------------------------------------------------------
+    # 2️⃣ ACTIVE SYMBOLS (USER INTENT)
+    # ---------------------------------------------------------
+    active_raw = load_active_symbols()
+    active_ranked = rank_active_symbols(active_raw)
+    log(
+        f"⭐ PHASE 2 — Active symbols | "
+        f"count={len(active_ranked)} | symbols={active_ranked[:10]}"
+    )
+
+    # ---------------------------------------------------------
+    # 3️⃣ DISCOVERY SHARD (SP500 ROTATION)
+    # ---------------------------------------------------------
+    discovery = get_discovery_symbols()
+    log(
+        f"🔍 PHASE 3 — Discovery shard | "
+        f"count={len(discovery)} | symbols={discovery[:10]}"
+    )
+
+    # ---------------------------------------------------------
+    # 🔀 MERGE UNIVERSE (PRIORITY-SAFE, NO DUPLICATES)
+    # ---------------------------------------------------------
+    scan_symbols = list(
+        dict.fromkeys(
+            [*mag7, *active_ranked, *discovery]
+        )
+    )[:TOTAL_SCAN_LIMIT]
+
+    log(
+        f"📦 scan universe built | total={len(scan_symbols)} | "
+        f"mag7={len(mag7)} active={len(active_ranked)} discovery={len(discovery)}"
+    )
+
+    # ---------------------------------------------------------
+    # 🔁 COMPUTE LOOP
+    # ---------------------------------------------------------
     results: List[Dict[str, Any]] = []
     success = 0
-    failed = 0
     skipped = 0
+    failed = 0
 
     for i, sym in enumerate(scan_symbols, start=1):
         try:
@@ -738,28 +785,28 @@ def main():
             if FAIL_FAST:
                 raise
 
-        # Progress logging
         if LOG_EVERY_N > 0 and (i % LOG_EVERY_N == 0):
-            log(f"… progress {i}/{len(scan_symbols)} | ok={success} skip={skipped} fail={failed}")
+            log(
+                f"… progress {i}/{len(scan_symbols)} | "
+                f"ok={success} skip={skipped} fail={failed}"
+            )
 
         time.sleep(random.uniform(0.15, 0.25))
 
-    log(f"✅ compute complete | ok={success} skip={skipped} fail={failed} | results={len(results)}")
+    log(
+        f"✅ compute complete | "
+        f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
+    )
 
+    # ---------------------------------------------------------
+    # 📊 HOTLIST + BEARWATCH
+    # ---------------------------------------------------------
     hotlist, bearwatch = build_hotlist_bearwatch(results)
     save_market_lists(hotlist, bearwatch)
 
-    # ✅ Keep existing homescreen MAG7 snapshot behavior
+    # ---------------------------------------------------------
+    # 🏠 HOMESCREEN MAG-7 SNAPSHOT (UNCHANGED CONTRACT)
+    # ---------------------------------------------------------
     save_homescreen_snapshot()
 
-    # ✅ Restore old behavior (header + baseline)
-    try:
-        ensure_market_overview_and_baseline_carousel()
-    except Exception as e:
-        log_exc("ensure_market_overview_and_baseline_carousel failed", e)
-
     log("🏁 cron done")
-
-
-if __name__ == "__main__":
-    main()
