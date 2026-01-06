@@ -444,36 +444,144 @@ def _build_sparkline(candles: List[Dict[str, Any]], points: int = 30) -> List[fl
 def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     t0 = time.time()
     symbol = symbol.upper()
-
     log(f"▶ {symbol} compute start")
 
-    # --------------------------------------------------
-    # 1️⃣ CANDLES (SINGLE CALL, NORMALIZED)
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # Local helpers (self-contained, prevents NameError issues)
+    # ---------------------------------------------------------
+    def _normalize_to_list(raw: Any) -> List[Dict[str, Any]]:
+        """
+        Returns list[dict] candles no matter what get_candles() returns.
+        Supports:
+          - list[dict]
+          - dict wrapper {"candles": [...]}
+          - dict-of-arrays {open/high/low/close/volume/timestamp}
+        """
+        if raw is None:
+            return []
+
+        if isinstance(raw, list):
+            return [c for c in raw if isinstance(c, dict)]
+
+        if isinstance(raw, dict):
+            # wrapper
+            if isinstance(raw.get("candles"), list):
+                return [c for c in raw["candles"] if isinstance(c, dict)]
+
+            # dict-of-arrays
+            if isinstance(raw.get("close"), list) and all(k in raw for k in ["open", "high", "low", "close"]):
+                o = raw.get("open") or []
+                h = raw.get("high") or []
+                l = raw.get("low") or []
+                cl = raw.get("close") or []
+                v = raw.get("volume") or []
+                ts = raw.get("timestamp") or []
+
+                n = min(len(o), len(h), len(l), len(cl))
+                out: List[Dict[str, Any]] = []
+                for i in range(n):
+                    out.append({
+                        "t": ts[i] if i < len(ts) else None,
+                        "open": o[i],
+                        "high": h[i],
+                        "low": l[i],
+                        "close": cl[i],
+                        "volume": v[i] if i < len(v) else 0.0,
+                    })
+                return out
+
+        return []
+
+    def _list_to_arrays(lst: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Convert list candles to dict-of-arrays (what ML + scan_smart_pattern_history need).
+        """
+        out = {"open": [], "high": [], "low": [], "close": [], "volume": [], "timestamp": []}
+        for c in lst:
+            if not isinstance(c, dict):
+                continue
+            o = c.get("open")
+            h = c.get("high")
+            l = c.get("low")
+            cl = c.get("close")
+            if o is None or h is None or l is None or cl is None:
+                continue
+
+            t = c.get("t") or c.get("timestamp") or c.get("time")
+            out["open"].append(float(o))
+            out["high"].append(float(h))
+            out["low"].append(float(l))
+            out["close"].append(float(cl))
+            out["volume"].append(float(c.get("volume") or 0.0))
+
+            # normalize to ms epoch if numeric; else None (scanner can still run)
+            try:
+                if isinstance(t, (int, float)):
+                    t_ms = int(t * 1000) if t < 10_000_000_000 else int(t)
+                    out["timestamp"].append(t_ms)
+                else:
+                    out["timestamp"].append(None)
+            except Exception:
+                out["timestamp"].append(None)
+
+        return out
+
+    def _build_candle_summary(lst: List[Dict[str, Any]], cap: int = 120) -> Dict[str, Any]:
+        tail = [c for c in lst if isinstance(c, dict)][-cap:]
+        return {
+            "count": len(lst),
+            "candles": [{"t": (c.get("t") or c.get("timestamp") or c.get("time")), "close": c.get("close")} for c in tail],
+        }
+
+    def _build_sparkline(lst: List[Dict[str, Any]], points: int = 30) -> List[float]:
+        closes: List[float] = []
+        # sample a bit more than needed to tolerate missing closes
+        for c in lst[-max(points * 3, points):]:
+            if isinstance(c, dict) and c.get("close") is not None:
+                try:
+                    closes.append(float(c["close"]))
+                except Exception:
+                    pass
+        return closes[-points:]
+
+    # ---------------------------------------------------------
+    # 1) Fetch candles (raw)
+    # ---------------------------------------------------------
     try:
         raw_candles = get_candles(symbol, min_points=120)
     except Exception as e:
         log_exc(f"{symbol} get_candles failed", e)
         return None
 
-    candles = _normalize_candles_list(raw_candles)
-    candles_arrays = _candles_list_to_arrays(candles_list)
-
-    if not candles:
+    if not raw_candles:
         log(f"⛔ {symbol} no candles returned → skip")
         return None
 
-    log(f"✅ {symbol} candles={len(candles)}")
+    # ---------------------------------------------------------
+    # 2) Build BOTH representations (this prevents all your crashes)
+    # ---------------------------------------------------------
+    # candles_arrays = what compute_bullbrain_features() expects (dict-of-arrays)
+    if isinstance(raw_candles, dict) and isinstance(raw_candles.get("close"), list):
+        candles_arrays = raw_candles
+        candles_list = _normalize_to_list(raw_candles)
+    else:
+        candles_list = _normalize_to_list(raw_candles)
+        candles_arrays = _list_to_arrays(candles_list)
 
-    # --------------------------------------------------
-    # 2️⃣ UI-SAFE CANDLE SUMMARY + SPARKLINE
-    # --------------------------------------------------
-    candle_summary = _build_candle_summary(candles, cap=120)
-    sparkline = _build_sparkline(candles, points=30)
+    if not candles_arrays or not isinstance(candles_arrays, dict) or not isinstance(candles_arrays.get("close"), list):
+        log(f"⛔ {symbol} candles_arrays invalid → skip")
+        return None
 
-    # --------------------------------------------------
-    # 3️⃣ FEATURE ENGINEERING
-    # --------------------------------------------------
+    n = len(candles_arrays.get("close") or [])
+    log(f"✅ {symbol} candles={n}")
+
+    # UI-safe persistence fields
+    candle_summary = _build_candle_summary(candles_list, cap=120)
+    sparkline = _build_sparkline(candles_list, points=30)
+
+    # ---------------------------------------------------------
+    # 3) Features (MUST use candles_arrays)
+    # ---------------------------------------------------------
     try:
         feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles_arrays)
     except Exception as e:
@@ -481,16 +589,16 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         return None
 
     if feats_vec is None or not isinstance(feat_dict, dict):
-        log(f"⛔ {symbol} invalid feature output → skip")
+        log(f"⛔ {symbol} features invalid → skip")
         return None
 
     if not _validate_feature_dict(symbol, feat_dict):
         log(f"⛔ {symbol} feature validation failed → skip")
         return None
 
-    # --------------------------------------------------
-    # 4️⃣ MODEL INFERENCE
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 4) Inference
+    # ---------------------------------------------------------
     try:
         infer = backend.bullbrain_infer(feats_vec)
     except Exception as e:
@@ -498,14 +606,14 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         return None
 
     if not isinstance(infer, dict):
-        log(f"⛔ {symbol} invalid inference → skip")
+        log(f"⛔ {symbol} infer invalid → skip")
         return None
 
     prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
     prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
 
     if not _is_finite_number(prob_up) or not _is_finite_number(prob_down):
-        log(f"⛔ {symbol} non-finite probabilities → skip")
+        log(f"⛔ {symbol} inference non-finite probs → skip")
         return None
 
     if prob_up >= 0.58:
@@ -517,9 +625,25 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
     confidence = round(max(prob_up, prob_down) * 100.0, 2)
 
-    # --------------------------------------------------
-    # 5️⃣ TECHNICAL SNAPSHOT
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 5) Quote (Firestore-only StockDetail needs this!)
+    #    This does NOT write elsewhere; we persist inside the symbol doc.
+    # ---------------------------------------------------------
+    try:
+        quote = fetch_equity_quote(symbol) or {}
+        if not isinstance(quote, dict):
+            quote = {}
+    except Exception as e:
+        log(f"⚠️ {symbol} fetch_equity_quote failed: {e}")
+        quote = {}
+
+    # Always keep at least a price if quote missing
+    quote.setdefault("price", feat_dict.get("close"))
+    quote["updated_at"] = utc_now_iso()
+
+    # ---------------------------------------------------------
+    # 6) Technical snapshot
+    # ---------------------------------------------------------
     try:
         technical = build_technical_snapshot(
             symbol=symbol,
@@ -530,56 +654,50 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} build_technical_snapshot failed", e)
         technical = None
 
-    # --------------------------------------------------
-    # 6️⃣ SMART PATTERNS (ALWAYS NON-NULL)
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 7) Smart patterns (NEVER NULL)
+    # ---------------------------------------------------------
     try:
         quote_for_pattern = {
             "price": feat_dict.get("close"),
-            "changePct": feat_dict.get("return_1d"),
+            "changePct": feat_dict.get("return_1d"),  # fallback if quote changePct missing
         }
+        smart_pattern = detect_smart_pattern(feat_dict, quote_for_pattern, technical)
 
-        smart_pattern = detect_smart_pattern(
-            feat_dict,
-            quote_for_pattern,
-            technical,
-        )
+        # history scanner MUST receive dict-of-arrays
+        pattern_stats = scan_smart_pattern_history(symbol, candles_arrays) or {}
 
-        candles_arrays = _candles_list_to_arrays(candles)
-        pattern_stats = scan_smart_pattern_history(symbol, candles_arrays)
-
-        if not smart_pattern:
+        # force non-null objects
+        if not isinstance(smart_pattern, dict):
             smart_pattern = {
                 "pattern": "NO CLEAR PATTERN",
                 "winRate": None,
-                "explanation": "No dominant institutional pattern detected.",
+                "explanation": "Pattern engine produced no result.",
             }
-
-        if not pattern_stats:
+        if not isinstance(pattern_stats, dict):
             pattern_stats = {
                 "currentPattern": None,
                 "historyForCurrent": None,
                 "allPatterns": [],
                 "note": "Pattern stats unavailable.",
             }
-
     except Exception as e:
-        log_exc(f"{symbol} smart pattern computation failed", e)
+        log_exc(f"{symbol} smart pattern failed", e)
         smart_pattern = {
             "pattern": "NO CLEAR PATTERN",
             "winRate": None,
-            "explanation": "Pattern engine error during this run.",
+            "explanation": "Pattern engine failed this run.",
         }
         pattern_stats = {
             "currentPattern": None,
             "historyForCurrent": None,
             "allPatterns": [],
-            "note": "Pattern engine error.",
+            "note": "Pattern stats unavailable for this run.",
         }
 
-    # --------------------------------------------------
-    # 7️⃣ INSIGHTS (NON-BLOCKING)
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 8) Insights (must never block)
+    # ---------------------------------------------------------
     try:
         insights = generate_bull_insights(
             symbol=symbol,
@@ -605,12 +723,14 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "combinedTechnicalSummary": "Insights unavailable.",
         }
 
-    # --------------------------------------------------
-    # 8️⃣ FINAL DOCUMENT (ALWAYS BUILT)
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 9) Build doc (everything your Firestore-only stockdetail needs)
+    # ---------------------------------------------------------
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
+
+        "quote": quote,
 
         "bullbrain": {
             "signal": signal,
@@ -620,44 +740,43 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         },
 
         "features_meta": feat_dict,
-        "insights": insights,
+        "technical": technical,
 
+        "smartPattern": smart_pattern,
+        "patternStats": pattern_stats,
+
+        # UI helpers
         "candles": candle_summary,
         "sparkline": sparkline,
 
-        "technical": technical,
-        "smartPattern": smart_pattern,
-        "patternStats": pattern_stats,
+        "insights": insights,
 
         "computed_at": utc_now_iso(),
         "schema_version": "v1",
     }
 
-    # --------------------------------------------------
-    # 9️⃣ FIRESTORE WRITE
-    # --------------------------------------------------
+    # ---------------------------------------------------------
+    # 10) Firestore write
+    # ---------------------------------------------------------
     try:
         db = get_db()
 
+        # index marker doc
         db.collection(COL_ROOT).document(COL_STOCKS).set(
             {
                 "schema_version": "v1",
                 "updated_at": utc_now_iso(),
-                "note": "Index marker for stocks collection",
+                "note": "stocks document is an index marker; symbol docs live in stocks/symbols/*",
             },
             merge=True,
         )
 
-        db.collection(COL_ROOT) \
-            .document(COL_STOCKS) \
-            .collection("symbols") \
-            .document(symbol) \
+        db.collection(COL_ROOT).document(COL_STOCKS) \
+            .collection("symbols").document(symbol) \
             .set(doc, merge=True)
 
-        log(
-            f"✅ {symbol} written | signal={signal} conf={confidence}% "
-            f"| {time.time() - t0:.2f}s"
-        )
+        dt = time.time() - t0
+        log(f"✅ {symbol} wrote stocks/symbols/{symbol} | signal={signal} conf={confidence}% | {dt:.2f}s")
         return doc
 
     except Exception as e:
