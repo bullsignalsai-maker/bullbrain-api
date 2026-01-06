@@ -23,7 +23,6 @@ from backend.candle_store import get_candles
 from backend.candle_store import get_candles as get_cached_candles
 from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
-from backend.ui_stock_builder import build_and_save_stock_ui_doc
 from backend.active_symbols import touch_active_symbol
 from backend.firestore_utils import get_db
 app = FastAPI()
@@ -4420,9 +4419,7 @@ def homescreen_mag7():
     }
 import inspect
 
-# ---------------------------------------------------------
-# Stock Detail API — Plan B (Firestore-only, ultra fast)
-# ---------------------------------------------------------
+
 # ---------------------------------------------------------
 # Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
@@ -4616,10 +4613,3 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
     _watchlist_col(user_id).document(sym).delete()
     return {"status": "ok", "user_id": user_id, "symbol": sym}
 
-
-@app.get("/admin/build-stock/{symbol}")
-def admin_build_stock(symbol: str):
-    from backend.ui_stock_builder import build_and_save_stock_ui_doc
-    symbol = symbol.upper().strip()
-    doc = build_and_save_stock_ui_doc(symbol)
-    return {"status": "ok", "symbol": symbol}
