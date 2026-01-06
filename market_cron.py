@@ -457,6 +457,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         return None
 
     candles = _normalize_candles_list(raw_candles)
+    candles_arrays = _candles_list_to_arrays(candles_list)
 
     if not candles:
         log(f"⛔ {symbol} no candles returned → skip")
@@ -474,7 +475,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     # 3️⃣ FEATURE ENGINEERING
     # --------------------------------------------------
     try:
-        feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles)
+        feats_vec, feat_dict, _ = backend.compute_bullbrain_features(candles_arrays)
     except Exception as e:
         log_exc(f"{symbol} compute_bullbrain_features threw", e)
         return None
