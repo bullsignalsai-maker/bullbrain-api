@@ -49,6 +49,7 @@ from backend.bull_insights import generate_bull_insights
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
 from quote_provider import fetch_equity_quote
+from backend.quote_repo import get_quote_safe, is_quote_fresh
 
 # ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
 # If they already exist elsewhere, keep these imports here (no breaking).
@@ -178,6 +179,23 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
     close_t = et.replace(hour=16, minute=0, second=0, microsecond=0)
     return open_t <= et <= close_t
 
+def _get_best_quote(symbol: str) -> Dict[str, Any]:
+    """
+    Prefer cached quote if fresh.
+    Fall back to live Finnhub quote if missing or stale.
+    Never writes to quote_repo.
+    """
+    cached = get_quote_safe(symbol)
+
+    if isinstance(cached, dict) and is_quote_fresh(cached):
+        # cached quote repo doc contains top-level fields
+        log(f"📦 {symbol} using cached quote")
+        return dict(cached)
+
+    # fallback: live fetch
+    log(f"🌐 {symbol} fetching live quote")
+    live = fetch_equity_quote(symbol)
+    return live if isinstance(live, dict) else {}
 
 # =========================================================
 # MODEL LOADER
@@ -630,7 +648,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     #    This does NOT write elsewhere; we persist inside the symbol doc.
     # ---------------------------------------------------------
     try:
-        quote = fetch_equity_quote(symbol) or {}
+        quote = _get_best_quote(symbol)
         if not isinstance(quote, dict):
             quote = {}
     except Exception as e:
@@ -848,7 +866,7 @@ def _get_quote_change_pct(symbol: str) -> Optional[float]:
     Returns changePct (float) or None.
     """
     try:
-        q = fetch_equity_quote(symbol)
+        quote = _get_best_quote(symbol)
         chg = q.get("changePct") if isinstance(q, dict) else None
         return float(chg) if isinstance(chg, (int, float)) else None
     except Exception as e:
