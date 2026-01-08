@@ -4424,10 +4424,26 @@ import inspect
 # Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
-def stock_detail(symbol: str):
+def stock_detail(
+    symbol: str,
+    source: str | None = None,  # 👈 intent flag
+):
     sym = symbol.upper()
 
+    # ---------------------------------------------------------
+    # 0️⃣ Track active symbol ONLY for UI-triggered navigation
+    # ---------------------------------------------------------
+    if source == "ui":
+        try:
+            from backend.active_symbols import touch_active_symbol
+            touch_active_symbol(sym)
+        except Exception:
+            # Analytics must NEVER break stock detail
+            pass
+
+    # ---------------------------------------------------------
     # 1️⃣ Read stock snapshot from Firestore (single document read)
+    # ---------------------------------------------------------
     doc = (
         db.collection("bullsignals_ai")
           .document("stocks")
@@ -4475,10 +4491,7 @@ def stock_detail(symbol: str):
             limit=8,
         )
 
-        if news:
-            payload["news"] = news
-        else:
-            payload["news"] = []
+        payload["news"] = news or []
 
     except Exception:
         payload["news"] = []
