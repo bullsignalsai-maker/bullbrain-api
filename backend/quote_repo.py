@@ -52,6 +52,11 @@ def _quote_doc(symbol: str):
 # Public API
 # ---------------------------------------------------------
 def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns the full quote document.
+    Backward-compatible: existing callers expecting
+    price/changePct still work.
+    """
     doc = _quote_doc(symbol).get()
     if not doc.exists:
         return None
@@ -81,14 +86,35 @@ def clear_needs_refresh(symbol: str) -> None:
 
 
 def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
-    payload = {
-        **payload,
+    """
+    Saves quote payload from provider (Finnhub, etc).
+
+    IMPORTANT GUARANTEES:
+    - Does NOT remove existing fields
+    - Does NOT break UI expectations
+    - Allows extended quote fields (open/high/low/etc)
+    - Protects internal control fields
+    """
+
+    # ---- protect system fields (never trust provider input)
+    safe_payload = dict(payload) if isinstance(payload, dict) else {}
+
+    # Remove any accidental collisions
+    for k in ["symbol", "updated_at", "ttl_seconds", "needs_refresh"]:
+        safe_payload.pop(k, None)
+
+    # ---- merge provider data + system metadata
+    final_doc = {
+        **safe_payload,
+
+        # existing + required
         "symbol": symbol.upper(),
         "updated_at": _now_iso(),
         "ttl_seconds": QUOTE_TTL_SECONDS,
         "needs_refresh": False,
     }
-    _quote_doc(symbol).set(payload, merge=True)
+
+    _quote_doc(symbol).set(final_doc, merge=True)
 
 
 def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:

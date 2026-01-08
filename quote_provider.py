@@ -44,14 +44,10 @@ def _safe_json(resp: requests.Response) -> Any:
     except Exception:
         return None
 
-
-# ---------------------------------------------------------
-# EQUITIES / ETFs (Finnhub)
-# ---------------------------------------------------------
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
     """
     Finnhub equity quote
-    TRUST dp directly — do NOT recompute
+    Full payload normalized for Firestore
     """
     if not FINNHUB_KEY:
         return {}
@@ -66,22 +62,29 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
         if not isinstance(data, dict):
             return {}
 
-        price = data.get("c")
-        change_pct = data.get("dp")  # ✅ SOURCE OF TRUTH
+        def num(v):
+            return float(v) if isinstance(v, (int, float)) else None
 
         return {
-            "price": price if isinstance(price, (int, float)) else None,
-            "changePct": (
-                float(change_pct)
-                if isinstance(change_pct, (int, float))
-                else None
-            ),
+            # --- existing (DO NOT BREAK UI)
+            "price": num(data.get("c")),
+            "changePct": num(data.get("dp")),
+
+            # --- NEW: full market context
+            "change": num(data.get("d")),
+            "open": num(data.get("o")),
+            "high": num(data.get("h")),
+            "low": num(data.get("l")),
+            "prevClose": num(data.get("pc")),
+            "timestamp": int(data.get("t")) if isinstance(data.get("t"), int) else None,
+
+            # metadata
+            "source": "finnhub",
         }
 
     except Exception as e:
         print(f"[quote-provider] Finnhub failed for {symbol}: {e}", flush=True)
         return {}
-
 
 # ---------------------------------------------------------
 # CRYPTO SNAPSHOT (CoinGecko – free)
