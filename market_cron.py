@@ -35,6 +35,8 @@ import math
 import random
 import time
 import traceback
+import os
+import requests
 from typing import Dict, Any, List, Optional, Tuple
 
 import firebase_admin
@@ -119,6 +121,57 @@ def utc_now_iso() -> str:
         .replace("+00:00", "Z")
     )
 
+# =========================================================
+# PHASE 0 — MARKET GAINERS / LOSERS (FMP)
+# =========================================================
+
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+FMP_GAINERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/gainers"
+FMP_LOSERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/losers"
+
+
+def fetch_fmp_symbols(url: str, limit: int = 20) -> List[str]:
+    if not FMP_API_KEY:
+        log("⚠️ FMP_API_KEY missing — skipping Phase-0")
+        return []
+
+    try:
+        r = requests.get(
+            url,
+            params={"apikey": FMP_API_KEY},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            log(f"⚠️ FMP fetch failed ({r.status_code})")
+            return []
+
+        data = r.json()
+        if not isinstance(data, list):
+            return []
+
+        symbols = []
+        for row in data:
+            sym = row.get("symbol")
+            if isinstance(sym, str) and sym.isalpha():
+                symbols.append(sym.upper())
+            if len(symbols) >= limit:
+                break
+
+        return symbols
+
+    except Exception as e:
+        log(f"⚠️ FMP fetch error: {e}")
+        return []
+
+
+def get_phase0_gainers_losers() -> List[str]:
+    gainers = fetch_fmp_symbols(FMP_GAINERS_URL, limit=20)
+    losers = fetch_fmp_symbols(FMP_LOSERS_URL, limit=20)
+
+    combined = list(dict.fromkeys(gainers + losers))
+    log(f"🔥 PHASE 0 — gainers+losers | count={len(combined)}")
+
+    return combined
 
 # =========================================================
 # MARKET HOURS HELPERS (for header)
@@ -283,19 +336,26 @@ def get_discovery_symbols() -> List[str]:
 # =========================================================
 
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
+    phase0 = get_phase0_gainers_losers()          # 👈 ADD
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
     discovery = get_discovery_symbols()
 
-    universe = list(dict.fromkeys([s.upper() for s in (MAG7 + active + discovery) if s]))
+    universe = list(
+        dict.fromkeys(
+            [*phase0, *MAG7, *active, *discovery]
+        )
+    )
+
     meta = {
+        "phase0": len(phase0),
         "mag7": len(MAG7),
         "active_ranked": len(active),
         "discovery": len(discovery),
         "universe": len(universe),
     }
-    return universe[:TOTAL_SCAN_LIMIT], meta
 
+    return universe[:TOTAL_SCAN_LIMIT], meta
 
 # =========================================================
 # VALIDATION HELPERS
