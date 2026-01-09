@@ -14,6 +14,7 @@ def _minutes_between(now_iso: str, past_iso: str) -> float:
 
 
 def touch_active_symbol(symbol: str) -> None:
+    print("TOUCH ACTIVE SYMBOL:", symbol)
     db = get_db()
     ref = db.collection("bullsignals_ai").document("active_symbols")
 

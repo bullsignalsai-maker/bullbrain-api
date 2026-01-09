@@ -4424,10 +4424,9 @@ import inspect
 # Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
-def stock_detail(
-    symbol: str,
-    source: str | None = None,  # 👈 intent flag
-):
+def stock_detail(symbol: str, source: str | None = None):
+    print("STOCKDETAIL HIT:", symbol, "source =", source)
+
     sym = symbol.upper()
 
     # ---------------------------------------------------------
