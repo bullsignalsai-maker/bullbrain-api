@@ -63,26 +63,25 @@ def _minutes_between(now_iso: str, past_iso: str) -> float:
 # Public API
 # ---------------------------------------------------------
 def touch_active_symbol(symbol: str) -> None:
-    """
-    Records user interest in a symbol.
-    Creates bullsignals_ai/active_symbols on first write.
-    """
-    symbol = symbol.upper().strip()
-    if not symbol:
-        return
-
     print("TOUCH ACTIVE SYMBOL:", symbol, flush=True)
 
     db = _db()
-    print("🔥 FIRESTORE PROJECT:", db._client.project, flush=True)
-
     ref = db.collection("bullsignals_ai").document("active_symbols")
+
+    # 🔥 BOOTSTRAP DOCUMENT (SAFE, IDEMPOTENT)
+    ref.set(
+        {
+            "symbols": {},
+            "updated_at": _now_iso(),
+        },
+        merge=True,
+    )
+
     now = _now_iso()
 
     def txn(tx):
         snap = ref.get(transaction=tx)
         data = snap.to_dict() or {}
-
         symbols: Dict[str, Dict] = data.get("symbols", {})
 
         entry = symbols.get(symbol, {})
