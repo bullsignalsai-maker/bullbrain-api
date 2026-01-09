@@ -301,17 +301,36 @@ def build_ui_pattern_insight(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 # - Anchors from technical.lastClose
 # -------------------------------------------------
 def build_probability_cone(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
-    stats = (stockdetail.get("patternStats") or {}).get("historyForCurrent") or {}
-    last_price = (stockdetail.get("technical") or {}).get("lastClose")
+    pattern_stats = stockdetail.get("patternStats") or {}
+
+    stats = (
+        pattern_stats.get("historyForCurrent")
+        or pattern_stats.get("history")
+        or pattern_stats
+        or {}
+    )
+
+    technical = stockdetail.get("technical") or {}
+    quote = stockdetail.get("quote") or {}
+
+    last_price = (
+        technical.get("lastClose")
+        or quote.get("price")
+        or quote.get("current")
+    )
 
     if not stats or last_price is None:
         return {}
 
-    fr = stats.get("forwardReturns") or {}
+    fr = (
+        stats.get("forwardReturns")
+        or stats.get("forward_returns")
+        or {}
+    )
+
     d5 = fr.get("days5") or {}
     d10 = fr.get("days10") or {}
 
-    # Require at least avg for cone usefulness
     if d5.get("avg") is None and d10.get("avg") is None:
         return {}
 
@@ -338,11 +357,11 @@ def build_probability_cone(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "type": "expected-range",
-        "anchorPrice": last_price,
+        "anchorPrice": round(last_price, 2),
         "pattern": stats.get("pattern"),
         "occurrences": stats.get("occurrences"),
         "ranges": ranges,
-        "note": "Historical range based on past occurrences of this pattern (not a prediction).",
+        "note": "Historical price range based on past occurrences of this pattern. Not a prediction.",
     }
 
 
