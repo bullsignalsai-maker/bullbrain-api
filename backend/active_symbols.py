@@ -17,37 +17,31 @@ def _minutes_between(now_iso: str, past_iso: str) -> float:
 def touch_active_symbol(symbol: str) -> None:
     print("TOUCH ACTIVE SYMBOL:", symbol, flush=True)
 
-    db = get_db()  # ✅ SAME client as everything else
+    db = get_db()
     ref = db.collection("bullsignals_ai").document("active_symbols")
     now = iso_now()
 
-    def txn(tx):
-        snap = ref.get(transaction=tx)
+    snap = ref.get()
+    data = snap.to_dict() if snap.exists else {}
+    symbols: Dict[str, Dict] = data.get("symbols", {})
 
-        if snap.exists:
-            data = snap.to_dict() or {}
-            symbols: Dict[str, Dict] = data.get("symbols", {})
-        else:
-            symbols = {}
+    entry = symbols.get(symbol, {})
+    last_seen = entry.get("last_seen")
+    count = entry.get("count", 0)
 
-        entry = symbols.get(symbol, {})
-        last_seen = entry.get("last_seen")
-        count = entry.get("count", 0)
+    entry["last_seen"] = now
 
-        entry["last_seen"] = now
+    if not last_seen or _minutes_between(now, last_seen) >= THROTTLE_MINUTES:
+        entry["count"] = count + 1
+    else:
+        entry["count"] = count
 
-        if not last_seen or _minutes_between(now, last_seen) >= THROTTLE_MINUTES:
-            entry["count"] = count + 1
+    symbols[symbol] = entry
 
-        symbols[symbol] = entry
-
-        tx.set(
-            ref,
-            {
-                "symbols": symbols,
-                "updated_at": now,
-            },
-            merge=True,
-        )
-
-    db.transaction()(txn)
+    ref.set(
+        {
+            "symbols": symbols,
+            "updated_at": now,
+        },
+        merge=True,
+    )
