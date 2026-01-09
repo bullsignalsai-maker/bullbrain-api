@@ -2,55 +2,25 @@
 # ---------------------------------------------------------
 from typing import Dict
 import datetime
-import json
-import os
 
 import firebase_admin
-from firebase_admin import credentials, firestore  # type: ignore
+from firebase_admin import firestore  # type: ignore
 
 THROTTLE_MINUTES = 30
 
 
-# ---------------------------------------------------------
-# Firestore (EXACT, SAFE, EXPLICIT)
-# ---------------------------------------------------------
-def _init_firebase_if_needed():
-    """
-    Initialize Firebase Admin exactly once.
-    MUST use FIREBASE_ADMIN_JSON on Render.
-    """
-    if firebase_admin._apps:
-        return
-
-    raw = os.getenv("FIREBASE_ADMIN_JSON")
-    if not raw:
-        raise RuntimeError("FIREBASE_ADMIN_JSON missing for active_symbols")
-
-    data = json.loads(raw)
-
-    # Fix escaped private key newlines (Render requirement)
-    pk = data.get("private_key")
-    if isinstance(pk, str):
-        data["private_key"] = pk.replace("\\n", "\n")
-
-    cred = credentials.Certificate(data)
-    firebase_admin.initialize_app(cred)
-
-
 def _db():
-    _init_firebase_if_needed()
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app()
     return firestore.client()
 
 
-# ---------------------------------------------------------
-# Time helpers
-# ---------------------------------------------------------
 def _now_utc() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _now_iso() -> str:
-    return _now_utc().replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return _now_utc().isoformat().replace("+00:00", "Z")
 
 
 def _minutes_between(now_iso: str, past_iso: str) -> float:
@@ -67,22 +37,16 @@ def touch_active_symbol(symbol: str) -> None:
 
     db = _db()
     ref = db.collection("bullsignals_ai").document("active_symbols")
-
-    # 🔥 BOOTSTRAP DOCUMENT (SAFE, IDEMPOTENT)
-    ref.set(
-        {
-            "symbols": {},
-            "updated_at": _now_iso(),
-        },
-        merge=True,
-    )
-
     now = _now_iso()
 
     def txn(tx):
         snap = ref.get(transaction=tx)
-        data = snap.to_dict() or {}
-        symbols: Dict[str, Dict] = data.get("symbols", {})
+
+        if snap.exists:
+            data = snap.to_dict() or {}
+            symbols: Dict[str, Dict] = data.get("symbols", {})
+        else:
+            symbols = {}
 
         entry = symbols.get(symbol, {})
         last_seen = entry.get("last_seen")
