@@ -39,6 +39,7 @@ def touch_active_symbol(symbol: str) -> None:
     print("TOUCH ACTIVE SYMBOL:", symbol)
 
     db = _db()
+    print("🔥 FIRESTORE PROJECT:", db._client.project)
     ref = db.collection("bullsignals_ai").document("active_symbols")
     now = _now_iso()
 
