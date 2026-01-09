@@ -3,24 +3,9 @@
 from typing import Dict
 import datetime
 
-import firebase_admin
-from firebase_admin import firestore  # type: ignore
+from backend.firestore_utils import get_db, iso_now
 
 THROTTLE_MINUTES = 30
-
-
-def _db():
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
-    return firestore.client()
-
-
-def _now_utc() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _now_iso() -> str:
-    return _now_utc().isoformat().replace("+00:00", "Z")
 
 
 def _minutes_between(now_iso: str, past_iso: str) -> float:
@@ -29,15 +14,12 @@ def _minutes_between(now_iso: str, past_iso: str) -> float:
     return (now - past).total_seconds() / 60.0
 
 
-# ---------------------------------------------------------
-# Public API
-# ---------------------------------------------------------
 def touch_active_symbol(symbol: str) -> None:
     print("TOUCH ACTIVE SYMBOL:", symbol, flush=True)
 
-    db = _db()
+    db = get_db()  # ✅ SAME client as everything else
     ref = db.collection("bullsignals_ai").document("active_symbols")
-    now = _now_iso()
+    now = iso_now()
 
     def txn(tx):
         snap = ref.get(transaction=tx)
