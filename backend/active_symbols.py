@@ -1,11 +1,30 @@
 # backend/active_symbols.py
-
-from typing import Optional
-from backend.firestore_utils import get_db, iso_now
-
+# ---------------------------------------------------------
+from typing import Dict
 import datetime
 
+import firebase_admin
+from firebase_admin import firestore  # type: ignore
+
 THROTTLE_MINUTES = 30
+
+
+# ---------------------------------------------------------
+# Firestore (MATCH quote_repo EXACTLY)
+# ---------------------------------------------------------
+def _db():
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app()
+    return firestore.client()
+
+
+def _now_utc() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _now_iso() -> str:
+    return _now_utc().isoformat().replace("+00:00", "Z")
+
 
 def _minutes_between(now_iso: str, past_iso: str) -> float:
     now = datetime.datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
@@ -13,17 +32,20 @@ def _minutes_between(now_iso: str, past_iso: str) -> float:
     return (now - past).total_seconds() / 60.0
 
 
+# ---------------------------------------------------------
+# Public API
+# ---------------------------------------------------------
 def touch_active_symbol(symbol: str) -> None:
     print("TOUCH ACTIVE SYMBOL:", symbol)
-    db = get_db()
-    ref = db.collection("bullsignals_ai").document("active_symbols")
 
-    now = iso_now()
+    db = _db()
+    ref = db.collection("bullsignals_ai").document("active_symbols")
+    now = _now_iso()
 
     def txn(tx):
         snap = ref.get(transaction=tx)
         data = snap.to_dict() or {}
-        symbols = data.get("symbols", {})
+        symbols: Dict[str, Dict] = data.get("symbols", {})
 
         entry = symbols.get(symbol, {})
         last_seen = entry.get("last_seen")
