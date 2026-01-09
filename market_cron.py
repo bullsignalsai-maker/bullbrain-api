@@ -205,8 +205,7 @@ def ensure_bullbrain_loaded():
     if backend.bullbrain_model is None:
         backend.bullbrain_model = backend.load_bullbrain_model()
         try:
-            nf = getattr(backend, "BULLBRAIN_NUM_FEATURES", None)
-            log(f"🧠 BullBrain loaded | num_features={nf}")
+            log(f"🧠 BullBrain loaded | model_features={len(backend.bullbrain_model.feature_names)}")
         except Exception:
             log("🧠 BullBrain loaded")
 
@@ -861,17 +860,14 @@ def _fmt_pct(v: Optional[float]) -> str:
 
 
 def _get_quote_change_pct(symbol: str) -> Optional[float]:
-    """
-    Safe wrapper around Finnhub quote_provider.
-    Returns changePct (float) or None.
-    """
     try:
         quote = _get_best_quote(symbol)
-        chg = q.get("changePct") if isinstance(q, dict) else None
+        chg = quote.get("changePct") if isinstance(quote, dict) else None
         return float(chg) if isinstance(chg, (int, float)) else None
     except Exception as e:
         log(f"⚠️ quote change pct failed for {symbol}: {e}")
         return None
+
 
 
 def ensure_market_overview_and_baseline_carousel():
