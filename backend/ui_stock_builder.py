@@ -12,6 +12,9 @@
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
+from backend.technical_explanations import (
+    build_technical_explanations
+)
 
 # -------------------------------------------------
 # Sparkline (FALLBACK-ONLY)
@@ -420,4 +423,18 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if cone:
         ui["probabilityCone"] = cone
 
+    # -------------------------------------------------
+    # Deep Technical Explanations (OPTION A)
+    # -------------------------------------------------
+    features_meta = stockdetail.get("features_meta") or {}
+    technical = stockdetail.get("technical") or {}
+
+    if features_meta and technical:
+        ui["explanations"] = build_technical_explanations(
+            symbol=stockdetail.get("symbol", ""),
+            features_meta=features_meta,
+            technical=technical,
+        )
+
+    
     return ui
