@@ -422,7 +422,7 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     cone = build_probability_cone(stockdetail)
     if cone:
         ui["probabilityCone"] = cone
-
+        
     # -------------------------------------------------
     # Deep Technical Explanations (OPTION A)
     # -------------------------------------------------
@@ -430,11 +430,7 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     technical = stockdetail.get("technical") or {}
 
     if features_meta and technical:
-        ui["explanations"] = build_technical_explanations(
-            symbol=stockdetail.get("symbol", ""),
-            features_meta=features_meta,
-            technical=technical,
-        )
+        ui["explanations"] = build_technical_explanations(stockdetail)
 
     
     return ui

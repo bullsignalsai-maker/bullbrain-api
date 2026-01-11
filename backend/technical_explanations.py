@@ -1,280 +1,287 @@
 # backend/narratives/technical_explanations.py
-# -------------------------------------------------
-# Deep Technical Explanations (Deterministic)
+# ------------------------------------------------------------
+# Deterministic Technical Explainability Engine
 #
-# Option A:
-# - Every metric: short + medium
-# - Important metrics: long[]
-# - Grouped narratives for UI sections
-# -------------------------------------------------
+# Purpose:
+# - Generate human-readable narratives from technicals + features_meta
+# - NO LLMs
+# - NO Firestore writes
+# - SAFE for /stockdetail
+# ------------------------------------------------------------
 
 from typing import Dict, Any, List
-import math
 
 
-# -------------------------------------------------
+# ============================================================
 # Helpers
-# -------------------------------------------------
+# ============================================================
 
-def _fmt(v, d=2):
+def _safe(v):
+    return v is not None
+
+
+def _fmt_pct(v, digits=1):
     try:
-        return round(float(v), d)
+        return f"{float(v):.{digits}f}%"
     except Exception:
         return None
 
 
-def _bias_from_label(label: str | None):
-    if not label:
-        return "neutral"
-    l = label.lower()
-    if "bull" in l or "up" in l:
-        return "bullish"
-    if "bear" in l or "down" in l or "overbought" in l:
-        return "bearish"
-    return "neutral"
+# ============================================================
+# TECHNICAL OUTLOOK
+# ============================================================
 
+def build_technical_outlook(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    tech = stockdetail.get("technical", {})
+    feats = stockdetail.get("features_meta", {})
 
-# -------------------------------------------------
-# Feature-level explanations
-# -------------------------------------------------
+    bullets: List[str] = []
 
-def explain_rsi(rsi: float | None) -> Dict[str, Any]:
-    if rsi is None:
-        return {}
+    p_vs_sma20 = feats.get("price_vs_sma20_pct")
+    rsi = feats.get("rsi14")
+    macd_label = tech.get("macd", {}).get("label")
+    trend_label = tech.get("trend", {}).get("label")
 
-    label = (
-        "Overbought" if rsi >= 70 else
-        "Oversold" if rsi <= 30 else
-        "Neutral"
-    )
+    if _safe(p_vs_sma20):
+        bullets.append(f"Price is {_fmt_pct(abs(p_vs_sma20))} "
+                       f"{'above' if p_vs_sma20 > 0 else 'below'} the 20-day average.")
 
-    return {
-        "value": _fmt(rsi),
-        "label": label,
-        "bias": _bias_from_label(label),
-        "severity": 4 if label == "Overbought" else 3 if label == "Oversold" else 1,
-        "short": f"RSI is {label.lower()}.",
-        "medium": (
-            "RSI above 70 indicates stretched momentum and rising pullback risk."
-            if label == "Overbought"
-            else "RSI below 30 suggests selling pressure may be exhausted."
-            if label == "Oversold"
-            else "RSI is balanced with no extreme momentum."
-        ),
-        "long": [
-            "RSI (Relative Strength Index) measures the speed and persistence of recent price movements.",
-            "Values above 70 typically indicate aggressive buying pressure and stretched momentum.",
-            "Overbought conditions do not guarantee an immediate reversal but increase the probability of consolidation or pullbacks.",
-            "Sustained trends can remain overbought for extended periods, so RSI should be interpreted alongside trend and volume."
-        ],
-        "why_it_matters": "RSI helps assess momentum extremes and short-term risk conditions."
-    }
-
-
-def explain_macd(macd: float | None, signal: float | None, hist: float | None) -> Dict[str, Any]:
-    if macd is None or signal is None:
-        return {}
-
-    label = "Bullish" if macd > signal else "Bearish" if macd < signal else "Neutral"
-
-    return {
-        "value": _fmt(macd),
-        "signal": _fmt(signal),
-        "histogram": _fmt(hist),
-        "label": label,
-        "bias": _bias_from_label(label),
-        "short": f"MACD is {label.lower()}.",
-        "medium": (
-            "MACD above its signal line confirms positive trend momentum."
-            if label == "Bullish"
-            else "MACD below its signal line suggests weakening momentum."
-            if label == "Bearish"
-            else "MACD is flat with no clear momentum signal."
-        ),
-        "long": [
-            "MACD compares short-term and long-term exponential moving averages to gauge trend momentum.",
-            "When MACD is above its signal line, bullish momentum is dominant.",
-            "The histogram reflects the strength and acceleration of momentum.",
-            "Divergences between MACD and price can signal early trend shifts."
-        ],
-        "why_it_matters": "MACD helps confirm trend direction and momentum strength."
-    }
-
-
-def explain_price_vs_sma(pct: float | None) -> Dict[str, Any]:
-    if pct is None:
-        return {}
-
-    label = "Above Trend" if pct > 0 else "Below Trend"
-
-    return {
-        "value": _fmt(pct),
-        "label": label,
-        "bias": "bullish" if pct > 0 else "bearish",
-        "short": f"Price is {abs(_fmt(pct))}% {'above' if pct > 0 else 'below'} its 20-day average.",
-        "medium": (
-            "Trading above the 20-day average supports short-term trend strength."
-            if pct > 0 else
-            "Trading below the 20-day average suggests short-term weakness."
-        ),
-        "long": [
-            "The 20-day moving average reflects short-term trend direction.",
-            "Prices above this level indicate buyers are maintaining control.",
-            "Large deviations can signal trend strength or overextension."
-        ],
-        "why_it_matters": "Relative position to key averages defines trend bias."
-    }
-
-
-def explain_volume(vol_vs_ma20: float | None, z: float | None) -> Dict[str, Any]:
-    if vol_vs_ma20 is None:
-        return {}
-
-    label = (
-        "High" if vol_vs_ma20 > 20 else
-        "Low" if vol_vs_ma20 < -20 else
-        "Normal"
-    )
-
-    return {
-        "value": _fmt(vol_vs_ma20),
-        "label": label,
-        "bias": "bullish" if label == "High" else "neutral",
-        "short": f"Volume is {label.lower()} relative to average.",
-        "medium": (
-            "Elevated volume confirms stronger participation."
-            if label == "High"
-            else "Light volume suggests weaker conviction."
-            if label == "Low"
-            else "Volume is in line with recent activity."
-        ),
-        "long": [
-            "Volume measures participation and conviction behind price moves.",
-            "Moves supported by strong volume tend to be more durable.",
-            "Low volume increases the risk of false breakouts or reversals."
-        ],
-        "why_it_matters": "Volume confirms whether price moves are supported."
-    }
-
-
-def explain_volatility(vol20: float | None, atr: float | None) -> Dict[str, Any]:
-    if vol20 is None:
-        return {}
-
-    label = (
-        "High" if vol20 > 3 else
-        "Low" if vol20 < 1.5 else
-        "Moderate"
-    )
-
-    return {
-        "value": _fmt(vol20),
-        "atr": _fmt(atr),
-        "label": label,
-        "bias": "bearish" if label == "High" else "neutral",
-        "short": f"Volatility is {label.lower()}.",
-        "medium": (
-            "High volatility increases risk and position sizing importance."
-            if label == "High"
-            else "Low volatility reflects stable price behavior."
-            if label == "Low"
-            else "Volatility is within a normal range."
-        ),
-        "long": [
-            "Volatility measures the magnitude of price fluctuations.",
-            "Higher volatility increases both opportunity and risk.",
-            "ATR helps quantify expected price movement ranges."
-        ],
-        "why_it_matters": "Volatility defines risk and trade sizing."
-    }
-
-
-# -------------------------------------------------
-# Grouped narratives (UI-ready)
-# -------------------------------------------------
-
-def build_group_technical_outlook(features: Dict[str, Any], technical: Dict[str, Any]) -> Dict[str, Any]:
-    rsi = features.get("rsi14")
-    macd = features.get("macd")
-    macd_sig = features.get("macd_signal")
-    trend_label = (technical.get("trend") or {}).get("label")
-    price_vs = features.get("price_vs_sma20_pct")
-
-    bullets = []
-
-    if price_vs is not None:
+    if _safe(rsi):
         bullets.append(
-            f"Price is {abs(_fmt(price_vs))}% {'above' if price_vs > 0 else 'below'} the 20-day average."
+            "RSI indicates overbought momentum."
+            if rsi >= 70 else
+            "RSI indicates oversold momentum."
+            if rsi <= 30 else
+            "RSI is in a neutral momentum range."
         )
 
-    if rsi is not None:
-        bullets.append(
-            "RSI indicates overbought momentum." if rsi >= 70 else
-            "RSI indicates oversold momentum." if rsi <= 30 else
-            "RSI shows balanced momentum."
-        )
-
-    if macd is not None and macd_sig is not None:
-        bullets.append(
-            "MACD remains bullish." if macd > macd_sig else
-            "MACD momentum is weakening."
-        )
+    if macd_label:
+        bullets.append(f"MACD remains {macd_label.lower()}.")
 
     if trend_label:
         bullets.append(f"Trend regime is {trend_label.lower()}.")
 
     return {
-        "short": "Momentum is strong but conditions are stretched.",
-        "medium": "Price remains supported above averages, but momentum indicators show overextension risk.",
+        "short": "Momentum is strong but conditions are stretched."
+        if rsi and rsi >= 70 else
+        "Momentum is mixed with no strong directional edge.",
+
+        "medium": (
+            "Price remains supported above averages, but momentum indicators "
+            "show overextension risk."
+            if p_vs_sma20 and p_vs_sma20 > 0 and rsi and rsi >= 70 else
+            "Technical indicators show balanced conditions without strong extremes."
+        ),
+
         "long": [
-            "The stock is trading above key short-term averages, supporting a constructive trend bias.",
-            "RSI readings suggest momentum is stretched, increasing the probability of near-term consolidation.",
-            "MACD remains positive, helping offset some overbought risk.",
-            "Overall conditions favor caution rather than aggressive positioning."
+            "The stock is trading relative to key moving averages, defining short-term trend bias.",
+            "Momentum indicators such as RSI and MACD help assess exhaustion versus continuation risk.",
+            "Trend structure determines whether momentum signals favor continuation or consolidation.",
+            "Overall conditions favor disciplined positioning rather than aggressive chasing."
         ],
-        "bullets": bullets
+
+        "bullets": bullets,
     }
 
 
-# -------------------------------------------------
-# Master builder (entry point)
-# -------------------------------------------------
+# ============================================================
+# RISKS & OPPORTUNITIES
+# ============================================================
 
-def build_technical_explanations(
-    symbol: str,
-    features_meta: Dict[str, Any],
-    technical: Dict[str, Any],
-) -> Dict[str, Any]:
+def build_risks_opportunities(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    tech = stockdetail.get("technical", {})
+    feats = stockdetail.get("features_meta", {})
 
-    explanations: Dict[str, Any] = {
+    risks: List[str] = []
+    opportunities: List[str] = []
+
+    # ---- RSI ----
+    rsi = feats.get("rsi14")
+    if _safe(rsi):
+        if rsi >= 75:
+            risks.append(
+                "RSI is deeply overbought, increasing the probability of short-term pullbacks."
+            )
+        elif rsi <= 25:
+            opportunities.append(
+                "RSI is deeply oversold, increasing the probability of a rebound."
+            )
+
+    # ---- Trend regime ----
+    trend_label = tech.get("trend", {}).get("label")
+    if trend_label == "Sideways":
+        risks.append(
+            "Sideways trend regimes increase whipsaw risk and reduce directional conviction."
+        )
+    elif trend_label == "Uptrend":
+        opportunities.append(
+            "An established uptrend supports trend-following and continuation strategies."
+        )
+    elif trend_label == "Downtrend":
+        risks.append(
+            "A downtrend structure increases downside continuation risk."
+        )
+
+    # ---- Price extension ----
+    p_vs_sma20 = feats.get("price_vs_sma20_pct")
+    if _safe(p_vs_sma20):
+        if p_vs_sma20 > 6:
+            risks.append(
+                "Price is extended above short-term averages, reducing margin of safety."
+            )
+        elif p_vs_sma20 > 0:
+            opportunities.append(
+                "Price holding above the 20-day average supports bullish structure."
+            )
+
+    # ---- MACD ----
+    macd_label = tech.get("macd", {}).get("label")
+    if macd_label == "Bullish":
+        opportunities.append(
+            "MACD remains bullish, confirming underlying trend momentum."
+        )
+    elif macd_label == "Bearish":
+        risks.append(
+            "MACD is bearish, signaling weakening momentum."
+        )
+
+    return {
+        "short": "Momentum strength is balanced by extension risk.",
+        "medium": (
+            "Overbought conditions raise pullback risk, while trend structure "
+            "still allows for upside continuation."
+        ),
+        "risks": risks,
+        "opportunities": opportunities,
+    }
+
+
+# ============================================================
+# TRADE IDEA (NON-LLM, GUIDANCE ONLY)
+# ============================================================
+
+def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    tech = stockdetail.get("technical", {})
+    feats = stockdetail.get("features_meta", {})
+
+    trend = tech.get("trend", {}).get("label")
+    rsi = feats.get("rsi14")
+    p_vs_sma20 = feats.get("price_vs_sma20_pct")
+
+    if trend == "Uptrend" and rsi and rsi < 70:
+        stance = "Bullish continuation"
+        idea = (
+            "Trend-following setups may be favored, with entries on pullbacks "
+            "toward short-term moving averages."
+        )
+    elif trend == "Sideways":
+        stance = "Range-bound"
+        idea = (
+            "Mean-reversion or range-trading strategies may be more effective "
+            "until a clear breakout occurs."
+        )
+    elif trend == "Downtrend":
+        stance = "Defensive / bearish"
+        idea = (
+            "Rallies into resistance may present better risk–reward than chasing downside moves."
+        )
+    else:
+        stance = "Neutral"
+        idea = "No clear technical edge is present."
+
+    return {
+        "stance": stance,
+        "summary": idea,
+        "note": "This is not financial advice. Position sizing and risk management remain essential.",
+    }
+
+
+# ============================================================
+# FINAL RECOMMENDATION
+# ============================================================
+
+def build_final_recommendation(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    bullbrain = stockdetail.get("bullbrain", {})
+    tech = stockdetail.get("technical", {})
+
+    signal = bullbrain.get("signal")
+    confidence = bullbrain.get("confidence")
+    trend = tech.get("trend", {}).get("label")
+
+    if signal == "BUY":
+        rec = (
+            "Technical structure and AI signals lean bullish, but entries should "
+            "respect momentum exhaustion and volatility."
+        )
+    elif signal == "SELL":
+        rec = (
+            "Bearish technicals and AI signals suggest caution, defensive positioning, "
+            "or active risk management."
+        )
+    else:
+        rec = (
+            "Signals are mixed, suggesting patience and selective positioning "
+            "rather than aggressive exposure."
+        )
+
+    return {
+        "signal": signal,
+        "confidence": confidence,
+        "trend": trend,
+        "text": rec,
+    }
+
+
+# ============================================================
+# FEATURE-LEVEL EXPLANATIONS (by_feature)
+# ============================================================
+
+def build_feature_explanations(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    feats = stockdetail.get("features_meta", {})
+
+    out: Dict[str, Any] = {}
+
+    # RSI
+    rsi = feats.get("rsi14")
+    if _safe(rsi):
+        out["rsi14"] = {
+            "value": round(rsi, 2),
+            "label": "Overbought" if rsi >= 70 else "Oversold" if rsi <= 30 else "Neutral",
+            "bias": "bearish" if rsi >= 70 else "bullish" if rsi <= 30 else "neutral",
+            "severity": 4 if rsi >= 75 or rsi <= 25 else 2,
+            "short": f"RSI is {'overbought' if rsi >= 70 else 'oversold' if rsi <= 30 else 'neutral'}.",
+            "medium": (
+                "RSI above 70 indicates stretched momentum and rising pullback risk."
+                if rsi >= 70 else
+                "RSI below 30 indicates selling pressure may be exhausted."
+                if rsi <= 30 else
+                "RSI indicates balanced momentum."
+            ),
+            "long": [
+                "RSI measures the speed and persistence of recent price movements.",
+                "Extreme values increase the probability of consolidation or reversal.",
+                "RSI should be interpreted alongside trend and volume."
+            ],
+            "why_it_matters": "RSI helps assess momentum extremes and short-term risk."
+        }
+
+    return out
+
+
+# ============================================================
+# MASTER ENTRY POINT
+# ============================================================
+
+def build_technical_explanations(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    return {
         "version": "tech_explain_v1",
-        "groups": {},
-        "by_feature": {}
+
+        "groups": {
+            "technical_outlook": build_technical_outlook(stockdetail),
+            "risks_opportunities": build_risks_opportunities(stockdetail),
+            "trade_idea": build_trade_idea(stockdetail),
+            "final_recommendation": build_final_recommendation(stockdetail),
+        },
+
+        "by_feature": build_feature_explanations(stockdetail),
     }
-
-    # ---- Feature explanations ----
-    explanations["by_feature"]["rsi14"] = explain_rsi(features_meta.get("rsi14"))
-    explanations["by_feature"]["macd"] = explain_macd(
-        features_meta.get("macd"),
-        features_meta.get("macd_signal"),
-        features_meta.get("macd_hist"),
-    )
-    explanations["by_feature"]["price_vs_sma20_pct"] = explain_price_vs_sma(
-        features_meta.get("price_vs_sma20_pct")
-    )
-    explanations["by_feature"]["volume"] = explain_volume(
-        features_meta.get("volume_vs_ma20_pct"),
-        features_meta.get("volume_zscore_20"),
-    )
-    explanations["by_feature"]["volatility"] = explain_volatility(
-        features_meta.get("volatility_20d"),
-        features_meta.get("atr14"),
-    )
-
-    # ---- Group narratives ----
-    explanations["groups"]["technical_outlook"] = build_group_technical_outlook(
-        features_meta,
-        technical,
-    )
-
-    return explanations
