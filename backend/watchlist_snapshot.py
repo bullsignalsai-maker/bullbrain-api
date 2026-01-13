@@ -11,102 +11,43 @@ COL_ROOT = "bullsignals_ai"
 COL_SNAPSHOTS = "watchlist_snapshots"
 
 
-def build_watchlist_snapshot(user_id: str, symbols: List[str]) -> Dict[str, Any]:
+def build_watchlist_snapshot(user_id: str, symbols: list[str]):
     db = firestore.client()
     items = []
 
     for sym in symbols:
         sym = sym.upper()
 
-        # -------------------------------------------------
-        # 1️⃣ FULL INTELLIGENCE (PRIMARY SOURCE)
-        # -------------------------------------------------
-        stock = get_stock(sym)
-        if not stock:
-            # symbol exists in watchlist but not yet computed
-            items.append({
-                "symbol": sym,
-                "companyName": sym,
-                "price": None,
-                "changePct": None,
-                "hybridSignal": "HOLD",
-                "hybridScore": 0,
-                "features": {},
-                "grokSummary": "Intelligence is being prepared.",
-            })
-            continue
+        quote = get_quote_safe(sym) or {}
+        stock = get_stock(sym) or {}
 
-        bullbrain = stock.get("bullbrain", {})
-        insights = stock.get("insights", {})
-        stock_quote = stock.get("quote", {}) or {}
+        bullbrain = stock.get("bullbrain") or {}
+        insights = stock.get("insights") or {}
+        stock_quote = stock.get("quote") or {}
 
-        # -------------------------------------------------
-        # 2️⃣ LIVE QUOTE OVERLAY (SOURCE OF TRUTH FOR PRICE)
-        # -------------------------------------------------
-        live_quote = get_quote_safe(sym) or {}
+        price = quote.get("price")
 
-        price = (
-            live_quote.get("price")
-            or stock_quote.get("price")
-        )
-
-        change_pct = (
-            live_quote.get("changePct")
-            if live_quote.get("changePct") is not None
-            else stock_quote.get("changePct")
-        )
-
-        open_px = (
-            live_quote.get("open")
-            or stock_quote.get("open")
-            or price
-        )
-
-        high_px = (
-            live_quote.get("high")
-            or stock_quote.get("high")
-            or price
-        )
-
-        low_px = (
-            live_quote.get("low")
-            or stock_quote.get("low")
-            or price
-        )
-
-        # -------------------------------------------------
-        # 3️⃣ UI-CONTRACT-COMPATIBLE ITEM
-        # -------------------------------------------------
         items.append({
             "symbol": sym,
-            "companyName": stock.get("company_name", sym),
+            "companyName": stock.get("company_name"),
 
-            # 🔥 LIVE PRICE
             "price": price,
-            "changePct": change_pct,
-            "timestamp": (
-                live_quote.get("updated_at")
-                or stock_quote.get("updated_at")
-            ),
+            "changePct": quote.get("changePct"),
+            "quote_updated_at": quote.get("updated_at"),
 
-            # 🧠 AI SIGNAL (MATCH UI)
             "hybridSignal": bullbrain.get("signal", "HOLD"),
             "hybridScore": bullbrain.get("confidence", 0),
 
-            # 📊 OHLC
             "features": {
-                "open": open_px,
-                "high": high_px,
-                "low": low_px,
+                "open": stock_quote.get("open") or price,
+                "high": stock_quote.get("high") or price,
+                "low": stock_quote.get("low") or price,
                 "close": price,
             },
 
-            # 💬 WHY
-            "grokSummary": (
-                insights.get("oneLiner")
+            "grokSummary": insights.get("oneLiner")
                 or insights.get("summaryLine")
-                or "Signal based on trend, momentum, and volatility."
-            ),
+                or "Market signal based on trend and momentum.",
 
             "computed_at": stock.get("computed_at"),
         })
@@ -115,16 +56,16 @@ def build_watchlist_snapshot(user_id: str, symbols: List[str]) -> Dict[str, Any]
         "user_id": user_id,
         "symbols": symbols,
         "items": items,
-        "snapshot_version": "v1",
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
+        "version": "v1",
     }
 
-    db.collection(COL_ROOT).collection(COL_SNAPSHOTS) \
-        .document(user_id).set(snapshot, merge=True)
+    db.collection("watchlist_snapshots") \
+      .document(user_id) \
+      .set(snapshot, merge=True)
 
     return snapshot
-
 
 def is_snapshot_fresh(snapshot: Dict[str, Any], max_age_seconds: int = 30) -> bool:
     try:
@@ -139,12 +80,12 @@ def is_snapshot_fresh(snapshot: Dict[str, Any], max_age_seconds: int = 30) -> bo
         return False
 
 
-def get_watchlist_snapshot(user_id: str) -> Dict[str, Any] | None:
+def get_watchlist_snapshot(user_id: str):
     db = firestore.client()
     snap = (
-        db.collection(COL_ROOT)
-          .collection(COL_SNAPSHOTS)
+        db.collection("watchlist_snapshots")
           .document(user_id)
           .get()
     )
     return snap.to_dict() if snap.exists else None
+
