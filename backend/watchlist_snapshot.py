@@ -1,23 +1,45 @@
 # backend/watchlist_snapshot.py
 
-from typing import List, Dict, Any
-from firebase_admin import firestore
+from typing import Dict, Any, List
+from datetime import datetime, timezone
+
 from backend.quote_repo import get_quote_safe
 from backend.stock_repo import get_stock
-from backend.firestore_utils import utc_now_iso
+from backend.firestore_utils import utc_now_iso, get_db
 
 
-COL_ROOT = "bullsignals_ai"
 COL_SNAPSHOTS = "watchlist_snapshots"
 
 
-def build_watchlist_snapshot(user_id: str, symbols: list[str]):
-    db = firestore.client()
-    items = []
+# =========================================================
+# SNAPSHOT BUILDER (SINGLE SOURCE OF TRUTH)
+# =========================================================
+def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
+    """
+    Builds and stores a watchlist snapshot for a user.
 
+    Source of truth for symbols:
+      users/{user_id}/watchlist/*
+    """
+    db = get_db()
+
+    # -----------------------------------------------------
+    # 1️⃣ Read user's watchlist symbols
+    # -----------------------------------------------------
+    docs = (
+        db.collection("users")
+          .document(user_id)
+          .collection("watchlist")
+          .stream()
+    )
+
+    symbols: List[str] = sorted({d.id.upper() for d in docs if d.id})
+    items: List[Dict[str, Any]] = []
+
+    # -----------------------------------------------------
+    # 2️⃣ Build snapshot items
+    # -----------------------------------------------------
     for sym in symbols:
-        sym = sym.upper()
-
         quote = get_quote_safe(sym) or {}
         stock = get_stock(sym) or {}
 
@@ -31,13 +53,16 @@ def build_watchlist_snapshot(user_id: str, symbols: list[str]):
             "symbol": sym,
             "companyName": stock.get("company_name"),
 
+            # Quote (always from quote system)
             "price": price,
             "changePct": quote.get("changePct"),
             "quote_updated_at": quote.get("updated_at"),
 
+            # Signal (hybrid/global intelligence)
             "hybridSignal": bullbrain.get("signal", "HOLD"),
             "hybridScore": bullbrain.get("confidence", 0),
 
+            # Minimal OHLC for UI
             "features": {
                 "open": stock_quote.get("open") or price,
                 "high": stock_quote.get("high") or price,
@@ -45,13 +70,19 @@ def build_watchlist_snapshot(user_id: str, symbols: list[str]):
                 "close": price,
             },
 
-            "grokSummary": insights.get("oneLiner")
+            # One-liner insight
+            "grokSummary": (
+                insights.get("oneLiner")
                 or insights.get("summaryLine")
-                or "Market signal based on trend and momentum.",
+                or "Market signal based on trend and momentum."
+            ),
 
             "computed_at": stock.get("computed_at"),
         })
 
+    # -----------------------------------------------------
+    # 3️⃣ Persist snapshot
+    # -----------------------------------------------------
     snapshot = {
         "user_id": user_id,
         "symbols": symbols,
@@ -61,18 +92,22 @@ def build_watchlist_snapshot(user_id: str, symbols: list[str]):
         "version": "v1",
     }
 
-    db.collection("watchlist_snapshots") \
+    db.collection(COL_SNAPSHOTS) \
       .document(user_id) \
       .set(snapshot, merge=True)
 
     return snapshot
 
+
+# =========================================================
+# SNAPSHOT FRESHNESS CHECK
+# =========================================================
 def is_snapshot_fresh(snapshot: Dict[str, Any], max_age_seconds: int = 30) -> bool:
     try:
         ts = snapshot.get("generated_at")
         if not ts:
             return False
-        from datetime import datetime, timezone
+
         gen = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - gen).total_seconds()
         return age <= max_age_seconds
@@ -80,12 +115,14 @@ def is_snapshot_fresh(snapshot: Dict[str, Any], max_age_seconds: int = 30) -> bo
         return False
 
 
-def get_watchlist_snapshot(user_id: str):
-    db = firestore.client()
+# =========================================================
+# SNAPSHOT READER
+# =========================================================
+def get_watchlist_snapshot(user_id: str) -> Dict[str, Any] | None:
+    db = get_db()
     snap = (
-        db.collection("watchlist_snapshots")
+        db.collection(COL_SNAPSHOTS)
           .document(user_id)
           .get()
     )
     return snap.to_dict() if snap.exists else None
-

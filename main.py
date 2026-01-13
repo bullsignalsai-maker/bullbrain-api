@@ -4523,9 +4523,7 @@ def _watchlist_col(user_id: str):
         .collection("watchlist")
         
     )
-# -----------------------------
-# 1) READ watchlist (TTL SNAPSHOT)
-# -----------------------------
+
 # -----------------------------
 # 1) READ watchlist (TTL SNAPSHOT)
 # -----------------------------
