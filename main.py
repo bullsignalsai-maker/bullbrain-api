@@ -25,6 +25,12 @@ from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
 from backend.active_symbols import touch_active_symbol
 from backend.firestore_utils import get_db
+from backend.watchlist_snapshot import (
+    build_watchlist_snapshot,
+    get_watchlist_snapshot,
+    is_snapshot_fresh,
+)
+
 app = FastAPI()
 
 # CORS for Expo / mobile
@@ -4518,93 +4524,34 @@ def _watchlist_col(user_id: str):
         
     )
 # -----------------------------
-# 1) READ watchlist (FINAL)
+# 1) READ watchlist (TTL SNAPSHOT)
+# -----------------------------
+# -----------------------------
+# 1) READ watchlist (TTL SNAPSHOT)
 # -----------------------------
 @app.get("/watchlist/{user_id}")
 def get_watchlist(user_id: str):
-    db = firestore.client()
+    # 1️⃣ Try snapshot first
+    snapshot = get_watchlist_snapshot(user_id)
 
-    # 1️⃣ Read user's watchlist symbols
-    docs = _watchlist_col(user_id).stream()
-    symbols = sorted({_norm_symbol(d.id) for d in docs if d.id})
+    if snapshot and is_snapshot_fresh(snapshot):
+        items = snapshot.get("items", [])
+        return {
+            "status": "ok",
+            "count": len(items),
+            "watchlist": items,
+            "source": "snapshot",
+        }
 
-    items = []
-
-    for sym in symbols:
-        try:
-            # -------------------------------------------------
-            # 2️⃣ REAL-TIME QUOTE (SOURCE OF TRUTH)
-            # -------------------------------------------------
-            quote_doc = (
-                db.collection("bullsignals_ai")
-                  .collection("quotes")
-                  .collection("symbols")
-                  .document(sym)
-                  .get()
-            )
-            quote = quote_doc.to_dict() if quote_doc.exists else {}
-
-            # -------------------------------------------------
-            # 3️⃣ STOCK INTELLIGENCE (BULLBRAIN)
-            # -------------------------------------------------
-            stock_doc = (
-                db.collection("stocks")
-                  .document(sym)
-                  .get()
-            )
-            stock = stock_doc.to_dict() if stock_doc.exists else {}
-
-            bullbrain = stock.get("bullbrain") or {}
-            insights = stock.get("insights") or {}
-            stock_quote = stock.get("quote") or {}
-
-            # -------------------------------------------------
-            # 4️⃣ FINAL MERGED RESPONSE (UI CONTRACT)
-            # -------------------------------------------------
-            items.append({
-                # identity
-                "symbol": sym,
-                "companyName": stock.get("company_name"),
-
-                # 🔥 LIVE PRICE (30s cadence)
-                "price": quote.get("price"),
-                "changePct": quote.get("changePct"),
-
-                # 🧠 AI SIGNAL
-                "hybridSignal": bullbrain.get("signal", "HOLD"),
-                "hybridScore": bullbrain.get("confidence", 0),
-
-                # 📊 OHLC (fallback-safe)
-                "features": {
-                    "open":  stock_quote.get("open")  or quote.get("price"),
-                    "high":  stock_quote.get("high")  or quote.get("price"),
-                    "low":   stock_quote.get("low")   or quote.get("price"),
-                    "close": quote.get("price"),
-                },
-
-                # 💬 WHY THIS SIGNAL
-                "grokSummary": insights.get("oneLiner")
-                    or insights.get("summaryLine")
-                    or (
-                        f"{bullbrain.get('signal', 'HOLD')} signal "
-                        f"based on trend, momentum, volatility, and price action."
-                    ),
-
-                # timestamps
-                "quote_updated_at": quote.get("updated_at"),
-                "computed_at": stock.get("computed_at"),
-            })
-
-        except Exception as e:
-            items.append({
-                "symbol": sym,
-                "error": str(e),
-            })
+    # 2️⃣ Snapshot missing or stale → rebuild
+    snapshot = build_watchlist_snapshot(user_id)
+    items = snapshot.get("items", [])
 
     return {
         "status": "ok",
         "count": len(items),
         "watchlist": items,
+        "source": "rebuilt",
     }
 
 # -----------------------------
@@ -4612,38 +4559,70 @@ def get_watchlist(user_id: str):
 # -----------------------------
 from backend.active_symbols import touch_active_symbol
 
+# -----------------------------
+# 2) ADD symbol to watchlist
+# -----------------------------
+from backend.active_symbols import touch_active_symbol
+from backend.watchlist_snapshot import build_watchlist_snapshot
+
 @app.post("/watchlist/{user_id}/add/{symbol}")
 def add_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
     if not sym.isalnum():
         return {"status": "error", "error": "Invalid symbol"}
 
+    # 1️⃣ Save user intent
     _watchlist_col(user_id).document(sym).set(
         {"symbol": sym, "added_at": firestore.SERVER_TIMESTAMP},
         merge=True
     )
 
-    # ✅ USER INTENT: explicit subscription
+    # 2️⃣ Mark symbol as active (global relevance)
     try:
         touch_active_symbol(sym)
     except Exception:
         pass
 
-    # warm global cache (best effort)
+    # 3️⃣ Warm caches (best effort, non-blocking)
     try:
         ensure_quote(sym)
         bootstrap_stock(sym)
     except Exception:
         pass
 
-    return {"status": "ok", "user_id": user_id, "symbol": sym}
+    # 4️⃣ 🔥 FORCE snapshot rebuild (ignore TTL)
+    try:
+        build_watchlist_snapshot(user_id)
+    except Exception as e:
+        print(f"[watchlist] snapshot rebuild failed: {e}")
+
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "symbol": sym,
+    }
+
 
 # -----------------------------
 # 3) REMOVE symbol from watchlist
 # -----------------------------
+from backend.watchlist_snapshot import build_watchlist_snapshot
+
 @app.delete("/watchlist/{user_id}/remove/{symbol}")
 def remove_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
-    _watchlist_col(user_id).document(sym).delete()
-    return {"status": "ok", "user_id": user_id, "symbol": sym}
 
+    # 1️⃣ Remove from watchlist
+    _watchlist_col(user_id).document(sym).delete()
+
+    # 2️⃣ 🔥 FORCE snapshot rebuild
+    try:
+        build_watchlist_snapshot(user_id)
+    except Exception as e:
+        print(f"[watchlist] snapshot rebuild failed: {e}")
+
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "symbol": sym,
+    }
