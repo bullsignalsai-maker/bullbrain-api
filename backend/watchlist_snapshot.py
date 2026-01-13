@@ -48,7 +48,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         stock_quote = stock.get("quote") or {}
 
         price = quote.get("price")
-
+        sparkline = stock.get("sparkline")
         items.append({
             "symbol": sym,
             "companyName": stock.get("company_name"),
@@ -69,7 +69,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "low": stock_quote.get("low") or price,
                 "close": price,
             },
-
+            "sparkline": sparkline if isinstance(sparkline, list) else None,
             # One-liner insight
             "grokSummary": (
                 insights.get("oneLiner")
