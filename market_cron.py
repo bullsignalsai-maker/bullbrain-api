@@ -62,6 +62,7 @@ try:
     from zoneinfo import ZoneInfo  # py3.9+
 except Exception:
     ZoneInfo = None  # type: ignore
+from backend.firestore_utils import utc_now_iso
 
 
 # =========================================================
@@ -113,13 +114,6 @@ def get_db():
         log("🔥 Firebase initialized")
     return firestore.client()
 
-
-def utc_now_iso() -> str:
-    return (
-        datetime.datetime.now(datetime.timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
 
 # =========================================================
 # PHASE 0 — MARKET GAINERS / LOSERS (FMP)

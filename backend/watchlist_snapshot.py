@@ -4,7 +4,8 @@ from typing import List, Dict, Any
 from firebase_admin import firestore
 from backend.quote_repo import get_quote_safe
 from backend.stock_repo import get_stock
-from backend.time_utils import utc_now_iso
+from backend.firestore_utils import utc_now_iso
+
 
 COL_ROOT = "bullsignals_ai"
 COL_SNAPSHOTS = "watchlist_snapshots"
