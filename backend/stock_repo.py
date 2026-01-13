@@ -1,35 +1,23 @@
 # backend/stock_repo.py
 # ---------------------------------------------------------
 # Global Stock Repository (Firestore)
-# - Read / write cached BullBrain intelligence
-# - TTL-based freshness check
+# Canonical source for BullBrain stock intelligence
+#
+# READ / WRITE PATH:
+#   /bullsignals_ai/stocks/symbols/{SYMBOL}
 # ---------------------------------------------------------
 
 import datetime
 from typing import Optional, Dict, Any
 
-import firebase_admin
-from firebase_admin import firestore  # type: ignore
-
+from backend.firestore_utils import get_db, utc_now_iso
 
 # ---------------------------------------------------------
-# Firestore handle (safe, shared)
+# Constants
 # ---------------------------------------------------------
-def get_db():
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app()
-    return firestore.client()
-
-
-# ---------------------------------------------------------
-# Time helpers
-# ---------------------------------------------------------
-def utc_now() -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def utc_now_iso() -> str:
-    return utc_now().isoformat().replace("+00:00", "Z")
+COL_ROOT = "bullsignals_ai"
+DOC_STOCKS = "stocks"
+COL_SYMBOLS = "symbols"
 
 
 # ---------------------------------------------------------
@@ -37,40 +25,65 @@ def utc_now_iso() -> str:
 # ---------------------------------------------------------
 def get_stock(symbol: str) -> Optional[Dict[str, Any]]:
     """
-    Fetch stocks/{SYMBOL} doc if exists.
+    Fetch stock intelligence for a symbol.
+
+    Path:
+      /bullsignals_ai/stocks/symbols/{SYMBOL}
     """
-    db = get_db()
-    doc = db.collection("stocks").document(symbol.upper()).get()
-    if not doc.exists:
+    if not symbol:
         return None
-    return doc.to_dict()
 
+    symbol = symbol.upper()
 
-def is_stock_fresh(doc: Dict[str, Any]) -> bool:
-    """
-    Checks TTL freshness using compute_ttl_minutes.
-    """
-    try:
-        computed_at = doc.get("computed_at")
-        ttl = int(doc.get("compute_ttl_minutes", 60))
+    doc = (
+        get_db()
+        .collection(COL_ROOT)
+        .document(DOC_STOCKS)
+        .collection(COL_SYMBOLS)
+        .document(symbol)
+        .get()
+    )
 
-        if not computed_at:
-            return False
-
-        ts = datetime.datetime.fromisoformat(
-            computed_at.replace("Z", "")
-        ).replace(tzinfo=datetime.timezone.utc)
-
-        age_min = (utc_now() - ts).total_seconds() / 60.0
-        return age_min <= ttl
-
-    except Exception:
-        return False
+    return doc.to_dict() if doc.exists else None
 
 
 def save_stock(symbol: str, payload: Dict[str, Any]) -> None:
     """
-    Upserts stocks/{SYMBOL}.
+    Upsert stock intelligence for a symbol.
+
+    Path:
+      /bullsignals_ai/stocks/symbols/{SYMBOL}
     """
-    db = get_db()
-    db.collection("stocks").document(symbol.upper()).set(payload, merge=True)
+    if not symbol or not isinstance(payload, dict):
+        return
+
+    symbol = symbol.upper()
+
+    payload.setdefault("symbol", symbol)
+    payload.setdefault("computed_at", utc_now_iso())
+
+    get_db() \
+        .collection(COL_ROOT) \
+        .document(DOC_STOCKS) \
+        .collection(COL_SYMBOLS) \
+        .document(symbol) \
+        .set(payload, merge=True)
+
+
+def is_stock_fresh(doc: Dict[str, Any], max_age_minutes: int = 60) -> bool:
+    """
+    TTL freshness check using computed_at.
+    """
+    try:
+        computed_at = doc.get("computed_at")
+        if not computed_at:
+            return False
+
+        ts = datetime.datetime.fromisoformat(
+            computed_at.replace("Z", "+00:00")
+        )
+        age_min = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
+        return age_min <= max_age_minutes
+
+    except Exception:
+        return False
