@@ -495,6 +495,19 @@ def update_market_overview(db) -> None:
     # 1) Crypto update (your working logic)
     # -----------------------------
     crypto = fetch_crypto_snapshot()
+    from backend.quote_repo import save_quote
+
+    for sym, chg in crypto.items():
+        if isinstance(chg, (int, float)):
+            save_quote(
+                sym,
+                {
+                    "price": None,        # crypto price optional for now
+                    "changePct": chg,
+                    "source": "crypto",
+                }
+            )
+
 
     for card in carousel:
         if isinstance(card, dict) and card.get("id") == "crypto":
