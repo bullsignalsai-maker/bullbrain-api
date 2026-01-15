@@ -676,7 +676,6 @@ def update_market_overview(db) -> None:
         merge=True,
     )
 
-
 # ---------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------
@@ -727,13 +726,13 @@ def main() -> None:
                 try:
                     q = fetch_equity_quote(sym)
 
+                    price = q.get("price") if isinstance(q, dict) else None
+                    chg = q.get("changePct") if isinstance(q, dict) else None
+
                     # -----------------------------------------
-                    # ✅ CASE 1: VALID QUOTE RECEIVED
+                    # ✅ CASE 1: VALID QUOTE
                     # -----------------------------------------
-                    if isinstance(q, dict) and (
-                        isinstance(q.get("price"), (int, float)) or
-                        isinstance(q.get("changePct"), (int, float))
-                    ):
+                    if isinstance(price, (int, float)) or isinstance(chg, (int, float)):
                         quotes[sym] = q
                         save_quote(sym, q)
 
@@ -742,15 +741,15 @@ def main() -> None:
                             clear_needs_refresh(sym)
 
                     # -----------------------------------------
-                    # ❌ CASE 2: EMPTY / INVALID QUOTE → RETRY
+                    # ❌ CASE 2: EMPTY / INVALID QUOTE
                     # -----------------------------------------
                     else:
                         log(f"⚠️ Empty quote for {sym} — will retry")
-                        mark_needs_refresh(sym)   # 🔥 CRITICAL FIX
+                        mark_needs_refresh(sym)
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
-                    mark_needs_refresh(sym)       # 🔥 also retry on exception
+                    mark_needs_refresh(sym)
 
                 time.sleep(per_symbol_delay)
 
