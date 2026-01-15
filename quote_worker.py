@@ -40,7 +40,7 @@ except Exception:
 
 from quote_provider import (
     fetch_equity_quote,
-    fetch_crypto_snapshot,
+    fetch_crypto_simple_snapshot,
     fetch_sector_snapshot,
 )
 from backend.quote_repo import (
@@ -566,7 +566,7 @@ def update_market_overview(db) -> None:
     # -----------------------------
     # 1) Crypto update (RATE-LIMIT SAFE)
     # -----------------------------
-    from quote_provider import fetch_crypto_simple_snapshot
+    
     from backend.quote_repo import save_quote
 
     crypto = fetch_crypto_simple_snapshot()
