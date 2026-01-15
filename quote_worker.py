@@ -725,27 +725,30 @@ def main() -> None:
                 try:
                     q = fetch_equity_quote(sym)
 
-                    if not isinstance(q, dict):
-                        continue
-
-                    price = q.get("price")
-                    chg = q.get("changePct")
-
-                    has_price = isinstance(price, (int, float))
-                    has_chg = isinstance(chg, (int, float))
-
-                    # ✅ ONLY accept quotes with real data
-                    if has_price or has_chg:
+                    # -----------------------------------------
+                    # ✅ CASE 1: VALID QUOTE RECEIVED
+                    # -----------------------------------------
+                    if isinstance(q, dict) and (
+                        isinstance(q.get("price"), (int, float)) or
+                        isinstance(q.get("changePct"), (int, float))
+                    ):
                         quotes[sym] = q
                         save_quote(sym, q)
 
+                        # clear refresh flag ONLY on success
                         if sym in on_demand:
                             clear_needs_refresh(sym)
+
+                    # -----------------------------------------
+                    # ❌ CASE 2: EMPTY / INVALID QUOTE → RETRY
+                    # -----------------------------------------
                     else:
-                        log(f"⚠️ Skipping empty quote for {sym}")
+                        log(f"⚠️ Empty quote for {sym} — will retry")
+                        mark_needs_refresh(sym)   # 🔥 CRITICAL FIX
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
+                    mark_needs_refresh(sym)       # 🔥 also retry on exception
 
                 time.sleep(per_symbol_delay)
 

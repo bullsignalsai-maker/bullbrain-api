@@ -63,5 +63,6 @@ def ensure_quote(symbol: str) -> Dict[str, Any]:
         "updated_at": _now_utc().isoformat().replace("+00:00", "Z"),
     }
 
-    save_quote(symbol, placeholder)
+    mark_needs_refresh(symbol)
+
     return placeholder
