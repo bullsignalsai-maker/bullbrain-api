@@ -87,10 +87,14 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
         return {}
 
 # ---------------------------------------------------------
-# CRYPTO SNAPSHOT (CoinGecko – free)
-# Mirrors your old HomeScreen.js coins/markets logic
+# CRYPTO SNAPSHOT — CoinGecko SIMPLE PRICE (LOW RATE)
 # ---------------------------------------------------------
-def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
+def fetch_crypto_simple_snapshot() -> Dict[str, Optional[float]]:
+    """
+    Uses CoinGecko simple/price endpoint.
+    MUCH lower rate-limit impact.
+    Returns 24h % change.
+    """
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {
@@ -100,26 +104,25 @@ def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
         }
 
         resp = _SESSION.get(url, params=params, timeout=10)
-        print("[crypto] status:", resp.status_code, flush=True)
-        print("[crypto] text:", resp.text[:300], flush=True)
         data = _safe_json(resp)
 
         if not isinstance(data, dict):
             return {}
 
-        def pct(v):
+        def pct(key):
+            v = data.get(key, {}).get("usd_24h_change")
             return float(v) if isinstance(v, (int, float)) else None
 
         return {
-            "BTC": pct(data.get("bitcoin", {}).get("usd_24h_change")),
-            "ETH": pct(data.get("ethereum", {}).get("usd_24h_change")),
-            "SOL": pct(data.get("solana", {}).get("usd_24h_change")),
-            "XRP": pct(data.get("ripple", {}).get("usd_24h_change")),
-            "DOGE": pct(data.get("dogecoin", {}).get("usd_24h_change")),
+            "BTC": pct("bitcoin"),
+            "ETH": pct("ethereum"),
+            "SOL": pct("solana"),
+            "XRP": pct("ripple"),
+            "DOGE": pct("dogecoin"),
         }
 
     except Exception as e:
-        print(f"[crypto] fetch failed: {e}", flush=True)
+        print(f"[quote-provider] Simple crypto fetch failed: {e}", flush=True)
         return {}
 
 

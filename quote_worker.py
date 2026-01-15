@@ -52,7 +52,7 @@ from backend.quote_repo import (
 # -----------------------------
 # Refresh policies
 # -----------------------------
-CRYPTO_MIN_REFRESH_SECONDS = 300   # 5 minutes
+CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
 SECTOR_MIN_REFRESH_SECONDS = 300   # 5 minutes (market hours only)
 
 
@@ -265,44 +265,82 @@ def collect_on_demand_quotes(db) -> Set[str]:
 def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
     now = utc_now_iso()
 
-    # Home screen
+    # -----------------------------------------------------
+    # HOME SCREEN
+    # -----------------------------------------------------
     ref = db.collection("bullsignals_ai").document("homescreen_snapshot")
     snap = ref.get()
+
     if snap.exists:
         d = snap.to_dict() or {}
 
-        # MAG7 quote update
+        # -----------------------------
+        # MAG7 quote update (SAFE)
+        # -----------------------------
         mag7_list = d.get("mag7", [])
         if isinstance(mag7_list, list):
             for m in mag7_list:
                 if not isinstance(m, dict):
                     continue
-                sym = str(m.get("symbol") or "").upper()
-                if sym and sym in quotes:
-                    m["price"] = quotes[sym].get("price")
-                    m["changePct"] = quotes[sym].get("changePct")
-                    m["quote_updated_at"] = now
 
-        # Carousel update for proxy symbols in parentheses (SPY/QQQ/GLD/USO/SLV etc.)
+                sym = str(m.get("symbol") or "").upper()
+                q = quotes.get(sym)
+
+                if not q:
+                    continue
+
+                # ✅ price overwrite only if valid
+                if isinstance(q.get("price"), (int, float)):
+                    m["price"] = q["price"]
+
+                # ✅ changePct overwrite only if valid
+                if isinstance(q.get("changePct"), (int, float)):
+                    m["changePct"] = q["changePct"]
+
+                m["quote_updated_at"] = now
+
+        # -------------------------------------------------
+        # CAROUSEL update (SPY / QQQ / GLD / USO / SLV etc.)
+        # ✅ DO NOT overwrite with "--"
+        # -------------------------------------------------
         carousel_list = d.get("carousel", [])
         if isinstance(carousel_list, list):
             for card in carousel_list:
                 if not isinstance(card, dict):
                     continue
+
                 items = card.get("items", [])
                 if not isinstance(items, list):
                     continue
+
                 for it in items:
                     if not isinstance(it, dict):
                         continue
-                    label = str(it.get("label") or "")
-                    if "(" in label and ")" in label:
-                        sym = label.split("(")[-1].replace(")", "").strip().upper()
-                        q = quotes.get(sym) or {}
-                        chg = q.get("changePct")
-                        it["value"] = f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--"
-                        it["quote_updated_at"] = now
 
+                    label = str(it.get("label") or "")
+                    if "(" not in label or ")" not in label:
+                        continue
+
+                    sym = (
+                        label.split("(")[-1]
+                        .replace(")", "")
+                        .strip()
+                        .upper()
+                    )
+
+                    q = quotes.get(sym)
+                    if not q:
+                        continue
+
+                    chg = q.get("changePct")
+
+                    # ✅ ONLY overwrite when we have a real number
+                    if isinstance(chg, (int, float)):
+                        it["value"] = f"{chg:+.2f}%"
+                        it["quote_updated_at"] = now
+                    # ❌ else: DO NOTHING (preserve last value)
+
+        # Persist homescreen safely
         ref.set(
             {
                 "mag7": mag7_list,
@@ -312,23 +350,43 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
             merge=True,
         )
 
-    # Hotlist / Bearwatch
+    # -----------------------------------------------------
+    # HOTLIST / BEARWATCH (SAFE UPDATE)
+    # -----------------------------------------------------
     for name in ["market_hotlist", "market_bearwatch"]:
         r = db.collection("bullsignals_ai").document(name)
         s = r.get()
-        if s.exists:
-            key = "hotlist" if "hot" in name else "bearwatch"
-            rows = (s.to_dict() or {}).get(key, [])
-            if isinstance(rows, list):
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    sym = str(row.get("symbol") or "").upper()
-                    if sym and sym in quotes:
-                        row["price"] = quotes[sym].get("price")
-                        row["changePct"] = quotes[sym].get("changePct")
-                        row["quote_updated_at"] = now
-            r.set({key: rows}, merge=True)
+
+        if not s.exists:
+            continue
+
+        key = "hotlist" if "hot" in name else "bearwatch"
+        rows = (s.to_dict() or {}).get(key, [])
+
+        if not isinstance(rows, list):
+            continue
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            sym = str(row.get("symbol") or "").upper()
+            q = quotes.get(sym)
+
+            if not q:
+                continue
+
+            # ✅ SAFE price update
+            if isinstance(q.get("price"), (int, float)):
+                row["price"] = q["price"]
+
+            # ✅ SAFE changePct update
+            if isinstance(q.get("changePct"), (int, float)):
+                row["changePct"] = q["changePct"]
+
+            row["quote_updated_at"] = now
+
+        r.set({key: rows}, merge=True)
 
 
 # ---------------------------------------------------------
@@ -509,58 +567,43 @@ def update_market_overview(db) -> None:
     # -----------------------------
     # 1) Crypto update (RATE-LIMIT SAFE)
     # -----------------------------
-    crypto = fetch_crypto_snapshot()
+    from quote_provider import fetch_crypto_simple_snapshot
+    from backend.quote_repo import save_quote
 
-    # find existing crypto card
-    crypto_card = None
-    for c in carousel:
-        if isinstance(c, dict) and c.get("id") == "crypto":
-            crypto_card = c
-            break
+    crypto = fetch_crypto_simple_snapshot()
 
-    last_crypto_update = _seconds_since(
-        crypto_card.get("updated_at") if crypto_card else None
-    )
-
-    # ⛔ Skip if refreshed too recently
-    if last_crypto_update is not None and last_crypto_update < CRYPTO_MIN_REFRESH_SECONDS:
-        log("⏳ Crypto refresh skipped (cooldown active)")
+    # If CoinGecko returns nothing → DO NOTHING
+    if not any(isinstance(v, (int, float)) for v in crypto.values()):
+        log("⚠️ Crypto snapshot empty — preserving existing carousel values")
     else:
-        has_valid_crypto = any(
-            isinstance(v, (int, float)) for v in crypto.values()
-        )
+        # persist crypto into quote_repo (so UI + future use works)
+        for sym, chg in crypto.items():
+            if isinstance(chg, (int, float)):
+                save_quote(
+                    sym,
+                    {
+                        "price": None,
+                        "changePct": chg,
+                        "source": "crypto",
+                    }
+                )
 
-        if not has_valid_crypto:
-            log("⚠️ Crypto snapshot empty — preserving existing carousel values")
-        else:
-            from backend.quote_repo import save_quote
+        # update carousel ONLY when data exists
+        for card in carousel:
+            if isinstance(card, dict) and card.get("id") == "crypto":
+                card.setdefault("title", "Crypto Movers")
+                card.setdefault("subtitle", "24h change")
 
-            # persist into quote repo (optional, future-safe)
-            for sym, chg in crypto.items():
-                if isinstance(chg, (int, float)):
-                    save_quote(
-                        sym,
-                        {
-                            "price": None,
-                            "changePct": chg,
-                            "source": "crypto",
-                        }
-                    )
+                card["items"] = [
+                    {
+                        "label": sym,
+                        "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                        "quote_updated_at": now_iso,
+                    }
+                    for sym, chg in crypto.items()
+                ]
 
-            if crypto_card:
-                items = []
-                for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
-                    chg = crypto.get(sym)
-                    items.append(
-                        {
-                            "label": sym,
-                            "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                            "quote_updated_at": now_iso,
-                        }
-                    )
-
-                crypto_card["items"] = items
-                crypto_card["updated_at"] = now_iso
+                card["updated_at"] = now_iso
 
     # -----------------------------
     # 2) Sentiment sync (from market_overview.fearGreed)
