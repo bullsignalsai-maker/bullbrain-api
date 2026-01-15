@@ -47,7 +47,9 @@ from backend.quote_repo import (
     get_pending_quotes,
     save_quote,
     clear_needs_refresh,
+    mark_needs_refresh,   # ✅ ADD THIS
 )
+
 
 # -----------------------------
 # Refresh policies
