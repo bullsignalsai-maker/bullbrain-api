@@ -87,32 +87,63 @@ def clear_needs_refresh(symbol: str) -> None:
 
 def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
     """
-    Saves quote payload from provider (Finnhub, etc).
+    Saves quote payload safely.
 
-    IMPORTANT GUARANTEES:
-    - Does NOT remove existing fields
-    - Does NOT break UI expectations
-    - Allows extended quote fields (open/high/low/etc)
-    - Protects internal control fields
+    HARD RULES:
+    - ❌ Never overwrite with empty / null quotes
+    - ❌ Never write price=None + changePct=None
+    - ✅ Preserve last known good values
     """
 
-    # ---- protect system fields (never trust provider input)
-    safe_payload = dict(payload) if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return
 
-    # Remove any accidental collisions
-    for k in ["symbol", "updated_at", "ttl_seconds", "needs_refresh"]:
-        safe_payload.pop(k, None)
+    price = payload.get("price")
+    chg = payload.get("changePct")
 
-    # ---- merge provider data + system metadata
+    # -------------------------------------------------
+    # GUARD 1: reject fully empty quotes
+    # -------------------------------------------------
+    if price is None and chg is None:
+        return
+
+    # -------------------------------------------------
+    # GUARD 2: numeric validation
+    # -------------------------------------------------
+    if price is not None:
+        try:
+            price = float(price)
+        except Exception:
+            price = None
+
+    if chg is not None:
+        try:
+            chg = float(chg)
+        except Exception:
+            chg = None
+
+    # If both invalid → do nothing
+    if price is None and chg is None:
+        return
+
     final_doc = {
-        **safe_payload,
-
-        # existing + required
         "symbol": symbol.upper(),
         "updated_at": _now_iso(),
         "ttl_seconds": QUOTE_TTL_SECONDS,
         "needs_refresh": False,
     }
+
+    # Only write what is valid
+    if price is not None:
+        final_doc["price"] = price
+
+    if chg is not None:
+        final_doc["changePct"] = chg
+
+    # Preserve optional provider fields
+    for k in ["open", "high", "low", "prevClose", "timestamp", "source"]:
+        if k in payload:
+            final_doc[k] = payload[k]
 
     _quote_doc(symbol).set(final_doc, merge=True)
 

@@ -262,6 +262,9 @@ def collect_on_demand_quotes(db) -> Set[str]:
 # ---------------------------------------------------------
 # Update Firestore Quotes (NO BREAKING CHANGES)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# Update Firestore Quotes (NO BREAKING CHANGES)
+# ---------------------------------------------------------
 def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
     now = utc_now_iso()
 
@@ -289,19 +292,18 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                 if not q:
                     continue
 
-                # ✅ price overwrite only if valid
+                # ✅ overwrite ONLY if valid
                 if isinstance(q.get("price"), (int, float)):
                     m["price"] = q["price"]
 
-                # ✅ changePct overwrite only if valid
                 if isinstance(q.get("changePct"), (int, float)):
                     m["changePct"] = q["changePct"]
 
                 m["quote_updated_at"] = now
 
         # -------------------------------------------------
-        # CAROUSEL update (SPY / QQQ / GLD / USO / SLV etc.)
-        # ✅ DO NOT overwrite with "--"
+        # CAROUSEL (SPY / QQQ / GLD / USO / SLV)
+        # ❌ NEVER overwrite with "--"
         # -------------------------------------------------
         carousel_list = d.get("carousel", [])
         if isinstance(carousel_list, list):
@@ -334,13 +336,12 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
 
                     chg = q.get("changePct")
 
-                    # ✅ ONLY overwrite when we have a real number
+                    # ✅ ONLY update when real number exists
                     if isinstance(chg, (int, float)):
                         it["value"] = f"{chg:+.2f}%"
                         it["quote_updated_at"] = now
-                    # ❌ else: DO NOTHING (preserve last value)
+                    # ❌ else → preserve existing value
 
-        # Persist homescreen safely
         ref.set(
             {
                 "mag7": mag7_list,
@@ -376,11 +377,9 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
             if not q:
                 continue
 
-            # ✅ SAFE price update
             if isinstance(q.get("price"), (int, float)):
                 row["price"] = q["price"]
 
-            # ✅ SAFE changePct update
             if isinstance(q.get("changePct"), (int, float)):
                 row["changePct"] = q["changePct"]
 
@@ -582,7 +581,7 @@ def update_market_overview(db) -> None:
                 save_quote(
                     sym,
                     {
-                        "price": None,
+                        
                         "changePct": chg,
                         "source": "crypto",
                     }
@@ -689,45 +688,70 @@ def main() -> None:
         sleep_seconds = choose_sleep_seconds(now_utc)
 
         try:
-            # On holidays/weekends: do a LIGHT cycle (badge + crypto + sectors), then sleep long.
+            # -------------------------------------------------
+            # LIGHT MODE — holidays / weekends
+            # -------------------------------------------------
             if is_us_market_holiday(now_utc) or is_weekend(now_utc):
                 reason = "holiday" if is_us_market_holiday(now_utc) else "weekend"
                 log(f"⏸️ Market closed ({reason}) — light refresh then sleep={sleep_seconds}s")
 
-                # still update carousel items that are not expensive
                 update_market_overview(db)
                 time.sleep(sleep_seconds)
                 continue
 
+            # -------------------------------------------------
+            # Collect symbols
+            # -------------------------------------------------
             tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
             all_tickers = tickers.union(on_demand)
-            log(f"Refreshing quotes | "f"homescreen={len(tickers)} "f"on_demand={len(on_demand)} "f"total={len(all_tickers)} "f"| next_sleep={sleep_seconds}s")
+
+            log(
+                f"Refreshing quotes | "
+                f"homescreen={len(tickers)} "
+                f"on_demand={len(on_demand)} "
+                f"total={len(all_tickers)} | "
+                f"next_sleep={sleep_seconds}s"
+            )
 
             quotes: Dict[str, Dict[str, Any]] = {}
 
-            # Gentle throttling
             per_symbol_delay = 0.15 if is_market_open(now_utc) else 0.25
 
+            # -------------------------------------------------
+            # 🔒 SAFE QUOTE FETCH LOOP (NO POISONING)
+            # -------------------------------------------------
             for sym in sorted(all_tickers):
                 try:
                     q = fetch_equity_quote(sym)
 
-                    if q:
-                        quotes[sym] = q
+                    if not isinstance(q, dict):
+                        continue
 
-                        # Persist into quote_repo (new)
+                    price = q.get("price")
+                    chg = q.get("changePct")
+
+                    has_price = isinstance(price, (int, float))
+                    has_chg = isinstance(chg, (int, float))
+
+                    # ✅ ONLY accept quotes with real data
+                    if has_price or has_chg:
+                        quotes[sym] = q
                         save_quote(sym, q)
 
-                        # Clear refresh flag if this was on-demand
                         if sym in on_demand:
                             clear_needs_refresh(sym)
+                    else:
+                        log(f"⚠️ Skipping empty quote for {sym}")
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
 
                 time.sleep(per_symbol_delay)
 
+            # -------------------------------------------------
+            # Apply updates
+            # -------------------------------------------------
             update_quotes(db, quotes)
             update_market_overview(db)
 
