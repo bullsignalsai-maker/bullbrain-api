@@ -252,18 +252,36 @@ def collect_tickers(db) -> Set[str]:
 def collect_on_demand_quotes(db) -> Set[str]:
     """
     Returns symbols explicitly requested via quote_demand.ensure_quote()
+    BUT filters out non-equity symbols (BTC/ETH/etc) to avoid Finnhub empty quotes.
     """
     try:
         pending = get_pending_quotes()
-        return {sym.upper() for sym in pending if sym}
+        out: Set[str] = set()
+
+        for sym in pending:
+            if not sym:
+                continue
+
+            s = str(sym).upper().strip()
+
+            # ✅ equities/ETFs are usually A-Z only (OPEN, NBIS, SPY, QQQ)
+            # ❌ filter out crypto / weird ids (BTC, ETH, SOL, XRP, DOGE)
+            if s in {"BTC", "ETH", "SOL", "XRP", "DOGE"}:
+                continue
+
+            # optional extra guard: reject anything with non letters
+            if not s.replace(".", "").isalpha():
+                continue
+
+            out.add(s)
+
+        return out
+
     except Exception as e:
         log(f"⚠️ Failed to read pending quotes: {e}")
         return set()
 
 
-# ---------------------------------------------------------
-# Update Firestore Quotes (NO BREAKING CHANGES)
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # Update Firestore Quotes (NO BREAKING CHANGES)
 # ---------------------------------------------------------
@@ -576,19 +594,7 @@ def update_market_overview(db) -> None:
     # If CoinGecko returns nothing → DO NOTHING
     if not any(isinstance(v, (int, float)) for v in crypto.values()):
         log("⚠️ Crypto snapshot empty — preserving existing carousel values")
-    else:
-        # persist crypto into quote_repo (so UI + future use works)
-        for sym, chg in crypto.items():
-            if isinstance(chg, (int, float)):
-                save_quote(
-                    sym,
-                    {
-                        
-                        "changePct": chg,
-                        "source": "crypto",
-                    }
-                )
-
+    
         # update carousel ONLY when data exists
         for card in carousel:
             if isinstance(card, dict) and card.get("id") == "crypto":
@@ -703,17 +709,17 @@ def main() -> None:
             # -------------------------------------------------
             # Collect symbols
             # -------------------------------------------------
-            tickers = collect_tickers(db)
+            
             on_demand = collect_on_demand_quotes(db)
-            all_tickers = tickers.union(on_demand)
 
             log(
                 f"Refreshing quotes | "
-                f"homescreen={len(tickers)} "
-                f"on_demand={len(on_demand)} "
-                f"total={len(all_tickers)} | "
+                f"pending={len(on_demand)} | "
                 f"next_sleep={sleep_seconds}s"
             )
+
+            all_tickers = on_demand
+
 
             quotes: Dict[str, Dict[str, Any]] = {}
 
