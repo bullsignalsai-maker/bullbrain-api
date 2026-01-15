@@ -49,6 +49,13 @@ from backend.quote_repo import (
     clear_needs_refresh,
 )
 
+# -----------------------------
+# Refresh policies
+# -----------------------------
+CRYPTO_MIN_REFRESH_SECONDS = 300   # 5 minutes
+SECTOR_MIN_REFRESH_SECONDS = 300   # 5 minutes (market hours only)
+
+
 # ---------------------------------------------------------
 # Firebase Init
 # ---------------------------------------------------------
@@ -93,6 +100,14 @@ def _get_et_tz():
 
 ET = _get_et_tz()
 
+def _seconds_since(ts_iso: str | None) -> int | None:
+    try:
+        if not ts_iso:
+            return None
+        ts = datetime.datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+        return int((datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds())
+    except Exception:
+        return None
 
 # ---------------------------------------------------------
 # US Market holiday handling
@@ -492,37 +507,47 @@ def update_market_overview(db) -> None:
     )
 
     # -----------------------------
-    # 1) Crypto update (SAFE)
+    # 1) Crypto update (RATE-LIMIT SAFE)
     # -----------------------------
     crypto = fetch_crypto_snapshot()
-    from backend.quote_repo import save_quote
 
-    # ✅ Check if we have at least one valid value
-    has_valid_crypto = any(
-        isinstance(v, (int, float)) for v in crypto.values()
+    # find existing crypto card
+    crypto_card = None
+    for c in carousel:
+        if isinstance(c, dict) and c.get("id") == "crypto":
+            crypto_card = c
+            break
+
+    last_crypto_update = _seconds_since(
+        crypto_card.get("updated_at") if crypto_card else None
     )
 
-    if not has_valid_crypto:
-        log("⚠️ Crypto snapshot empty — preserving existing carousel values")
+    # ⛔ Skip if refreshed too recently
+    if last_crypto_update is not None and last_crypto_update < CRYPTO_MIN_REFRESH_SECONDS:
+        log("⏳ Crypto refresh skipped (cooldown active)")
     else:
-        # Save crypto quotes (optional but useful for reuse)
-        for sym, chg in crypto.items():
-            if isinstance(chg, (int, float)):
-                save_quote(
-                    sym,
-                    {
-                        "price": None,   # crypto price optional
-                        "changePct": chg,
-                        "source": "crypto",
-                    }
-                )
+        has_valid_crypto = any(
+            isinstance(v, (int, float)) for v in crypto.values()
+        )
 
-        # Update carousel card ONLY when data is valid
-        for card in carousel:
-            if isinstance(card, dict) and card.get("id") == "crypto":
-                card.setdefault("title", "Crypto Movers")
-                card.setdefault("subtitle", "24h change")
+        if not has_valid_crypto:
+            log("⚠️ Crypto snapshot empty — preserving existing carousel values")
+        else:
+            from backend.quote_repo import save_quote
 
+            # persist into quote repo (optional, future-safe)
+            for sym, chg in crypto.items():
+                if isinstance(chg, (int, float)):
+                    save_quote(
+                        sym,
+                        {
+                            "price": None,
+                            "changePct": chg,
+                            "source": "crypto",
+                        }
+                    )
+
+            if crypto_card:
                 items = []
                 for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
                     chg = crypto.get(sym)
@@ -534,8 +559,8 @@ def update_market_overview(db) -> None:
                         }
                     )
 
-                card["items"] = items
-                card["updated_at"] = now_iso
+                crypto_card["items"] = items
+                crypto_card["updated_at"] = now_iso
 
     # -----------------------------
     # 2) Sentiment sync (from market_overview.fearGreed)
@@ -555,36 +580,35 @@ def update_market_overview(db) -> None:
                 card["updated_at"] = now_iso
 
     # -----------------------------
-    # 3) Top Sectors update (SAFE)
+    # 3) Top Sectors update (MARKET HOURS ONLY)
     # -----------------------------
-    sectors = fetch_sector_snapshot()
-
-    # ✅ Check if at least one sector has valid data
-    has_valid_sector = any(
-        isinstance(v, (int, float)) for v in sectors.values()
-    )
-
-    if not has_valid_sector:
-        log("⚠️ Sector snapshot empty — preserving existing carousel values")
+    if not is_market_open(now_utc):
+        log("⏸️ Market closed — skipping sector refresh")
     else:
-        for card in carousel:
-            if isinstance(card, dict) and card.get("id") == "sectors":
-                card.setdefault("title", "Top Sectors")
-                card.setdefault("subtitle", "ETF performance")
+        sectors = fetch_sector_snapshot()
 
-                items = []
-                for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
-                    chg = sectors.get(name)
-                    items.append(
-                        {
-                            "label": name,
-                            "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                            "quote_updated_at": now_iso,
-                        }
-                    )
+        has_valid_sectors = any(
+            isinstance(v, (int, float)) for v in sectors.values()
+        )
 
-                card["items"] = items
-                card["updated_at"] = now_iso
+        if not has_valid_sectors:
+            log("⚠️ Sector snapshot empty — preserving existing carousel values")
+        else:
+            for card in carousel:
+                if isinstance(card, dict) and card.get("id") == "sectors":
+                    items = []
+                    for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
+                        chg = sectors.get(name)
+                        items.append(
+                            {
+                                "label": name,
+                                "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                                "quote_updated_at": now_iso,
+                            }
+                        )
+
+                    card["items"] = items
+                    card["updated_at"] = now_iso
 
     # -----------------------------
     # 4) Market Closed badge on us_market card
