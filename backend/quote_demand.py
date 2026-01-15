@@ -46,19 +46,20 @@ def ensure_quote(symbol: str) -> Dict[str, Any]:
         mark_needs_refresh(symbol)
         return quote
 
-    # 2️⃣ No quote exists → create placeholder
-       
+    # 2️⃣ No quote exists → FORCE CREATE CONTROL DOC
     placeholder = {
         "symbol": symbol,
         "needs_refresh": True,
         "source": "pending",
         "ttl_seconds": 30,
+        "updated_at": _now_utc().isoformat().replace("+00:00", "Z"),
     }
 
-    save_quote(symbol, placeholder)
-    return get_quote(symbol) or {"symbol": symbol, "needs_refresh": True}
-
-
-    mark_needs_refresh(symbol)
+    # 🔥 FORCE WRITE (bypass save_quote guards)
+    _db().collection("bullsignals_ai") \
+        .document("quotes") \
+        .collection("symbols") \
+        .document(symbol) \
+        .set(placeholder, merge=True)
 
     return placeholder
