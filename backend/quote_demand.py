@@ -47,21 +47,17 @@ def ensure_quote(symbol: str) -> Dict[str, Any]:
         return quote
 
     # 2️⃣ No quote exists → create placeholder
+       
     placeholder = {
         "symbol": symbol,
-        "price": None,
-        "change": None,
-        "changePct": None,
-        "open": None,
-        "high": None,
-        "low": None,
-        "prevClose": None,
-
+        "needs_refresh": True,
         "source": "pending",
         "ttl_seconds": 30,
-        "needs_refresh": True,
-        "updated_at": _now_utc().isoformat().replace("+00:00", "Z"),
     }
+
+    save_quote(symbol, placeholder)
+    return get_quote(symbol) or {"symbol": symbol, "needs_refresh": True}
+
 
     mark_needs_refresh(symbol)
 

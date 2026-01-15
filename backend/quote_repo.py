@@ -85,67 +85,81 @@ def clear_needs_refresh(symbol: str) -> None:
     )
 
 
-def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
+def def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
     """
     Saves quote payload safely.
 
-    HARD RULES:
-    - ❌ Never overwrite with empty / null quotes
-    - ❌ Never write price=None + changePct=None
-    - ✅ Preserve last known good values
+    SCALABLE RULES:
+    ✅ Always allow control flags to persist (needs_refresh)
+    ✅ Never overwrite last good price/changePct with None
+    ✅ Only write numeric fields when they are valid numbers
+    ✅ Merge-friendly (preserves other stored fields)
     """
 
     if not isinstance(payload, dict):
         return
 
-    price = payload.get("price")
-    chg = payload.get("changePct")
+    sym = symbol.upper().strip()
+    doc_ref = _quote_doc(sym)
 
-    # -------------------------------------------------
-    # GUARD 1: reject fully empty quotes
-    # -------------------------------------------------
-    if price is None and chg is None:
-        return
+    # Read existing so we can preserve last known good values
+    existing = {}
+    try:
+        doc = doc_ref.get()
+        if doc.exists:
+            existing = doc.to_dict() or {}
+    except Exception:
+        existing = {}
 
-    # -------------------------------------------------
-    # GUARD 2: numeric validation
-    # -------------------------------------------------
-    if price is not None:
+    # Incoming fields
+    incoming_price = payload.get("price")
+    incoming_chg = payload.get("changePct")
+
+    # Validate numeric inputs
+    def as_num(v):
         try:
-            price = float(price)
+            if v is None:
+                return None
+            if isinstance(v, bool):
+                return None
+            return float(v)
         except Exception:
-            price = None
+            return None
 
-    if chg is not None:
-        try:
-            chg = float(chg)
-        except Exception:
-            chg = None
+    price = as_num(incoming_price)
+    chg = as_num(incoming_chg)
 
-    # If both invalid → do nothing
-    if price is None and chg is None:
-        return
+    # Control flags (must persist even when quote data is missing)
+    incoming_needs = payload.get("needs_refresh")
+    if incoming_needs is None:
+        incoming_needs = existing.get("needs_refresh", False)
+    needs_refresh = bool(incoming_needs)
 
-    final_doc = {
-        "symbol": symbol.upper(),
+    # Build final doc (merge)
+    final_doc: Dict[str, Any] = {
+        "symbol": sym,
         "updated_at": _now_iso(),
         "ttl_seconds": QUOTE_TTL_SECONDS,
-        "needs_refresh": False,
+        "needs_refresh": needs_refresh,
     }
 
-    # Only write what is valid
+    # ✅ Only write price/changePct when we have valid numbers
+    # Otherwise preserve last good values by NOT writing them at all.
     if price is not None:
         final_doc["price"] = price
-
     if chg is not None:
         final_doc["changePct"] = chg
 
-    # Preserve optional provider fields
-    for k in ["open", "high", "low", "prevClose", "timestamp", "source"]:
-        if k in payload:
+    # Preserve optional provider fields ONLY if present (and don't null-poison)
+    for k in ["change", "open", "high", "low", "prevClose", "timestamp", "source"]:
+        if k in payload and payload[k] is not None:
             final_doc[k] = payload[k]
 
-    _quote_doc(symbol).set(final_doc, merge=True)
+    # If payload explicitly says source, keep it (even if quote missing)
+    if "source" in payload and payload.get("source"):
+        final_doc["source"] = payload["source"]
+
+    doc_ref.set(final_doc, merge=True)
 
 
 def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:
@@ -163,6 +177,10 @@ def get_pending_quotes(limit: int = 50) -> List[str]:
     Quotes needing refresh:
       - needs_refresh == True
       - OR stale based on updated_at
+
+    IMPORTANT:
+      - Skip crypto quote docs (source == 'crypto')
+        because they should NOT be fetched via Finnhub equity endpoint.
     """
     out: List[str] = []
 
@@ -178,6 +196,10 @@ def get_pending_quotes(limit: int = 50) -> List[str]:
 
     for doc in docs:
         d = doc.to_dict() or {}
+
+        # ✅ Skip crypto docs from equity refresh loop
+        if str(d.get("source") or "").lower() == "crypto":
+            continue
 
         if d.get("needs_refresh") is True:
             out.append(doc.id)

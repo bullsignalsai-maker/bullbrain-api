@@ -726,32 +726,34 @@ def main() -> None:
                 try:
                     q = fetch_equity_quote(sym)
 
+                    # ---------------------------------------
+                    # CORRECT empty-quote detection
+                    # ---------------------------------------
                     price = q.get("price") if isinstance(q, dict) else None
                     chg = q.get("changePct") if isinstance(q, dict) else None
 
-                    # -----------------------------------------
-                    # ✅ CASE 1: VALID QUOTE
-                    # -----------------------------------------
-                    if isinstance(price, (int, float)) or isinstance(chg, (int, float)):
-                        quotes[sym] = q
-                        save_quote(sym, q)
-
-                        # clear refresh flag ONLY on success
-                        if sym in on_demand:
-                            clear_needs_refresh(sym)
-
-                    # -----------------------------------------
-                    # ❌ CASE 2: EMPTY / INVALID QUOTE
-                    # -----------------------------------------
-                    else:
+                    if price is None and chg is None:
                         log(f"⚠️ Empty quote for {sym} — will retry")
                         mark_needs_refresh(sym)
+                        time.sleep(per_symbol_delay)
+                        continue
+
+                    # ---------------------------------------
+                    # Valid quote → persist
+                    # ---------------------------------------
+                    quotes[sym] = q
+                    save_quote(sym, q)
+
+                    # Clear on-demand refresh flag ONLY on success
+                    if sym in on_demand:
+                        clear_needs_refresh(sym)
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
                     mark_needs_refresh(sym)
 
                 time.sleep(per_symbol_delay)
+
 
             # -------------------------------------------------
             # Apply updates
