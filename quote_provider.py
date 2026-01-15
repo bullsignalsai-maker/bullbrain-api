@@ -91,53 +91,36 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
 # Mirrors your old HomeScreen.js coins/markets logic
 # ---------------------------------------------------------
 def fetch_crypto_snapshot() -> Dict[str, Optional[float]]:
-    """
-    Returns top symbols (market-cap top10 scan) mapped to 24h % change.
-    Explicitly returns BTC/ETH/SOL/XRP/DOGE keys for your carousel.
-    """
     try:
-        url = "https://api.coingecko.com/api/v3/coins/markets"
+        url = "https://api.coingecko.com/api/v3/simple/price"
         params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": 10,
-            "page": 1,
+            "ids": "bitcoin,ethereum,solana,ripple,dogecoin",
+            "vs_currencies": "usd",
+            "include_24hr_change": "true",
         }
 
-        # IMPORTANT: UA header must be present (CoinGecko blocks without it)
-        resp = _SESSION.get(url, params=params, timeout=12)
+        resp = _SESSION.get(url, params=params, timeout=10)
+        print("[crypto] status:", resp.status_code, flush=True)
+        print("[crypto] text:", resp.text[:300], flush=True)
         data = _safe_json(resp)
 
-        out: Dict[str, float] = {}
+        if not isinstance(data, dict):
+            return {}
 
-        if isinstance(data, list):
-            for row in data:
-                if not isinstance(row, dict):
-                    continue
-                sym = (row.get("symbol") or "").upper().strip()
-                chg = row.get("price_change_percentage_24h")
+        def pct(v):
+            return float(v) if isinstance(v, (int, float)) else None
 
-                if sym and isinstance(chg, (int, float)):
-                    out[sym] = float(chg)
-
-        # Return only what your carousel expects (stable schema)
         return {
-            "BTC": out.get("BTC"),
-            "ETH": out.get("ETH"),
-            "SOL": out.get("SOL"),
-            "XRP": out.get("XRP"),
-            "DOGE": out.get("DOGE"),
+            "BTC": pct(data.get("bitcoin", {}).get("usd_24h_change")),
+            "ETH": pct(data.get("ethereum", {}).get("usd_24h_change")),
+            "SOL": pct(data.get("solana", {}).get("usd_24h_change")),
+            "XRP": pct(data.get("ripple", {}).get("usd_24h_change")),
+            "DOGE": pct(data.get("dogecoin", {}).get("usd_24h_change")),
         }
 
     except Exception as e:
-        print(f"[quote-provider] CoinGecko fetch failed: {e}", flush=True)
-        return {
-            "BTC": None,
-            "ETH": None,
-            "SOL": None,
-            "XRP": None,
-            "DOGE": None,
-        }
+        print(f"[crypto] fetch failed: {e}", flush=True)
+        return {}
 
 
 # ---------------------------------------------------------

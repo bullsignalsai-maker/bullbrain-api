@@ -492,41 +492,50 @@ def update_market_overview(db) -> None:
     )
 
     # -----------------------------
-    # 1) Crypto update (your working logic)
+    # 1) Crypto update (SAFE)
     # -----------------------------
     crypto = fetch_crypto_snapshot()
     from backend.quote_repo import save_quote
 
-    for sym, chg in crypto.items():
-        if isinstance(chg, (int, float)):
-            save_quote(
-                sym,
-                {
-                    "price": None,        # crypto price optional for now
-                    "changePct": chg,
-                    "source": "crypto",
-                }
-            )
+    # ✅ Check if we have at least one valid value
+    has_valid_crypto = any(
+        isinstance(v, (int, float)) for v in crypto.values()
+    )
 
-
-    for card in carousel:
-        if isinstance(card, dict) and card.get("id") == "crypto":
-            # preserve title/subtitle if present
-            card.setdefault("title", "Crypto Movers")
-            card.setdefault("subtitle", "24h change")
-
-            items = []
-            for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
-                chg = crypto.get(sym)
-                items.append(
+    if not has_valid_crypto:
+        log("⚠️ Crypto snapshot empty — preserving existing carousel values")
+    else:
+        # Save crypto quotes (optional but useful for reuse)
+        for sym, chg in crypto.items():
+            if isinstance(chg, (int, float)):
+                save_quote(
+                    sym,
                     {
-                        "label": sym,
-                        "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                        "quote_updated_at": now_iso,
+                        "price": None,   # crypto price optional
+                        "changePct": chg,
+                        "source": "crypto",
                     }
                 )
-            card["items"] = items
-            card["updated_at"] = now_iso
+
+        # Update carousel card ONLY when data is valid
+        for card in carousel:
+            if isinstance(card, dict) and card.get("id") == "crypto":
+                card.setdefault("title", "Crypto Movers")
+                card.setdefault("subtitle", "24h change")
+
+                items = []
+                for sym in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
+                    chg = crypto.get(sym)
+                    items.append(
+                        {
+                            "label": sym,
+                            "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                            "quote_updated_at": now_iso,
+                        }
+                    )
+
+                card["items"] = items
+                card["updated_at"] = now_iso
 
     # -----------------------------
     # 2) Sentiment sync (from market_overview.fearGreed)
@@ -546,28 +555,36 @@ def update_market_overview(db) -> None:
                 card["updated_at"] = now_iso
 
     # -----------------------------
-    # 3) Top Sectors update
+    # 3) Top Sectors update (SAFE)
     # -----------------------------
     sectors = fetch_sector_snapshot()
 
-    for card in carousel:
-        if isinstance(card, dict) and card.get("id") == "sectors":
-            card.setdefault("title", "Top Sectors")
-            card.setdefault("subtitle", "ETF performance")
+    # ✅ Check if at least one sector has valid data
+    has_valid_sector = any(
+        isinstance(v, (int, float)) for v in sectors.values()
+    )
 
-            items = []
-            for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
-                chg = sectors.get(name)
-                items.append(
-                    {
-                        "label": name,
-                        "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                        "quote_updated_at": now_iso,
-                    }
-                )
+    if not has_valid_sector:
+        log("⚠️ Sector snapshot empty — preserving existing carousel values")
+    else:
+        for card in carousel:
+            if isinstance(card, dict) and card.get("id") == "sectors":
+                card.setdefault("title", "Top Sectors")
+                card.setdefault("subtitle", "ETF performance")
 
-            card["items"] = items
-            card["updated_at"] = now_iso
+                items = []
+                for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
+                    chg = sectors.get(name)
+                    items.append(
+                        {
+                            "label": name,
+                            "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                            "quote_updated_at": now_iso,
+                        }
+                    )
+
+                card["items"] = items
+                card["updated_at"] = now_iso
 
     # -----------------------------
     # 4) Market Closed badge on us_market card
