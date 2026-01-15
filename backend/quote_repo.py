@@ -85,7 +85,7 @@ def clear_needs_refresh(symbol: str) -> None:
     )
 
 
-def def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
+def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
     """
     Saves quote payload safely.
 
