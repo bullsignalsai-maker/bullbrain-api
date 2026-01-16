@@ -70,7 +70,6 @@ from backend.firestore_utils import utc_now_iso
 
 MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
 ACTIVE_SYMBOL_LIMIT = 60
-DOC_PHASE0 = "phase0_market_movers"
 TOTAL_SCAN_LIMIT = 120
 COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
@@ -130,9 +129,14 @@ def get_internal_market_movers(limit: int = 20) -> List[str]:
         data = doc.to_dict() or {}
         quote = data.get("quote", {})
         chg = quote.get("changePct")
+        updated_at = quote.get("updated_at")
 
-        if isinstance(chg, (int, float)):
+        if (
+            isinstance(chg, (int, float)) and
+            isinstance(updated_at, str)
+        ):
             movers.append((doc.id, abs(chg)))
+
 
     movers.sort(key=lambda x: x[1], reverse=True)
 
@@ -146,7 +150,6 @@ def _get_et_tz():
     if ZoneInfo is not None:
         return ZoneInfo("America/New_York")
     return datetime.timezone(datetime.timedelta(hours=-5))
-
 
 ET = _get_et_tz()
 
@@ -267,7 +270,15 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
 # =========================================================
 
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
-    phase0 = get_internal_market_movers(limit=20)          # 🔥 Market movers
+    def load_persisted_market_movers(limit: int = 20) -> List[str]:
+    db = get_db()
+    snap = db.collection(COL_ROOT).document("market_movers").get()
+    if not snap.exists:
+        return []
+    movers = snap.to_dict().get("movers", [])
+    return [m["symbol"] for m in movers[:limit] if "symbol" in m]
+    phase0 = load_persisted_market_movers(limit=20)
+
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
 
@@ -278,10 +289,10 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     )
 
     meta = {
-        "phase0": len(phase0),
-        "mag7": len(MAG7),
-        "active_ranked": len(active),
-        "universe": len(universe),
+    "market_movers": len(phase0),
+    "mag7": len(MAG7),
+    "active_ranked": len(active),
+    "universe": len(universe),
     }
 
     return universe[:TOTAL_SCAN_LIMIT], meta
@@ -789,6 +800,45 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} Firestore write failed", e)
         return None
 
+def persist_internal_market_movers():
+    db = get_db()
+
+    snaps = (
+        db.collection(COL_ROOT)
+          .document(COL_STOCKS)
+          .collection("symbols")
+          .stream()
+    )
+
+    movers = []
+
+    for doc in snaps:
+        data = doc.to_dict() or {}
+        quote = data.get("quote", {})
+        chg = quote.get("changePct")
+
+        if isinstance(chg, (int, float)):
+            movers.append({
+                "symbol": doc.id,
+                "changePct": round(chg, 2),
+                "direction": "up" if chg >= 0 else "down"
+            })
+
+    movers.sort(key=lambda x: abs(x["changePct"]), reverse=True)
+
+    db.collection(COL_ROOT).document("market_movers").set(
+        {
+            "as_of": datetime.datetime.now(ET).date().isoformat(),
+            "updated_at": utc_now_iso(),
+            "source": "internal_quote_change",
+            "limit": 20,
+            "movers": movers[:20],
+        },
+        merge=True,
+    )
+
+    log(f"🔥 market_movers updated | count={len(movers[:20])}")
+
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
@@ -928,7 +978,7 @@ def main():
     log(
         f"📦 scan universe built | "
         f"total={len(scan_symbols)} | "
-        f"phase0={scan_meta['phase0']} "
+        f"market_movers={scan_meta['phase0']}"
         f"mag7={scan_meta['mag7']} "
         f"active={scan_meta['active_ranked']}"
     )
@@ -968,6 +1018,7 @@ def main():
         f"✅ compute complete | "
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
+    persist_internal_market_movers()
 
     log("🏁 cron done")
 

@@ -4656,3 +4656,18 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
         "user_id": user_id,
         "symbol": sym,
     }
+
+
+@app.get("/market-movers")
+def get_market_movers():
+    doc = db.collection("bullsignals_ai").document("market_movers").get()
+    if not doc.exists:
+        return {"count": 0, "movers": []}
+
+    data = doc.to_dict() or {}
+    return {
+        "count": len(data.get("movers", [])),
+        "movers": data.get("movers", []),
+        "updated_at": data.get("updated_at"),
+        "as_of": data.get("as_of"),
+    }
