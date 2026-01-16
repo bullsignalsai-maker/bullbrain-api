@@ -6,12 +6,11 @@
 #   */15 * * * 1-5
 #
 # Responsibilities:
-#   1) Refresh global stock intelligence (/stocks/{SYMBOL})
-#   2) Use user relevance (active_symbols)
-#   3) Rotate SP500 discovery (discovery_cursor)
-#   4) Always include MAG-7
-#   5) Build Hotlist + BearWatch
-#   6) Update Homescreen snapshot (MAG-7 only)  ✅ (unchanged contract)
+#   1) Refresh stock intelligence for MAG7 + active symbols
+#   2) Include market movers (Phase-0 gainers/losers)
+#   3) Use user relevance (active_symbols)
+#   4) Persist intelligence ONLY in stocks collection
+#   5) Maintain homescreen market_overview + baseline carousel
 #
 # ✅ ADDITION (RESTORE OLD BEHAVIOR, NO UI CHANGES):
 #   7) Ensure Homescreen carousel baseline cards exist:
@@ -43,7 +42,7 @@ import firebase_admin
 from firebase_admin import firestore
 
 import main as backend
-from symbols_clean import REAL_TICKERS, COMPANY_NAMES
+from symbols_clean import COMPANY_NAMES
 
 from backend.candle_store import get_candles
 from backend.bull_insights import generate_bull_insights
@@ -70,24 +69,16 @@ from backend.firestore_utils import utc_now_iso
 # =========================================================
 
 MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
-
 ACTIVE_SYMBOL_LIMIT = 60
-DISCOVERY_LIMIT = 50
+DOC_PHASE0 = "phase0_market_movers"
 TOTAL_SCAN_LIMIT = 120
-
-DISCOVERY_SHARDS = 8
-
 COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
-DOC_DISCOVERY = "discovery_cursor"
-DOC_HOTLIST = "market_hotlist"
-DOC_BEARWATCH = "market_bearwatch"
 DOC_HOMESCREEN = "homescreen_snapshot"
 
 # Logging / behavior toggles (safe defaults)
 LOG_EVERY_N = int((__import__("os").getenv("CRON_LOG_EVERY_N") or "1").strip() or "1")
-DEBUG_FEATURES_SAMPLE = int((__import__("os").getenv("CRON_DEBUG_FEATURES_SAMPLE") or "0").strip() or "0")
 FAIL_FAST = ((__import__("os").getenv("CRON_FAIL_FAST") or "0").strip() == "1")
 
 
@@ -122,6 +113,23 @@ def get_db():
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 FMP_GAINERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/gainers"
 FMP_LOSERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/losers"
+
+
+def next_market_open_utc(now_utc: datetime.datetime) -> datetime.datetime:
+    """
+    Returns next NYSE open (9:30am ET) in UTC.
+    Used as TTL for Phase-0 cache.
+    """
+    et = now_utc.astimezone(ET)
+
+    # move to next weekday if needed
+    while True:
+        et = et + datetime.timedelta(days=1)
+        if et.weekday() < 5 and et.date().isoformat() not in US_MARKET_HOLIDAYS:
+            break
+
+    et_open = et.replace(hour=9, minute=30, second=0, microsecond=0)
+    return et_open.astimezone(datetime.timezone.utc)
 
 
 def fetch_fmp_symbols(url: str, limit: int = 20) -> List[str]:
@@ -159,11 +167,53 @@ def fetch_fmp_symbols(url: str, limit: int = 20) -> List[str]:
 
 
 def get_phase0_gainers_losers() -> List[str]:
+    db = get_db()
+    ref = db.collection(COL_ROOT).document(DOC_PHASE0)
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today = now_utc.astimezone(ET).date().isoformat()
+
+    snap = ref.get()
+    if snap.exists:
+        data = snap.to_dict() or {}
+        expires_at = data.get("expires_at")
+
+        try:
+            if expires_at:
+                exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                if exp > now_utc:
+                    symbols = data.get("symbols", [])
+                    log(f"📦 PHASE 0 cache hit | symbols={len(symbols)} as_of={data.get('as_of')}")
+                    return [s.upper() for s in symbols if isinstance(s, str)]
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # Cache MISS → fetch fresh from FMP
+    # ---------------------------------------------------------
     gainers = fetch_fmp_symbols(FMP_GAINERS_URL, limit=20)
     losers = fetch_fmp_symbols(FMP_LOSERS_URL, limit=20)
 
     combined = list(dict.fromkeys(gainers + losers))
-    log(f"🔥 PHASE 0 — gainers+losers | count={len(combined)}")
+
+    if not combined:
+        log("⚠️ PHASE 0 empty after fetch")
+        return []
+
+    expires_utc = next_market_open_utc(now_utc)
+
+    ref.set(
+        {
+            "symbols": combined,
+            "as_of": today,
+            "expires_at": expires_utc.isoformat().replace("+00:00", "Z"),
+            "updated_at": utc_now_iso(),
+            "source": "FMP",
+        },
+        merge=True,
+    )
+
+    log(f"🔥 PHASE 0 refreshed | symbols={len(combined)} expires_at={expires_utc.isoformat()}")
 
     return combined
 
@@ -291,53 +341,18 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
     top = [sym for sym, _ in ranked[:ACTIVE_SYMBOL_LIMIT]]
     return [s.upper() for s in top if s]
 
-
-# =========================================================
-# DISCOVERY CURSOR (CRON-OWNED)
-# =========================================================
-
-def get_discovery_symbols() -> List[str]:
-    db = get_db()
-    ref = db.collection(COL_ROOT).document(DOC_DISCOVERY)
-
-    snap = ref.get()
-    data = snap.to_dict() or {}
-    shard_index = int(data.get("shard_index", 0))
-
-    total = len(REAL_TICKERS)
-    shard_size = math.ceil(total / DISCOVERY_SHARDS)
-
-    start = shard_index * shard_size
-    end = min(start + shard_size, total)
-
-    shard = REAL_TICKERS[start:end][:DISCOVERY_LIMIT]
-
-    next_index = (shard_index + 1) % DISCOVERY_SHARDS
-    ref.set(
-        {
-            "shard_index": next_index,
-            "total_shards": DISCOVERY_SHARDS,
-            "updated_at": utc_now_iso(),
-        },
-        merge=True,
-    )
-
-    return [s.upper() for s in shard if s]
-
-
 # =========================================================
 # SCAN UNIVERSE
 # =========================================================
 
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
-    phase0 = get_phase0_gainers_losers()          # 👈 ADD
+    phase0 = get_phase0_gainers_losers()          # 🔥 Market movers
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
-    discovery = get_discovery_symbols()
 
     universe = list(
         dict.fromkeys(
-            [*phase0, *MAG7, *active, *discovery]
+            [*phase0, *MAG7, *active]
         )
     )
 
@@ -345,7 +360,6 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
         "phase0": len(phase0),
         "mag7": len(MAG7),
         "active_ranked": len(active),
-        "discovery": len(discovery),
         "universe": len(universe),
     }
 
@@ -854,52 +868,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} Firestore write failed", e)
         return None
 
-
-# =========================================================
-# PHASE 2 — HOTLIST + BEARWATCH
-# =========================================================
-
-def build_hotlist_bearwatch(results: List[Dict[str, Any]]):
-    buys = []
-    sells = []
-
-    for r in results:
-        bb = r.get("bullbrain", {})
-        if bb.get("signal") == "BUY":
-            buys.append(r)
-        elif bb.get("signal") == "SELL":
-            sells.append(r)
-
-    buys.sort(key=lambda x: x["bullbrain"]["confidence"], reverse=True)
-    sells.sort(key=lambda x: x["bullbrain"]["confidence"], reverse=True)
-
-    return buys[:5], sells[:5]
-
-
-def save_market_lists(hotlist, bearwatch):
-    db = get_db()
-
-    db.collection(COL_ROOT).document(DOC_HOTLIST).set(
-        {
-            "count": len(hotlist),
-            "hotlist": hotlist,
-            "updated_at": utc_now_iso(),
-        },
-        merge=True,
-    )
-
-    db.collection(COL_ROOT).document(DOC_BEARWATCH).set(
-        {
-            "count": len(bearwatch),
-            "bearwatch": bearwatch,
-            "updated_at": utc_now_iso(),
-        },
-        merge=True,
-    )
-
-    log(f"✅ saved hotlist={len(hotlist)} bearwatch={len(bearwatch)}")
-
-
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
@@ -1015,42 +983,6 @@ def ensure_market_overview_and_baseline_carousel():
 
     log(f"✅ homescreen market_overview set | status={market_status} mood={mood}")
 
-
-# =========================================================
-# MAG-7 HOMESCREEN SNAPSHOT (UNCHANGED CONTRACT)
-# =========================================================
-
-def build_mag7_snapshot():
-    db = get_db()
-    items = []
-
-    for sym in MAG7:
-        snap = (
-            db.collection(COL_ROOT)
-              .document(COL_STOCKS)
-              .collection("symbols")
-              .document(sym)
-              .get()
-        )
-        if snap.exists:
-            items.append(snap.to_dict())
-
-    return items
-
-
-def save_homescreen_snapshot():
-    db = get_db()
-    db.collection(COL_ROOT).document(DOC_HOMESCREEN).set(
-        {
-            "mag7": build_mag7_snapshot(),
-            "updated_at": utc_now_iso(),
-            "version": "v1",
-        },
-        merge=True,
-    )
-    log("✅ homescreen_snapshot mag7 updated")
-
-
 # =========================================================
 # ENTRYPOINT
 # =========================================================
@@ -1069,43 +1001,20 @@ def main():
     except Exception as e:
         log_exc("homescreen baseline failed", e)
 
-    # ---------------------------------------------------------
-    # 1️⃣ MAG-7 FIRST (ALWAYS)
-    # ---------------------------------------------------------
-    mag7 = [s.upper() for s in MAG7 if s]
-    log(f"🧲 PHASE 1 — MAG7 | count={len(mag7)} | symbols={mag7}")
+    scan_symbols, scan_meta = build_scan_universe()
 
-    # ---------------------------------------------------------
-    # 2️⃣ ACTIVE SYMBOLS (USER INTENT)
-    # ---------------------------------------------------------
-    active_raw = load_active_symbols()
-    active_ranked = rank_active_symbols(active_raw)
     log(
-        f"⭐ PHASE 2 — Active symbols | "
-        f"count={len(active_ranked)} | symbols={active_ranked[:10]}"
+        f"📦 scan universe built | "
+        f"total={len(scan_symbols)} | "
+        f"phase0={scan_meta['phase0']} "
+        f"mag7={scan_meta['mag7']} "
+        f"active={scan_meta['active_ranked']}"
     )
 
-    # ---------------------------------------------------------
-    # 3️⃣ DISCOVERY SHARD (SP500 ROTATION)
-    # ---------------------------------------------------------
-    discovery = get_discovery_symbols()
-    log(
-        f"🔍 PHASE 3 — Discovery shard | "
-        f"count={len(discovery)} | symbols={discovery[:10]}"
-    )
-
-    # ---------------------------------------------------------
-    # 🔀 MERGE UNIVERSE (PRIORITY-SAFE, NO DUPLICATES)
-    # ---------------------------------------------------------
-    scan_symbols = list(
-        dict.fromkeys(
-            [*mag7, *active_ranked, *discovery]
-        )
-    )[:TOTAL_SCAN_LIMIT]
 
     log(
         f"📦 scan universe built | total={len(scan_symbols)} | "
-        f"mag7={len(mag7)} active={len(active_ranked)} discovery={len(discovery)}"
+        f"mag7={len(mag7)} active={len(active_ranked)}"
     )
 
     # ---------------------------------------------------------
@@ -1142,17 +1051,6 @@ def main():
         f"✅ compute complete | "
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
-
-    # ---------------------------------------------------------
-    # 📊 HOTLIST + BEARWATCH
-    # ---------------------------------------------------------
-    hotlist, bearwatch = build_hotlist_bearwatch(results)
-    save_market_lists(hotlist, bearwatch)
-
-    # ---------------------------------------------------------
-    # 🏠 HOMESCREEN MAG-7 SNAPSHOT (UNCHANGED CONTRACT)
-    # ---------------------------------------------------------
-    save_homescreen_snapshot()
 
     log("🏁 cron done")
 
