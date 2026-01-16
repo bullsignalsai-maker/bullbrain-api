@@ -30,7 +30,7 @@ from backend.watchlist_snapshot import (
     get_watchlist_snapshot,
     is_snapshot_fresh,
 )
-
+from backend.news.market_news_repo import get_market_news
 app = FastAPI()
 
 # CORS for Expo / mobile
@@ -4723,3 +4723,12 @@ def get_market_movers():
         "updated_at": movers_doc.to_dict().get("updated_at"),
         "movers": out,
     }
+
+
+@app.get("/market-news")
+def market_news():
+    """
+    Market tab news & highlights.
+    Cached, fast, App-Store safe.
+    """
+    return get_market_news()
