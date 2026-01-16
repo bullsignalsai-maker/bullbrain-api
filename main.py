@@ -4660,17 +4660,27 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
 
 @app.get("/market-movers")
 def get_market_movers():
-    movers_doc = db.collection("bullsignals_ai").document("market_movers").get()
+    movers_doc = (
+        db.collection("bullsignals_ai")
+          .document("market_movers")
+          .get()
+    )
+
     if not movers_doc.exists:
-        return {"count": 0, "movers": []}
+        return {
+            "count": 0,
+            "movers": [],
+        }
 
     movers = movers_doc.to_dict().get("movers", [])
-
     out = []
-    for m in movers:
-        sym = m["symbol"]
 
-        stock = (
+    for m in movers:
+        sym = m.get("symbol")
+        if not sym:
+            continue
+
+        stock_doc = (
             db.collection("bullsignals_ai")
               .document("stocks")
               .collection("symbols")
@@ -4678,28 +4688,33 @@ def get_market_movers():
               .get()
         )
 
-        if not stock.exists:
+        if not stock_doc.exists:
             continue
 
-        s = stock.to_dict()
+        s = stock_doc.to_dict() or {}
 
         out.append({
+            # ── Primary UI fields ─────────────────────
             "symbol": sym,
-            "company": s.get("company_name"),
+            "company": s.get("company_name") or sym,
             "price": s.get("quote", {}).get("price"),
             "changePct": m.get("changePct"),
-            "direction": m.get("direction"),
+            "direction": m.get("direction"),  # up | down
 
-            "signal": s.get("bullbrain", {}).get("signal"),
-            "confidence": s.get("bullbrain", {}).get("confidence"),
-
-            "trend": s.get("technical", {}).get("trend"),
+            # ── Context (compact, non-opinionated) ───
+            "trend": {
+                "label": s.get("technical", {})
+                           .get("trend", {})
+                           .get("label")
+            },
 
             "pattern": {
-                "name": s.get("smartPattern", {}).get("pattern"),
-                "winRate": s.get("smartPattern", {}).get("winRate"),
+                "name": s.get("smartPattern", {}).get("pattern")
             },
-            "oneLiner": s.get("insights", {}).get("oneLiner"),
+
+            "oneLiner": (
+                s.get("insights", {}).get("oneLiner")
+            ),
         })
 
     return {
