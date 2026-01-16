@@ -107,115 +107,36 @@ def get_db():
 
 
 # =========================================================
-# PHASE 0 — MARKET GAINERS / LOSERS (FMP)
+# PHASE 0 — MARKET GAINERS / LOSERS (INTERNAL)
 # =========================================================
 
-FMP_API_KEY = os.getenv("FMP_API_KEY")
-FMP_GAINERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/gainers"
-FMP_LOSERS_URL = "https://financialmodelingprep.com/api/v3/stock_market/losers"
-
-
-def next_market_open_utc(now_utc: datetime.datetime) -> datetime.datetime:
+def get_internal_market_movers(limit: int = 20) -> List[str]:
     """
-    Returns next NYSE open (9:30am ET) in UTC.
-    Used as TTL for Phase-0 cache.
+    Computes market movers from existing stock docs.
+    Uses intraday % change from quotes.
     """
-    et = now_utc.astimezone(ET)
-
-    # move to next weekday if needed
-    while True:
-        et = et + datetime.timedelta(days=1)
-        if et.weekday() < 5 and et.date().isoformat() not in US_MARKET_HOLIDAYS:
-            break
-
-    et_open = et.replace(hour=9, minute=30, second=0, microsecond=0)
-    return et_open.astimezone(datetime.timezone.utc)
-
-
-def fetch_fmp_symbols(url: str, limit: int = 20) -> List[str]:
-    if not FMP_API_KEY:
-        log("⚠️ FMP_API_KEY missing — skipping Phase-0")
-        return []
-
-    try:
-        r = requests.get(
-            url,
-            params={"apikey": FMP_API_KEY},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            log(f"⚠️ FMP fetch failed ({r.status_code})")
-            return []
-
-        data = r.json()
-        if not isinstance(data, list):
-            return []
-
-        symbols = []
-        for row in data:
-            sym = row.get("symbol")
-            if isinstance(sym, str) and sym.isalpha():
-                symbols.append(sym.upper())
-            if len(symbols) >= limit:
-                break
-
-        return symbols
-
-    except Exception as e:
-        log(f"⚠️ FMP fetch error: {e}")
-        return []
-
-
-def get_phase0_gainers_losers() -> List[str]:
     db = get_db()
-    ref = db.collection(COL_ROOT).document(DOC_PHASE0)
 
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    today = now_utc.astimezone(ET).date().isoformat()
-
-    snap = ref.get()
-    if snap.exists:
-        data = snap.to_dict() or {}
-        expires_at = data.get("expires_at")
-
-        try:
-            if expires_at:
-                exp = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                if exp > now_utc:
-                    symbols = data.get("symbols", [])
-                    log(f"📦 PHASE 0 cache hit | symbols={len(symbols)} as_of={data.get('as_of')}")
-                    return [s.upper() for s in symbols if isinstance(s, str)]
-        except Exception:
-            pass
-
-    # ---------------------------------------------------------
-    # Cache MISS → fetch fresh from FMP
-    # ---------------------------------------------------------
-    gainers = fetch_fmp_symbols(FMP_GAINERS_URL, limit=20)
-    losers = fetch_fmp_symbols(FMP_LOSERS_URL, limit=20)
-
-    combined = list(dict.fromkeys(gainers + losers))
-
-    if not combined:
-        log("⚠️ PHASE 0 empty after fetch")
-        return []
-
-    expires_utc = next_market_open_utc(now_utc)
-
-    ref.set(
-        {
-            "symbols": combined,
-            "as_of": today,
-            "expires_at": expires_utc.isoformat().replace("+00:00", "Z"),
-            "updated_at": utc_now_iso(),
-            "source": "FMP",
-        },
-        merge=True,
+    snaps = (
+        db.collection(COL_ROOT)
+          .document(COL_STOCKS)
+          .collection("symbols")
+          .stream()
     )
 
-    log(f"🔥 PHASE 0 refreshed | symbols={len(combined)} expires_at={expires_utc.isoformat()}")
+    movers = []
 
-    return combined
+    for doc in snaps:
+        data = doc.to_dict() or {}
+        quote = data.get("quote", {})
+        chg = quote.get("changePct")
+
+        if isinstance(chg, (int, float)):
+            movers.append((doc.id, abs(chg)))
+
+    movers.sort(key=lambda x: x[1], reverse=True)
+
+    return [sym for sym, _ in movers[:limit]]
 
 # =========================================================
 # MARKET HOURS HELPERS (for header)
@@ -346,7 +267,7 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
 # =========================================================
 
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
-    phase0 = get_phase0_gainers_losers()          # 🔥 Market movers
+    phase0 = get_internal_market_movers(limit=20)          # 🔥 Market movers
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
 
