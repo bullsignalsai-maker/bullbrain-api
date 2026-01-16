@@ -690,8 +690,6 @@ def main() -> None:
 
     while True:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-
-        # Determine sleep policy
         sleep_seconds = choose_sleep_seconds(now_utc)
 
         try:
@@ -702,55 +700,74 @@ def main() -> None:
                 reason = "holiday" if is_us_market_holiday(now_utc) else "weekend"
                 log(f"⏸️ Market closed ({reason}) — light refresh then sleep={sleep_seconds}s")
 
+                # still safe to run (badge + crypto + sectors)
                 update_market_overview(db)
                 time.sleep(sleep_seconds)
                 continue
 
             # -------------------------------------------------
-            # Collect symbols
+            # Collect symbols (THIS is the fix)
+            #   1) homescreen tickers (MAG7 + SPY/QQQ/GLD/USO/SLV + hotlist/bearwatch)
+            #   2) on-demand pending (needs_refresh == True)
+            #   3) active symbols (recent watchlist adds)
             # -------------------------------------------------
-            
+            tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
+
+            # OPTIONAL but strongly recommended if you have this collection:
+            # - active_symbols keeps system scalable and guarantees new adds get picked up
+            active = set()
+            try:
+                s = db.collection("bullsignals_ai").document("active_symbols").get()
+                if s.exists:
+                    d = s.to_dict() or {}
+                    # expect: { "symbols": ["OPEN","NBIS",...], "updated_at": ... }
+                    syms = d.get("symbols", [])
+                    if isinstance(syms, list):
+                        active = {str(x).upper() for x in syms if x}
+            except Exception as e:
+                log(f"⚠️ Failed to read active_symbols: {e}")
+                active = set()
+
+            all_tickers = set()
+            all_tickers |= tickers
+            all_tickers |= on_demand
+            all_tickers |= active
 
             log(
                 f"Refreshing quotes | "
-                f"pending={len(on_demand)} | "
+                f"homescreen={len(tickers)} "
+                f"pending={len(on_demand)} "
+                f"active={len(active)} "
+                f"total={len(all_tickers)} | "
                 f"next_sleep={sleep_seconds}s"
             )
 
-            all_tickers = on_demand
-
-
             quotes: Dict[str, Dict[str, Any]] = {}
-
             per_symbol_delay = 0.15 if is_market_open(now_utc) else 0.25
 
             # -------------------------------------------------
-            # 🔒 SAFE QUOTE FETCH LOOP (NO POISONING)
+            # SAFE QUOTE FETCH LOOP (NO POISONING)
             # -------------------------------------------------
             for sym in sorted(all_tickers):
                 try:
                     q = fetch_equity_quote(sym)
 
-                    # ---------------------------------------
-                    # CORRECT empty-quote detection
-                    # ---------------------------------------
                     price = q.get("price") if isinstance(q, dict) else None
                     chg = q.get("changePct") if isinstance(q, dict) else None
 
+                    # Empty quote → keep needs_refresh true (retry later)
                     if price is None and chg is None:
                         log(f"⚠️ Empty quote for {sym} — will retry")
                         mark_needs_refresh(sym)
                         time.sleep(per_symbol_delay)
                         continue
 
-                    # ---------------------------------------
                     # Valid quote → persist
-                    # ---------------------------------------
                     quotes[sym] = q
                     save_quote(sym, q)
 
-                    # Clear on-demand refresh flag ONLY on success
+                    # clear refresh flag ONLY on success
                     if sym in on_demand:
                         clear_needs_refresh(sym)
 
@@ -760,10 +777,7 @@ def main() -> None:
 
                 time.sleep(per_symbol_delay)
 
-
-            # -------------------------------------------------
-            # Apply updates
-            # -------------------------------------------------
+            # Apply UI updates
             update_quotes(db, quotes)
             update_market_overview(db)
 
