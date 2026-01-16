@@ -4201,58 +4201,90 @@ def market_bearwatch():
 
 
 # ---------------------------------------------------------
-# /homescreen-mag7 — READ-ONLY Mag7 snapshot for Homescreen
+# /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
 @app.get("/homescreen-mag7")
 def homescreen_mag7():
-    """
-    Returns the precomputed Mag7 snapshot from Firestore.
+    MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
 
-    Source document:
-      bullsignals_ai/homescreen_snapshot
+    items = []
 
-    Response shape:
-    {
-        "count": 7,
-        "mag7": [
-            {
-                "symbol": "AAPL",
-                "company_name": "Apple Inc.",
-                "price": null,
-                "changePct": 53.24,
-                "signal": "SELL",
-                "confidence": 72.6,
-                "prob_up": 0.274,
-                "prob_down": 0.726,
-                "trend": "FLAT",
-                "summary": "...",
-                "updated_at": "2025-12-26T02:50:41Z"
+    for sym in MAG7:
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("stocks")
+              .collection("symbols")
+              .document(sym)
+              .get()
+        )
+
+        if not doc.exists:
+            continue
+
+        d = doc.to_dict() or {}
+
+        items.append({
+            "symbol": d.get("symbol"),
+            "company_name": d.get("company_name"),
+
+            "quote": {
+                "price": d.get("quote", {}).get("price"),
+                "changePct": d.get("quote", {}).get("changePct"),
             },
-            ...
-        ],
-        "updated_at": "2025-12-26T02:50:44Z",
-        "version": "v1"
-    }
-    """
 
-    cache = read_market_cache("homescreen_snapshot")
+            "bullbrain": {
+                "signal": d.get("bullbrain", {}).get("signal"),
+                "confidence": d.get("bullbrain", {}).get("confidence"),
+                "prob_up": d.get("bullbrain", {}).get("prob_up"),
+                "prob_down": d.get("bullbrain", {}).get("prob_down"),
+            },
 
-    if not cache:
-        return {
-            "count": 0,
-            "mag7": [],
-            "updated_at": None,
-            "version": None,
-        }
+            "insight": d.get("insights", {}).get("oneLiner"),
 
-    mag7 = cache.get("mag7", [])
+            "sparkline": d.get("sparkline", []),
+
+            "pattern": {
+                "name": d.get("smartPattern", {}).get("pattern"),
+                "winRate": d.get("smartPattern", {}).get("winRate"),
+            },
+
+            "updated_at": d.get("computed_at"),
+        })
 
     return {
-        "count": len(mag7),
-        "mag7": mag7,
-        "updated_at": cache.get("updated_at"),
-        "version": cache.get("version"),
+        "count": len(items),
+        "mag7": items,
+        "version": "v2",
     }
+
+# ---------------------------------------------------------
+# /homescreen-context — UI-only data (NO intelligence NEW)
+# ---------------------------------------------------------
+@app.get("/homescreen-context")
+def homescreen_context():
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("homescreen_snapshot")
+          .get()
+    )
+
+    if not doc.exists:
+        return {
+            "market": None,
+            "carousel": [],
+            "updated_at": None,
+            "version": "v2",
+        }
+
+    data = doc.to_dict() or {}
+
+    return {
+        "market": data.get("market_overview"),
+        "carousel": data.get("carousel", []),
+        "updated_at": data.get("updated_at"),
+        "version": data.get("version", "v2"),
+    }
+
 
 # ---------------------------------------------------------
 # /homescreen — READ-ONLY Home Screen Snapshot
