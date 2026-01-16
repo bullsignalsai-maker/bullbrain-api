@@ -4660,14 +4660,51 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
 
 @app.get("/market-movers")
 def get_market_movers():
-    doc = db.collection("bullsignals_ai").document("market_movers").get()
-    if not doc.exists:
+    movers_doc = db.collection("bullsignals_ai").document("market_movers").get()
+    if not movers_doc.exists:
         return {"count": 0, "movers": []}
 
-    data = doc.to_dict() or {}
+    movers = movers_doc.to_dict().get("movers", [])
+
+    out = []
+    for m in movers:
+        sym = m["symbol"]
+
+        stock = (
+            db.collection("bullsignals_ai")
+              .document("stocks")
+              .collection("symbols")
+              .document(sym)
+              .get()
+        )
+
+        if not stock.exists:
+            continue
+
+        s = stock.to_dict()
+
+        out.append({
+            "symbol": sym,
+            "company": s.get("company_name"),
+            "price": s.get("quote", {}).get("price"),
+            "changePct": m.get("changePct"),
+            "direction": m.get("direction"),
+
+            "signal": s.get("bullbrain", {}).get("signal"),
+            "confidence": s.get("bullbrain", {}).get("confidence"),
+
+            "trend": s.get("technical", {}).get("trend"),
+
+            "pattern": {
+                "name": s.get("smartPattern", {}).get("pattern"),
+                "winRate": s.get("smartPattern", {}).get("winRate"),
+            },
+            "oneLiner": s.get("insights", {}).get("oneLiner"),
+        })
+
     return {
-        "count": len(data.get("movers", [])),
-        "movers": data.get("movers", []),
-        "updated_at": data.get("updated_at"),
-        "as_of": data.get("as_of"),
+        "count": len(out),
+        "as_of": movers_doc.to_dict().get("as_of"),
+        "updated_at": movers_doc.to_dict().get("updated_at"),
+        "movers": out,
     }
