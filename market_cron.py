@@ -988,6 +988,7 @@ def ensure_market_overview_and_baseline_carousel():
 # =========================================================
 def main():
     run_id = utc_now_iso()
+    log("🧬 market_cron VERSION = 2026-01-CRON | NO HOTLIST | NO BEARWATCH | NO MAG7 SNAPSHOT")
     log(f"🚀 cron start | run_id={run_id}")
 
     ensure_bullbrain_loaded()
@@ -1011,11 +1012,6 @@ def main():
         f"active={scan_meta['active_ranked']}"
     )
 
-
-    log(
-        f"📦 scan universe built | total={len(scan_symbols)} | "
-        f"mag7={len(mag7)} active={len(active_ranked)}"
-    )
 
     # ---------------------------------------------------------
     # 🔁 COMPUTE LOOP
