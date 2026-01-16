@@ -269,14 +269,16 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
 # SCAN UNIVERSE
 # =========================================================
 
-def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
-    def load_persisted_market_movers(limit: int = 20) -> List[str]:
+def load_persisted_market_movers(limit: int = 20) -> List[str]:
     db = get_db()
     snap = db.collection(COL_ROOT).document("market_movers").get()
     if not snap.exists:
         return []
     movers = snap.to_dict().get("movers", [])
     return [m["symbol"] for m in movers[:limit] if "symbol" in m]
+
+
+def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     phase0 = load_persisted_market_movers(limit=20)
 
     active_raw = load_active_symbols()
@@ -289,10 +291,10 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     )
 
     meta = {
-    "market_movers": len(phase0),
-    "mag7": len(MAG7),
-    "active_ranked": len(active),
-    "universe": len(universe),
+        "market_movers": len(phase0),
+        "mag7": len(MAG7),
+        "active_ranked": len(active),
+        "universe": len(universe),
     }
 
     return universe[:TOTAL_SCAN_LIMIT], meta
@@ -976,11 +978,11 @@ def main():
     scan_symbols, scan_meta = build_scan_universe()
 
     log(
-        f"📦 scan universe built | "
-        f"total={len(scan_symbols)} | "
-        f"market_movers={scan_meta['phase0']}"
-        f"mag7={scan_meta['mag7']} "
-        f"active={scan_meta['active_ranked']}"
+    f"📦 scan universe built | "
+    f"total={len(scan_symbols)} | "
+    f"market_movers={scan_meta['market_movers']} "
+    f"mag7={scan_meta['mag7']} "
+    f"active={scan_meta['active_ranked']}"
     )
 
 
