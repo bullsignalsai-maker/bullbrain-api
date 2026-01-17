@@ -5,6 +5,7 @@ import datetime
 from backend.firestore_utils import get_db, utc_now_iso
 from backend.news.market_news_sources import fetch_market_news_raw
 from backend.news.market_news_cleaner import clean_market_news
+from backend.news.market_highlights import build_market_highlights
 
 DOC_ID = "market_news"
 TTL_MINUTES = 30
@@ -38,6 +39,7 @@ def get_market_news() -> Dict[str, Any]:
 
     raw = fetch_market_news_raw()
     cleaned = clean_market_news(raw)
+    highlights = build_market_highlights(cleaned)
 
     payload = {
         "items": cleaned,

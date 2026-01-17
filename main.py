@@ -30,7 +30,13 @@ from backend.watchlist_snapshot import (
     get_watchlist_snapshot,
     is_snapshot_fresh,
 )
+
+from fastapi import APIRouter
+
 from backend.news.market_news_repo import get_market_news
+from backend.news.market_highlights import build_market_highlights
+
+router = APIRouter()
 app = FastAPI()
 
 # CORS for Expo / mobile
@@ -4725,10 +4731,27 @@ def get_market_movers():
     }
 
 
-@app.get("/market-news")
+@router.get("/market-news")
 def market_news():
     """
     Market tab news & highlights.
     Cached, fast, App-Store safe.
+    Strictly stock-market related.
     """
-    return get_market_news()
+
+    data = get_market_news()
+
+    items = data.get("items", [])
+
+    # 🔥 Auto-generate highlights from the cleaned news
+    highlights = build_market_highlights(items)
+
+    return {
+        "source": data.get("source"),
+        "updated_at": data.get("updated_at"),
+        "count": len(items),
+
+        # Market-safe outputs
+        "highlights": highlights,
+        "news": items,
+    }
