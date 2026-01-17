@@ -4731,7 +4731,7 @@ def get_market_movers():
     }
 
 
-@router.get("/market-news")
+@app.get("/market-news")
 def market_news():
     """
     Market tab news & highlights.
