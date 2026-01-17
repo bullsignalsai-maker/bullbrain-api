@@ -39,9 +39,9 @@ SECTOR_KEYWORDS = {
     "crypto": "Crypto",
     "bitcoin": "Crypto",
     "ethereum": "Crypto",
-    "xrp":'"Crypto",
-    "binance":'"Crypto",
-    "solana":'"Crypto",
+    "xrp": "Crypto",
+    "binance": "Crypto",
+    "solana": "Crypto",
 
 }
 
