@@ -1,5 +1,3 @@
-# backend/news/market_highlights.py
-
 from typing import Dict, Any, List
 from collections import Counter
 
@@ -39,22 +37,14 @@ SECTOR_KEYWORDS = {
     "crypto": "Crypto",
     "bitcoin": "Crypto",
     "ethereum": "Crypto",
-    "xrp": "Crypto",
-    "binance": "Crypto",
     "solana": "Crypto",
-
 }
-
 
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
 
 def classify_news_sentiment(title: str, summary: str) -> str:
-    """
-    Deterministic sentiment classification.
-    No opinions, no probabilities.
-    """
     text = f"{title} {summary}".lower()
 
     if any(k in text for k in BULLISH_KEYWORDS):
@@ -67,9 +57,6 @@ def classify_news_sentiment(title: str, summary: str) -> str:
 
 
 def detect_sector(title: str, summary: str) -> str | None:
-    """
-    Light sector/theme detection.
-    """
     text = f"{title} {summary}".lower()
     for key, sector in SECTOR_KEYWORDS.items():
         if key in text:
@@ -78,69 +65,118 @@ def detect_sector(title: str, summary: str) -> str | None:
 
 
 # ---------------------------------------------------------
+# Headline Generator (NEW)
+# ---------------------------------------------------------
+
+def build_market_headline(
+    sentiment_counts: Counter,
+    sector_counts: Counter,
+) -> str:
+    """
+    Generate ONE professional market summary headline.
+    Deterministic, neutral, market-only.
+    """
+
+    if not sentiment_counts:
+        return "Markets traded mixed as investors assessed incoming data."
+
+    dominant_sentiment, s_count = sentiment_counts.most_common(1)[0]
+    dominant_sector = (
+        sector_counts.most_common(1)[0][0]
+        if sector_counts else None
+    )
+
+    if dominant_sentiment == "bullish":
+        if dominant_sector:
+            return f"Markets advanced as strength in {dominant_sector} stocks lifted sentiment."
+        return "Markets moved higher amid broadly positive developments."
+
+    if dominant_sentiment == "bearish":
+        if dominant_sector:
+            return f"Markets faced pressure as weakness in {dominant_sector} weighed on sentiment."
+        return "Markets declined as negative news flow dampened risk appetite."
+
+    # Neutral / mixed
+    if dominant_sector:
+        return f"Markets traded mixed as investors evaluated developments in {dominant_sector}."
+    return "Markets traded mixed as investors digested fresh data."
+
+
+# ---------------------------------------------------------
 # Public API
 # ---------------------------------------------------------
 
 def build_market_highlights(
     news: List[Dict[str, Any]],
-) -> Dict[str, List[str]]:
+) -> Dict[str, Any]:
     """
-    Auto-generate market highlights from cleaned market news.
+    Auto-generate market headline + highlights from cleaned market news.
 
     Output:
     {
-      "bullish": [...],
-      "neutral": [...],
-      "bearish": [...]
+      "headline": "Markets traded mixed as AI optimism offset macro uncertainty.",
+      "highlights": {
+          "bullish": [...],
+          "neutral": [...],
+          "bearish": [...]
+      }
     }
     """
 
-    buckets: Dict[str, List[str]] = {
+    highlight_buckets: Dict[str, List[str]] = {
         "bullish": [],
         "neutral": [],
         "bearish": [],
     }
 
-    # Count (sentiment, sector) occurrences
-    counts: Counter = Counter()
+    sentiment_counts: Counter = Counter()
+    sector_counts: Counter = Counter()
 
     for item in news:
         title = (item.get("title") or "").strip()
         summary = (item.get("summary") or "").strip()
-
         if not title:
             continue
 
         sentiment = classify_news_sentiment(title, summary)
         sector = detect_sector(title, summary)
 
+        sentiment_counts[sentiment] += 1
         if sector:
-            counts[(sentiment, sector)] += 1
+            sector_counts[sector] += 1
 
-    # Build concise, professional highlights
-    for (sentiment, sector), count in counts.items():
-        if count < 2:
-            continue  # avoid noise from single headlines
+    # Build highlights
+    for (sentiment, sector), count in Counter(
+        [(classify_news_sentiment(n["title"], n.get("summary", "")),
+          detect_sector(n["title"], n.get("summary", "")))
+         for n in news if detect_sector(n["title"], n.get("summary", ""))]
+    ).items():
+
+        if count < 2 or not sector:
+            continue
 
         if sentiment == "bullish":
-            buckets["bullish"].append(
+            highlight_buckets["bullish"].append(
                 f"{sector} stocks showed strength following positive developments."
             )
-
         elif sentiment == "bearish":
-            buckets["bearish"].append(
+            highlight_buckets["bearish"].append(
                 f"{sector} stocks faced pressure amid negative news flow."
             )
-
         else:
-            buckets["neutral"].append(
+            highlight_buckets["neutral"].append(
                 f"{sector} stocks traded mixed as markets digested fresh data."
             )
 
-    # Fallback: ensure UI always has something meaningful
-    if not any(buckets.values()):
-        buckets["neutral"].append(
+    # Fallback highlight
+    if not any(highlight_buckets.values()):
+        highlight_buckets["neutral"].append(
             "Markets traded mixed as investors assessed ongoing developments."
         )
 
-    return buckets
+    headline = build_market_headline(sentiment_counts, sector_counts)
+
+    return {
+        "headline": headline,
+        "highlights": highlight_buckets,
+    }

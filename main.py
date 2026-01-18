@@ -4739,15 +4739,20 @@ def market_news():
     Strictly stock-market related.
     """
     data = get_market_news()
-
     items = data.get("items", [])
 
-    highlights = build_market_highlights(items)
+    # 🔥 Generate headline + highlights
+    summary = build_market_highlights(items)
 
     return {
         "source": data.get("source"),
         "updated_at": data.get("updated_at"),
         "count": len(items),
-        "highlights": highlights,   # ✅ THIS was missing in your response
-        "news": items,              # ✅ NOT `data`
+
+        # ✅ NEW
+        "headline": summary["headline"],
+        "highlights": summary["highlights"],
+
+        # News list
+        "news": items,
     }
