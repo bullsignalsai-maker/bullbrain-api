@@ -1,33 +1,60 @@
 # backend/news/market_news_cleaner.py
+
 import re
 from typing import List, Dict, Any
 from urllib.parse import urlparse
 
+# ---------------------------------------------------------
+# 🚫 HARD BLOCK — Personal / Lifestyle / Advice
+# ---------------------------------------------------------
+
 BLOCK_KEYWORDS = {
     "mom", "dad", "family", "dementia", "health",
-    "mortgage", "house", "retirement", "lifestyle",
-    "cancer", "illness", "benefits", "social security",
+    "mortgage", "house", "retirement", "retiree",
+    "lifestyle", "cancer", "illness",
+    "benefits", "social security", "ssi",
+    "medicaid", "medicare",
+    "student loan", "credit card", "credit score",
+    "budget", "debt",
 }
 
 BLOCK_PHRASES = {
     "my ", " i ", " we ", " you ",
-    "should you", "what you need", "here's why",
-    "is it time", "how to",
+    "should you", "what you need",
+    "here's why", "is it time",
+    "how to", "am i", "can i",
+    "do i", "should i",
 }
+
+# ---------------------------------------------------------
+# ✅ STRONG MARKET LANGUAGE (REQUIRED)
+# ---------------------------------------------------------
 
 MARKET_KEYWORDS = {
     "earnings", "revenue", "profit", "loss",
+    "beats", "misses", "guidance", "forecast",
     "shares", "stock", "stocks",
-    "guidance", "forecast",
-    "merger", "acquisition",
-    "sec", "filing", "insider",
+    "rises", "falls", "jumps", "drops",
     "downgrade", "upgrade",
+    "ipo", "filing", "sec",
+    "merger", "acquisition",
+    "buyback", "dividend",
+    "nasdaq", "s&p", "dow",
 }
+
+# ---------------------------------------------------------
+# ❌ JUNK / ENGLISH-WORD TICKERS
+# ---------------------------------------------------------
 
 NOISY_TICKERS = {
     "A", "I", "U", "T", "ON", "UP", "DAY", "IT", "ARE", "HAS",
-    "FAST", "COST", "TECH"
+    "FAST", "COST", "TECH",
+    "YOU", "YOUR", "IS", "AS", "IN", "TO", "OF",
 }
+
+# ---------------------------------------------------------
+# Source normalization
+# ---------------------------------------------------------
 
 SOURCE_MAP = {
     "cnbc.com": "CNBC",
@@ -37,21 +64,29 @@ SOURCE_MAP = {
     "zacks.com": "Zacks",
 }
 
+# ---------------------------------------------------------
+# Core Filters
+# ---------------------------------------------------------
+
 def is_strictly_market_news(title: str, summary: str, ticker: str | None) -> bool:
     text = f"{title} {summary}".lower()
 
-    # ❌ Block personal / lifestyle / advice
+    # ❌ Block personal / lifestyle / advice immediately
     if any(k in text for k in BLOCK_KEYWORDS):
         return False
 
     if any(p in text for p in BLOCK_PHRASES):
         return False
 
-    # ✅ Allow if valid ticker exists
+    # ❌ Reject junk English-word tickers
+    if ticker and ticker in NOISY_TICKERS:
+        return False
+
+    # ✅ Allow if VALID ticker exists
     if ticker:
         return True
 
-    # ✅ Allow only if clear market action language exists
+    # ✅ Otherwise require STRONG market language
     if any(k in text for k in MARKET_KEYWORDS):
         return True
 
@@ -70,9 +105,15 @@ def extract_ticker(title: str) -> str | None:
     m = re.search(r"\(([A-Z]{1,5})\)", title)
     if not m:
         return None
+
     t = m.group(1)
-    if t.isalpha() and 2 <= len(t) <= 5 and t not in NOISY_TICKERS:
+    if (
+        t.isalpha()
+        and 2 <= len(t) <= 5
+        and t not in NOISY_TICKERS
+    ):
         return t
+
     return None
 
 
@@ -87,8 +128,8 @@ def clean_market_news(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cleaned = []
 
     for it in items:
-        title = it.get("title", "").strip()
-        link = it.get("link", "").strip()
+        title = (it.get("title") or "").strip()
+        link = (it.get("link") or "").strip()
         if not title or not link:
             continue
 
@@ -100,7 +141,7 @@ def clean_market_news(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ticker = extract_ticker(title)
         summary = clean_summary(it.get("summary", ""), title)
 
-        # 🔒 STRICT MARKET FILTER (THIS IS THE GUARDRAIL)
+        # 🔒 STRICT MARKET FILTER (FINAL GATE)
         if not is_strictly_market_news(title, summary, ticker):
             continue
 

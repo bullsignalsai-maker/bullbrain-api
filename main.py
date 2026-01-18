@@ -4738,20 +4738,16 @@ def market_news():
     Cached, fast, App-Store safe.
     Strictly stock-market related.
     """
-
     data = get_market_news()
 
     items = data.get("items", [])
 
-    # 🔥 Auto-generate highlights from the cleaned news
     highlights = build_market_highlights(items)
 
     return {
         "source": data.get("source"),
         "updated_at": data.get("updated_at"),
         "count": len(items),
-
-        # Market-safe outputs
-        "highlights": highlights,
-        "news": items,
+        "highlights": highlights,   # ✅ THIS was missing in your response
+        "news": items,              # ✅ NOT `data`
     }
