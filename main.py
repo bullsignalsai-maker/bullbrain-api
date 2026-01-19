@@ -4212,7 +4212,6 @@ def market_bearwatch():
 @app.get("/homescreen-mag7")
 def homescreen_mag7():
     MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
-
     items = []
 
     for sym in MAG7:
@@ -4228,14 +4227,16 @@ def homescreen_mag7():
             continue
 
         d = doc.to_dict() or {}
+        q = d.get("quote", {}) or {}
 
         items.append({
             "symbol": d.get("symbol"),
             "company_name": d.get("company_name"),
 
             "quote": {
-                "price": d.get("quote", {}).get("price"),
-                "changePct": d.get("quote", {}).get("changePct"),
+                "price": q.get("price"),
+                "change": q.get("change"),
+                "changePct": q.get("changePct"),
             },
 
             "bullbrain": {
@@ -4297,17 +4298,6 @@ def homescreen_context():
 # ---------------------------------------------------------
 @app.get("/homescreen")
 def get_homescreen_snapshot():
-    """
-    Returns the full Home Screen snapshot from Firestore.
-
-    Source:
-      bullsignals_ai / homescreen_snapshot
-
-    This endpoint:
-      - Does NOT compute anything
-      - Does NOT call APIs
-      - Is SAFE for frequent UI polling
-    """
     try:
         doc = (
             db.collection("bullsignals_ai")
@@ -4342,107 +4332,7 @@ def get_homescreen_snapshot():
 # /homescreen-carousel — READ-ONLY carousel snapshot for Homescreen
 # ---------------------------------------------------------
 @app.get("/homescreen-carousel")
-def homescreen_mag7():
-    """
-    Returns the precomputed Mag7 snapshot from Firestore.
-
-    Source document:
-      bullsignals_ai/homescreen_snapshot
-
-    Response shape:
-    {
-        "count": 7,
-        "carousel": [
-      {
-        "items": [
-          {
-            "label": "S&P 500 (SPY)",
-            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
-            "value": "-1.01%"
-          },
-          {
-            "label": "Nasdaq (QQQ)",
-            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
-            "value": "-0.64%"
-          }
-        ],
-        "title": "AI Market Insights",
-        "updated_at": "2025-12-26T02:50:35.013634Z",
-        "id": "us_market",
-        "subtitle": "US Market snapshot"
-      },
-      {
-        "title": "Crypto Movers",
-        "id": "crypto",
-        "updated_at": "2025-12-28T05:41:31.338745Z",
-        "items": [
-          {
-            "label": "BTC",
-            "value": "--",
-            "quote_updated_at": "2025-12-28T05:41:31.338745Z"
-          },
-          {
-            "label": "ETH",
-            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
-            "value": "--"
-          },
-          {
-            "label": "SOL",
-            "value": "--",
-            "quote_updated_at": "2025-12-28T05:41:31.338745Z"
-          },
-          {
-            "label": "XRP",
-            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
-            "value": "--"
-          },
-          {
-            "label": "DOGE",
-            "quote_updated_at": "2025-12-28T05:41:31.338745Z",
-            "value": "--"
-          }
-        ],
-        "subtitle": "24h change"
-      },
-      {
-        "id": "sentiment",
-        "items": [
-          {
-            "label": "Mood",
-            "value": "Slight Greed (55)"
-          }
-        ],
-        "updated_at": "2025-12-28T05:41:31.338745Z",
-        "title": "Market Sentiment",
-        "subtitle": "Fear & Greed (crypto proxy)"
-      },
-      {
-        "id": "commodities",
-        "items": [
-          {
-            "label": "Gold (GLD)",
-            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
-            "value": "+116.77%"
-          },
-          {
-            "label": "Oil (USO)",
-            "value": "-2.45%",
-            "quote_updated_at": "2025-12-28T05:41:30.801161Z"
-          },
-          {
-            "label": "Silver (SLV)",
-            "quote_updated_at": "2025-12-28T05:41:30.801161Z",
-            "value": "+9.05%"
-          }
-        ],
-        "updated_at": "2025-12-26T02:50:36.352723Z",
-        "title": "Commodities Snapshot",
-        "subtitle": "ETF proxies"
-      }
-    ]
-  },
-    """
-
+def homescreen_carousel():
     cache = read_market_cache("homescreen_snapshot")
 
     if not cache:
@@ -4461,7 +4351,6 @@ def homescreen_mag7():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
     }
-import inspect
 
 
 # ---------------------------------------------------------
@@ -4676,6 +4565,7 @@ def get_market_movers():
         return {
             "count": 0,
             "movers": [],
+            "updated_at": None,
         }
 
     movers = movers_doc.to_dict().get("movers", [])
@@ -4698,16 +4588,20 @@ def get_market_movers():
             continue
 
         s = stock_doc.to_dict() or {}
+        q = s.get("quote", {}) or {}
 
         out.append({
-            # ── Primary UI fields ─────────────────────
             "symbol": sym,
             "company": s.get("company_name") or sym,
-            "price": s.get("quote", {}).get("price"),
-            "changePct": m.get("changePct"),
+
+            "quote": {
+                "price": q.get("price"),
+                "change": q.get("change"),
+                "changePct": q.get("changePct"),
+            },
+
             "direction": m.get("direction"),  # up | down
 
-            # ── Context (compact, non-opinionated) ───
             "trend": {
                 "label": s.get("technical", {})
                            .get("trend", {})
@@ -4718,16 +4612,17 @@ def get_market_movers():
                 "name": s.get("smartPattern", {}).get("pattern")
             },
 
-            "oneLiner": (
-                s.get("insights", {}).get("oneLiner")
-            ),
+            "oneLiner": s.get("insights", {}).get("oneLiner"),
         })
+
+    meta = movers_doc.to_dict()
 
     return {
         "count": len(out),
-        "as_of": movers_doc.to_dict().get("as_of"),
-        "updated_at": movers_doc.to_dict().get("updated_at"),
         "movers": out,
+        "as_of": meta.get("as_of"),
+        "updated_at": meta.get("updated_at"),
+        "version": "v2",
     }
 
 
