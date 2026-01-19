@@ -40,57 +40,59 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
     # 2️⃣ Build snapshot items
     # -----------------------------------------------------
     for sym in symbols:
-    quote = get_quote_safe(sym) or {}
-    stock = get_stock(sym) or {}
+        quote = get_quote_safe(sym) or {}
+        stock = get_stock(sym) or {}
 
-    bullbrain = stock.get("bullbrain") or {}
-    insights = stock.get("insights") or {}
-    stock_quote = stock.get("quote") or {}
+        bullbrain = stock.get("bullbrain") or {}
+        insights = stock.get("insights") or {}
+        stock_quote = stock.get("quote") or {}
 
-    price = quote.get("price")
-    change_pct = quote.get("changePct")
+        price = quote.get("price")
+        change_pct = quote.get("changePct")
 
-    change = None
-    try:
-        if price is not None and change_pct is not None:
-            change = round(price * (float(change_pct) / 100.0), 4)
-    except Exception:
         change = None
+        try:
+            if price is not None and change_pct is not None:
+                change = round(price * (float(change_pct) / 100.0), 4)
+        except Exception:
+            change = None
 
-    sparkline = stock.get("sparkline")
+        sparkline = stock.get("sparkline")
 
-    items.append({
-        "symbol": sym,
-        "companyName": stock.get("company_name"),
+        items.append({
+            "symbol": sym,
+            "companyName": stock.get("company_name"),
 
-        # Quote (single source of truth)
-        "price": price,
-        "change": change,                   # ✅ ADDED
-        "changePct": change_pct,
-        "quote_updated_at": quote.get("updated_at"),
+            # Quote (single source of truth)
+            "price": price,
+            "change": change,                # ✅ ABSOLUTE CHANGE
+            "changePct": change_pct,
+            "quote_updated_at": quote.get("updated_at"),
 
-        # Signal
-        "hybridSignal": bullbrain.get("signal", "HOLD"),
-        "hybridScore": bullbrain.get("confidence", 0),
+            # Signal
+            "hybridSignal": bullbrain.get("signal", "HOLD"),
+            "hybridScore": bullbrain.get("confidence", 0),
 
-        # Minimal OHLC
-        "features": {
-            "open": stock_quote.get("open") or price,
-            "high": stock_quote.get("high") or price,
-            "low": stock_quote.get("low") or price,
-            "close": price,
-        },
+            # Minimal OHLC
+            "features": {
+                "open": stock_quote.get("open") or price,
+                "high": stock_quote.get("high") or price,
+                "low": stock_quote.get("low") or price,
+                "close": price,
+            },
 
-        "sparkline": sparkline if isinstance(sparkline, list) else None,
+            # Optional sparkline (safe even if UI ignores)
+            "sparkline": sparkline if isinstance(sparkline, list) else None,
 
-        "grokSummary": (
-            insights.get("oneLiner")
-            or insights.get("summaryLine")
-            or "Market signal based on trend and momentum."
-        ),
+            # One-liner insight
+            "grokSummary": (
+                insights.get("oneLiner")
+                or insights.get("summaryLine")
+                or "Market signal based on trend and momentum."
+            ),
 
-        "computed_at": stock.get("computed_at"),
-    })
+            "computed_at": stock.get("computed_at"),
+        })
 
     # -----------------------------------------------------
     # 3️⃣ Persist snapshot
