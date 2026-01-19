@@ -46,6 +46,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         bullbrain = stock.get("bullbrain") or {}
         insights = stock.get("insights") or {}
         stock_quote = stock.get("quote") or {}
+        smart_pattern = stock.get("smartPattern") or {}
 
         price = quote.get("price")
         change_pct = quote.get("changePct")
