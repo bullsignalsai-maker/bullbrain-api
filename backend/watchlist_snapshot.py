@@ -63,35 +63,36 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             "symbol": sym,
             "companyName": stock.get("company_name"),
 
-            # Quote (single source of truth)
-            "price": price,
-            "change": change,                # ✅ ABSOLUTE CHANGE
-            "changePct": change_pct,
+            # ── QUOTE (MATCH homescreen-mag7) ──
+            "quote": {
+                "price": price,
+                "change": change,
+                "changePct": change_pct,
+            },
             "quote_updated_at": quote.get("updated_at"),
 
-            # Signal
-            "hybridSignal": bullbrain.get("signal", "HOLD"),
-            "hybridScore": bullbrain.get("confidence", 0),
-
-            # Minimal OHLC
-            "features": {
-                "open": stock_quote.get("open") or price,
-                "high": stock_quote.get("high") or price,
-                "low": stock_quote.get("low") or price,
-                "close": price,
+            # ── BULLBRAIN (MATCH homescreen-mag7) ──
+            "bullbrain": {
+                "signal": bullbrain.get("signal", "HOLD"),
+                "confidence": bullbrain.get("confidence", 0),
             },
 
-            # Optional sparkline (safe even if UI ignores)
-            "sparkline": sparkline if isinstance(sparkline, list) else None,
+            # ── SMART PATTERN (MATCH homescreen-mag7) ──
+            "pattern": {
+                "name": smart_pattern.get("pattern"),
+                "winRate": smart_pattern.get("winRate"),
+            },
 
-            # One-liner insight
+            # ── OPTIONAL UI DATA ──
+            "sparkline": sparkline if isinstance(sparkline, list) else [],
+
             "grokSummary": (
                 insights.get("oneLiner")
                 or insights.get("summaryLine")
                 or "Market signal based on trend and momentum."
             ),
 
-            "computed_at": stock.get("computed_at"),
+            "updated_at": stock.get("computed_at"),
         })
 
     # -----------------------------------------------------

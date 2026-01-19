@@ -4204,8 +4204,6 @@ def market_bearwatch():
         "updated_at": cache.get("updated_at"),
     }
 
-
-
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
@@ -4263,7 +4261,6 @@ def homescreen_mag7():
         "mag7": items,
         "version": "v2",
     }
-
 # ---------------------------------------------------------
 # /homescreen-context — UI-only data (NO intelligence NEW)
 # ---------------------------------------------------------
