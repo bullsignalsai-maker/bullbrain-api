@@ -261,6 +261,33 @@ def _compute_williams_r(
     wr = -100 * (highest_high - close) / (highest_high - lowest_low)
     return wr
 
+# -----------------------------------------------------------
+# STEP 17: Elite Pattern Vocabulary (UI + Quality Control)
+# -----------------------------------------------------------
+
+ELITE_PATTERNS = {
+    "BULLISH_ENGULFING_VOLUME",
+    "BEARISH_ENGULFING",
+    "POCKET_PIVOT",
+    "CLIMAX_BAR",
+    "EXHAUSTION_GAP",
+}
+ELITE_PATTERN_LABELS = {
+    "BULLISH_ENGULFING_VOLUME": "Bullish Engulfing (Volume Confirmed)",
+    "BEARISH_ENGULFING": "Bearish Engulfing",
+    "POCKET_PIVOT": "Pocket Pivot",
+    "CLIMAX_BAR": "Climax Bar",
+    "EXHAUSTION_GAP": "Exhaustion Gap",
+}
+DEPRECATED_PATTERNS = {
+    "HEAD_AND_SHOULDERS",
+    "INVERSE_HEAD_AND_SHOULDERS",
+    "SYMMETRICAL_TRIANGLE",
+    "ASCENDING_TRIANGLE",
+    "DESCENDING_TRIANGLE",
+    "BULL_PENNANT",
+    "BEAR_PENNANT",
+}
 
 def _evaluate_smart_pattern_row(
     *,
@@ -300,7 +327,6 @@ def _evaluate_smart_pattern_row(
                     0.9,
                     {
                         "pattern": "GAP UP & RUNNING",
-                        "winRate": 0.73,
                         "bias": "bull",
                         "headline": "Stock exploded higher at the open and buyers kept control all day.",
                         "explanation": (
@@ -319,7 +345,7 @@ def _evaluate_smart_pattern_row(
                 0.85,
                 {
                     "pattern": "VOLUME BREAKOUT",
-                    "winRate": 0.76,
+                   
                     "bias": "bull",
                     "headline": "Unusually heavy trading volume – the big players are active.",
                     "explanation": (
@@ -339,7 +365,7 @@ def _evaluate_smart_pattern_row(
                     0.9,
                     {
                         "pattern": "OVERSOLD BOUNCE",
-                        "winRate": 0.80,
+                        
                         "bias": "bull",
                         "headline": "After heavy selling, dip-buyers finally stepped in with size.",
                         "explanation": (
@@ -360,7 +386,7 @@ def _evaluate_smart_pattern_row(
                     0.8,
                     {
                         "pattern": "HAMMER REVERSAL",
-                        "winRate": 0.74,
+                        
                         "bias": "bull",
                         "headline": "Bears pushed price down, but bulls slammed it back up by the close.",
                         "explanation": (
@@ -380,7 +406,7 @@ def _evaluate_smart_pattern_row(
                     0.78,
                     {
                         "pattern": "BUY THE DIP (UPTREND)",
-                        "winRate": 0.69,
+                       
                         "bias": "bull",
                         "headline": "Strong trend, normal pullback, and buyers stepping back in.",
                         "explanation": (
@@ -400,7 +426,7 @@ def _evaluate_smart_pattern_row(
                     0.75,
                     {
                         "pattern": "DEAD CAT BOUNCE",
-                        "winRate": 0.68,
+                      
                         "bias": "bear",
                         "headline": "After a big drop, price is bouncing – but on weak conviction.",
                         "explanation": (
@@ -420,7 +446,7 @@ def _evaluate_smart_pattern_row(
                     0.72,
                     {
                         "pattern": "OVERBOUGHT DISTRIBUTION",
-                        "winRate": 0.67,
+                       
                         "bias": "bear",
                         "headline": "Sentiment is hot, but real demand is fading under the surface.",
                         "explanation": (
@@ -440,7 +466,7 @@ def _evaluate_smart_pattern_row(
                     0.7,
                     {
                         "pattern": "FAILED BREAKOUT TRAP",
-                        "winRate": 0.66,
+                    
                         "bias": "bear",
                         "headline": "Price broke higher, then reversed hard on heavy volume – classic bull trap.",
                         "explanation": (
@@ -460,7 +486,7 @@ def _evaluate_smart_pattern_row(
                     0.6,
                     {
                         "pattern": "INSIDE RANGE COMPRESSION",
-                        "winRate": 0.62,
+                   
                         "bias": "neutral",
                         "headline": "Price is consolidating in a tight range after recent moves.",
                         "explanation": (
@@ -480,7 +506,7 @@ def _evaluate_smart_pattern_row(
                     0.58,
                     {
                         "pattern": "HIGH-WAVE INDECISION",
-                        "winRate": 0.60,
+                  
                         "bias": "neutral",
                         "headline": "Buyers and sellers both swung hard, but neither side won clearly.",
                         "explanation": (
@@ -500,7 +526,7 @@ def _evaluate_smart_pattern_row(
                     0.7,
                     {
                         "pattern": "TREND ACCELERATION",
-                        "winRate": 0.70,
+                      
                         "bias": "bull",
                         "headline": "Existing uptrend just got a fresh burst of momentum.",
                         "explanation": (
@@ -520,7 +546,7 @@ def _evaluate_smart_pattern_row(
                     0.68,
                     {
                         "pattern": "GAP DOWN & PRESSURE",
-                        "winRate": 0.65,
+                     
                         "bias": "bear",
                         "headline": "Stock opened sharply lower and sellers kept control.",
                         "explanation": (
@@ -532,6 +558,13 @@ def _evaluate_smart_pattern_row(
                 )
             )
 
+    # -------------------------------------------------
+    # STEP 17: Elite Pattern Enforcement
+    # -------------------------------------------------
+    patterns = [
+        (score, p) for score, p in patterns
+        if p["pattern"] in ELITE_PATTERNS
+    ]
     if not patterns:
         return None
 
@@ -663,7 +696,7 @@ def scan_smart_pattern_history(
                 "date": row["ts"],
                 "pattern": patt["pattern"],
                 "headline": patt["headline"],
-                "winRate": patt["winRate"],
+               
                 "bias": patt.get("bias"),
                 "fwd_5d": float(row["fwd_5d"]) if pd.notna(row["fwd_5d"]) else None,
                 "fwd_10d": float(row["fwd_10d"]) if pd.notna(row["fwd_10d"]) else None,
@@ -698,17 +731,28 @@ def scan_smart_pattern_history(
 
     # Filter rows matching current pattern (excluding today for forward stats)
     history_matches = [r for r in pattern_rows[:-1] if r["pattern"] == current_name]
+    # -------------------------------------------------
+    # STEP 3A: Win-rate helper (positive forward return)
+    # -------------------------------------------------
+    def _win_rate(values):
+        if not values:
+            return None
+        wins = [v for v in values if v > 0]
+        return round(len(wins) / len(values), 4)
+
 
     def _agg(field: str):
         vals = [r[field] * 100.0 for r in history_matches if r[field] is not None]
         if not vals:
             return None
+
         return {
             "avg": float(np.mean(vals)),
             "median": float(np.median(vals)),
             "best": float(np.max(vals)),
             "worst": float(np.min(vals)),
             "count": len(vals),
+            "winRate": _win_rate(vals),  # ✅ STEP-3: dynamic win rate
         }
 
     stats_5d = _agg("fwd_5d")
@@ -1071,51 +1115,920 @@ def compute_hybrid_signal(bull_conf: float, grok_prob: float):
 
 
 # --------------------------------------------------------------------
-# CORE PIPELINE FOR ONE SYMBOL
+# CORE PIPELINE FOR ONE SYMBOL (FINAL – STEP-16 AUTHORITY)
 # --------------------------------------------------------------------
 def _run_bullbrain_for_symbol(symbol: str):
     symbol = symbol.upper()
+
     if bullbrain_model is None:
         return None, {"error": "BullBrain model not loaded yet."}
+
     candles = get_candles(symbol, min_points=120)
     if not candles:
         return None, {"error": f"Could not fetch candles for {symbol}"}
+
+    # -------------------------------------------------
+    # 1️⃣ Feature computation + model inference
+    # -------------------------------------------------
     features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
     inference = bullbrain_infer(features_vec)
+
+    model_signal = inference.get("signal")
+    bull_conf_raw = float(inference.get("confidence") or 0.0)
+
     prob_up = inference.get("probability_up")
     if prob_up is None:
         prob_up = float(inference.get("raw_output", 0.5))
     prob_down = 1.0 - float(prob_up)
     class_probs = _class_probs_from_prob_up(prob_up)
+
+    # -------------------------------------------------
+    # 2️⃣ Pattern scan (single authoritative source)
+    # -------------------------------------------------
+    current_pattern = None
+    pattern_history = None
+    patt_name = None
+    patt_bias = "neutral"
+
+    try:
+        pattern_scan = scan_smart_pattern_history(symbol, candles)
+        current_pattern = pattern_scan.get("currentPattern")
+        pattern_history = pattern_scan.get("historyForCurrent")
+
+        if isinstance(current_pattern, dict):
+            patt_name = current_pattern.get("pattern")
+
+        patt_bias = pattern_bias(patt_name)
+
+    except Exception as e:
+        print("pattern scan error:", e)
+
+    # -------------------------------------------------
+    # 3️⃣ STEP-16 FINAL DECISION (SINGLE AUTHORITY)
+    # -------------------------------------------------
+    decision = final_decision(
+        model_signal=model_signal,
+        features=feature_dict,
+        pattern_name=patt_name,
+        pattern_history=pattern_history,
+        total_days=len(candles.get("close", [])),
+    )
+
+    final_signal = decision["finalSignal"]
+    decision_reasons = decision["decisionReasons"]
+    quality = decision["quality"]
+
+    # -------------------------------------------------
+    # 4️⃣ Confidence (DESCRIPTIVE ONLY – no gating)
+    # -------------------------------------------------
+    regime_ok = quality.get("regime") is not None
+
+    bull_conf = recalibrate_confidence(
+        bull_conf_raw,
+        pattern_history,
+        regime_ok,
+    )
+
+    # Freshness + decay (post-decision hygiene)
+    as_of = datetime.datetime.utcnow().isoformat()
+    SIGNAL_MAX_AGE_HOURS = 24
+
+    is_fresh = signal_is_fresh(as_of, SIGNAL_MAX_AGE_HOURS)
+    if not is_fresh:
+        final_signal = "HOLD"
+
+    bull_conf = apply_confidence_decay(
+        bull_conf,
+        as_of,
+        SIGNAL_MAX_AGE_HOURS,
+    )
+
+    signal_strength = derive_signal_strength(final_signal, bull_conf)
+
+    # -------------------------------------------------
+    # 5️⃣ Grok hybrid (informational, not authoritative)
+    # -------------------------------------------------
     try:
         grok_p, grok_summary = grok_prob_up(symbol)
     except Exception as e:
         print("grok_prob_up fatal:", e)
         grok_p, grok_summary = 50.0, "Neutral sentiment (error while calling Grok)."
-    bull_conf = float(inference.get("confidence") or 0.0)
+
     hybrid_score, hybrid_signal = compute_hybrid_signal(bull_conf, grok_p)
-    as_of = datetime.datetime.utcnow().isoformat()
+
+    # -------------------------------------------------
+    # 6️⃣ Final payload
+    # -------------------------------------------------
     core = {
         "symbol": symbol,
         "asOf": as_of,
         "source": candles.get("source", "polygon"),
         "price": last_close,
+
         "features": feature_dict,
+
         "bullbrain": {
             "version": BULLBRAIN_VERSION,
-            "signal": inference.get("signal"),
-            "confidence": inference.get("confidence"),
+            "signal": final_signal,
+            "strength": signal_strength,
+            "confidence": bull_conf,
             "probabilities": class_probs,
-            "raw": {"prob_up": float(prob_up), "prob_down": float(prob_down)},
+            "raw": {
+                "prob_up": float(prob_up),
+                "prob_down": float(prob_down),
+            },
         },
+
+        "decision": {
+            "finalSignal": final_signal,
+            "reasons": decision_reasons,
+            "quality": quality,
+        },
+
+        "pattern": current_pattern,
+        "patternBias": patt_bias,
+        "patternHistory": pattern_history,
+
+        "signalFresh": is_fresh,
+        "signalExpiryHours": SIGNAL_MAX_AGE_HOURS,
+
         "model": inference,
+
         "grokProbUp": float(grok_p),
         "grokSummary": grok_summary,
         "hybridScore": float(hybrid_score),
         "hybridSignal": hybrid_signal,
     }
+
     return core, None
 
+# -----------------------------------------------------------
+# STEP 1: Pattern Bias Normalization
+# -----------------------------------------------------------
+def pattern_bias(pattern_name: str | None) -> str:
+    if not pattern_name:
+        return "neutral"
+
+    name = pattern_name.upper()
+
+    BULLISH = {
+        "GAP UP & RUNNING",
+        "VOLUME BREAKOUT",
+        "MASSIVE VOLUME BREAKOUT",
+        "OVERSOLD BOUNCE",
+        "HAMMER REVERSAL",
+        "BUY THE DIP (UPTREND)",
+        "TREND ACCELERATION",
+    }
+
+    BEARISH = {
+        "DEAD CAT BOUNCE",
+        "OVERBOUGHT DISTRIBUTION",
+        "FAILED BREAKOUT TRAP",
+        "GAP DOWN & PRESSURE",
+        "BEAR FLAG BREAKDOWN",
+    }
+
+    if name in BULLISH:
+        return "bull"
+    if name in BEARISH:
+        return "bear"
+    return "neutral"
+
+
+# -----------------------------------------------------------
+# STEP 2: Signal–Pattern Alignment Filter
+# -----------------------------------------------------------
+def alignment_filter(model_signal: str | None, patt_bias: str) -> bool:
+    if not model_signal:
+        return False
+
+    signal = model_signal.upper()
+    bias = (patt_bias or "neutral").lower()
+
+    if bias == "neutral":
+        return True
+    if bias == "bull" and signal == "SELL":
+        return False
+    if bias == "bear" and signal == "BUY":
+        return False
+    return True
+
+# -----------------------------------------------------------
+# STEP 4: Pattern Forward-Return Quality Gate
+# -----------------------------------------------------------
+
+def pattern_quality_gate(history_block: dict | None) -> bool:
+    """
+    Determine whether a detected pattern is statistically valid
+    based on historical forward returns.
+
+    Returns True if pattern quality is acceptable.
+    """
+
+    if not history_block:
+        return False
+
+    fwd = history_block.get("forwardReturns", {})
+    days5 = fwd.get("days5")
+
+    if not days5:
+        return False
+
+    win_rate = days5.get("winRate")
+    avg_return = days5.get("avg")
+    count = days5.get("count", 0)
+
+    # --- Hard minimum requirements ---
+    MIN_SAMPLES = 20
+    MIN_WINRATE = 0.65
+    MIN_AVG_RETURN = 0.0
+
+    if win_rate is None:
+        return False
+
+    if count < MIN_SAMPLES:
+        return False
+
+    if win_rate < MIN_WINRATE:
+        return False
+
+    if avg_return is None or avg_return <= MIN_AVG_RETURN:
+        return False
+
+    return True
+
+# -----------------------------------------------------------
+# STEP 5: Market Regime Detection
+# -----------------------------------------------------------
+
+def detect_market_regime(features: dict) -> str:
+    """
+    Detect market regime using existing features.
+    Returns: 'TRENDING', 'RANGING', 'HIGH_VOL'
+    """
+
+    trend = features.get("trend_strength_20")
+    vol20 = features.get("volatility_20d")
+    vol60 = features.get("volatility_60d")
+    atr = features.get("atr14")
+
+    # Defensive
+    if trend is None or vol20 is None:
+        return "UNKNOWN"
+
+    # High volatility regime
+    if vol20 > 1.5 * (vol60 or vol20) or (atr and atr > 1.2 * vol20):
+        return "HIGH_VOL"
+
+    # Strong directional trend
+    if abs(trend) > 0.4:
+        return "TRENDING"
+
+    # Otherwise range-bound
+    return "RANGING"
+
+# -----------------------------------------------------------
+# STEP 7: Multi-Timeframe Agreement Gate
+# -----------------------------------------------------------
+
+def timeframe_alignment(features: dict, direction: str) -> bool:
+    """
+    Require agreement across 1D, 5D, and 10D returns.
+
+    BUY  -> all returns >= 0
+    SELL -> all returns <= 0
+    """
+
+    try:
+        r1 = float(features.get("return_1d"))
+        r5 = float(features.get("return_5d"))
+        r10 = float(features.get("return_10d"))
+    except (TypeError, ValueError):
+        return False
+
+    if direction == "BUY":
+        return r1 >= 0 and r5 >= 0 and r10 >= 0
+
+    if direction == "SELL":
+        return r1 <= 0 and r5 <= 0 and r10 <= 0
+
+    return False
+
+# -----------------------------------------------------------
+# STEP 8: Mandatory Volume Rule
+# -----------------------------------------------------------
+
+def volume_gate(features: dict) -> bool:
+    """
+    Enforce volume confirmation.
+
+    BUY / SELL allowed only if:
+    - volume_zscore_20 >= 0.5
+    - volume_vs_ma20_pct >= 0
+    """
+
+    try:
+        vol_z = float(features.get("volume_zscore_20"))
+        vol_vs_ma = float(features.get("volume_vs_ma20_pct"))
+    except (TypeError, ValueError):
+        return False
+
+    if vol_z < 0.5:
+        return False
+
+    if vol_vs_ma < 0:
+        return False
+
+    return True
+
+# -----------------------------------------------------------
+# STEP 9: Feature Consensus Score
+# -----------------------------------------------------------
+
+def feature_consensus_score(features: dict) -> int:
+    """
+    Compute directional consensus across feature groups:
+    - Trend
+    - Momentum
+    - Volume
+
+    Returns an integer score in range [-3, +3].
+    """
+
+    score = 0
+
+    # ---- Trend vote ----
+    trend = features.get("trend_strength_20")
+    if trend is not None:
+        if trend > 0:
+            score += 1
+        elif trend < 0:
+            score -= 1
+
+    # ---- Momentum vote ----
+    rsi = features.get("rsi14")
+    macd_hist = features.get("macd_hist")
+
+    if rsi is not None and macd_hist is not None:
+        if rsi > 50 and macd_hist > 0:
+            score += 1
+        elif rsi < 50 and macd_hist < 0:
+            score -= 1
+
+    # ---- Volume vote ----
+    vol_z = features.get("volume_zscore_20")
+    vol_vs_ma = features.get("volume_vs_ma20_pct")
+
+    if vol_z is not None and vol_vs_ma is not None:
+        if vol_z > 0 and vol_vs_ma > 0:
+            score += 1
+        elif vol_z < 0 and vol_vs_ma < 0:
+            score -= 1
+
+    return score
+
+# -----------------------------------------------------------
+# STEP 10: Directional Pressure Score
+# -----------------------------------------------------------
+
+def directional_pressure(features: dict) -> int:
+    """
+    Compute net directional pressure using:
+    - Short / medium-term returns
+    - MACD histogram
+    - OBV slope
+
+    Returns an integer score in range [-3, +3].
+    """
+
+    score = 0
+
+    # ---- Returns pressure ----
+    r1 = features.get("return_1d")
+    r5 = features.get("return_5d")
+
+    if r1 is not None and r5 is not None:
+        if r1 > 0 and r5 > 0:
+            score += 1
+        elif r1 < 0 and r5 < 0:
+            score -= 1
+
+    # ---- Momentum pressure (MACD) ----
+    macd_hist = features.get("macd_hist")
+    if macd_hist is not None:
+        if macd_hist > 0:
+            score += 1
+        elif macd_hist < 0:
+            score -= 1
+
+    # ---- Volume pressure (OBV slope) ----
+    obv_slope = features.get("obv_slope_10")
+    if obv_slope is not None:
+        if obv_slope > 0:
+            score += 1
+        elif obv_slope < 0:
+            score -= 1
+
+    return score
+
+# -----------------------------------------------------------
+# STEP 11: Signal Fragility Index
+# -----------------------------------------------------------
+
+def signal_fragility(features: dict) -> int:
+    """
+    Detect fragile / unstable setups.
+
+    Returns an integer fragility score:
+    0 = very stable
+    1–2 = moderate risk
+    >=3 = fragile → should be HOLD
+    """
+
+    fragility = 0
+
+    intraday_range = features.get("intraday_range_pct")
+    body_pct = features.get("body_pct")
+    vol_z = features.get("volume_zscore_20")
+    vol20 = features.get("volatility_20d")
+
+    # 1️⃣ Wide intraday swings → instability
+    if intraday_range is not None and intraday_range > 5.0:
+        fragility += 1
+
+    # 2️⃣ Small candle body with big range → indecision
+    if body_pct is not None and abs(body_pct) < 20.0:
+        fragility += 1
+
+    # 3️⃣ Abnormal volatility regime
+    if vol20 is not None and vol20 > 4.0:
+        fragility += 1
+
+    # 4️⃣ Thin or suspicious volume
+    if vol_z is not None and vol_z < -0.5:
+        fragility += 1
+
+    return fragility
+
+# -----------------------------------------------------------
+# STEP 12: Liquidity Quality
+# -----------------------------------------------------------
+
+def liquidity_quality(features: dict) -> str:
+    """
+    Classify liquidity quality using volume and volatility behavior.
+
+    Returns:
+    - 'GOOD'
+    - 'THIN'
+    - 'POOR'
+    """
+
+    vol_z = features.get("volume_zscore_20")
+    vol_vs_ma20 = features.get("volume_vs_ma20_pct")
+    intraday_range = features.get("intraday_range_pct")
+    vol20 = features.get("volatility_20d")
+
+    # Defensive
+    if vol_z is None or vol_vs_ma20 is None:
+        return "POOR"
+
+    # --- POOR liquidity ---
+    if vol_z < -1.0 or vol_vs_ma20 < -20:
+        return "POOR"
+
+    # --- THIN liquidity ---
+    if vol_z < 0.3 or vol_vs_ma20 < 0:
+        return "THIN"
+
+    # --- Volatility-driven illiquidity ---
+    if intraday_range is not None and vol20 is not None:
+        if intraday_range > 6.0 and vol20 > 4.0:
+            return "THIN"
+
+    return "GOOD"
+
+# -----------------------------------------------------------
+# STEP 13: Momentum Exhaustion Detector
+# -----------------------------------------------------------
+
+def momentum_exhaustion(features: dict, direction: str) -> bool:
+    """
+    Detect momentum exhaustion for BUY or SELL direction.
+
+    Returns True if exhaustion is detected (signal should be HOLD).
+    """
+
+    rsi = features.get("rsi14")
+    willr = features.get("williams_r_14")
+    dist_high = features.get("distance_from_20d_high")
+    dist_low = features.get("distance_from_20d_low")
+    vol_vs_ma20 = features.get("volume_vs_ma20_pct")
+    macd_hist = features.get("macd_hist")
+
+    direction = direction.upper() if direction else ""
+
+    # ---------------- BUY exhaustion ----------------
+    if direction == "BUY":
+        if (
+            rsi is not None and rsi > 72 and
+            willr is not None and willr > -10 and
+            dist_high is not None and dist_high > -1.0 and
+            vol_vs_ma20 is not None and vol_vs_ma20 < 0 and
+            macd_hist is not None and macd_hist < 0
+        ):
+            return True
+
+    # ---------------- SELL exhaustion ----------------
+    if direction == "SELL":
+        if (
+            rsi is not None and rsi < 28 and
+            willr is not None and willr < -90 and
+            dist_low is not None and dist_low > -1.0 and
+            vol_vs_ma20 is not None and vol_vs_ma20 < 0 and
+            macd_hist is not None and macd_hist > 0
+        ):
+            return True
+
+    return False
+
+# -----------------------------------------------------------
+# STEP 14: Expected Value (EV) Score
+# -----------------------------------------------------------
+
+def expected_value_score(
+    pattern_history: dict | None,
+    fragility: int,
+) -> float:
+    """
+    Compute Expected Value (EV) of the setup.
+
+    EV combines:
+    - Historical win rate
+    - Average forward return
+    - Fragility penalty
+
+    Returns a float EV score.
+    EV <= 0 → bad trade
+    """
+
+    if not pattern_history:
+        return -1.0
+
+    fwd = pattern_history.get("forwardReturns", {})
+    days5 = fwd.get("days5")
+
+    if not days5:
+        return -1.0
+
+    win_rate = days5.get("winRate")
+    avg_ret = days5.get("avg")
+
+    if win_rate is None or avg_ret is None:
+        return -1.0
+
+    # --- Core EV ---
+    # Expected gain = win_rate * avg_return
+    ev = win_rate * avg_ret
+
+    # --- Fragility penalty ---
+    # Each fragility point reduces EV
+    ev -= fragility * 0.5
+
+    return round(ev, 3)
+
+# -----------------------------------------------------------
+# STEP 15: Signal Rarity Index
+# -----------------------------------------------------------
+
+def signal_rarity(
+    pattern_history: dict | None,
+    total_days: int,
+) -> float:
+    """
+    Compute rarity of a signal.
+
+    Rarity = occurrences / total scanned days
+
+    Returns a float between 0 and 1:
+    - < 0.05 → very rare (high quality)
+    - 0.05–0.15 → selective
+    - > 0.20 → common (lower edge)
+    """
+
+    if not pattern_history or not total_days or total_days <= 0:
+        return 1.0  # treat unknown as very common
+
+    occurrences = pattern_history.get("occurrences")
+    if not occurrences:
+        return 1.0
+
+    rarity = occurrences / total_days
+    return round(min(max(rarity, 0.0), 1.0), 4)
+
+
+# -----------------------------------------------------------
+# STEP 16: Final Decision Ladder (Single Authority)
+# -----------------------------------------------------------
+
+def final_decision(
+    *,
+    model_signal: str,
+    features: dict,
+    pattern_name: str | None,
+    pattern_history: dict | None,
+    total_days: int,
+) -> dict:
+    """
+    Enforces the full decision ladder.
+    If ANY gate fails → HOLD.
+
+    Returns:
+    {
+        "finalSignal": "BUY|SELL|HOLD",
+        "decisionReasons": [...],
+        "quality": {...}
+    }
+    """
+
+    reasons = []
+
+    # ---------------- 1️⃣ Liquidity ----------------
+    liq = liquidity_quality(features)
+    if liq != "GOOD":
+        reasons.append(f"Liquidity={liq}")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"liquidity": liq}}
+
+    # ---------------- 2️⃣ Market Regime ----------------
+    regime = detect_market_regime(features)
+
+    # ---------------- 3️⃣ Pattern Quality ----------------
+    if not pattern_quality_gate(pattern_history):
+        reasons.append("PatternQualityFailed")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"regime": regime}}
+
+    # ---------------- 4️⃣ Regime Compatibility ----------------
+    if pattern_name:
+        allowed = PATTERN_REGIME_COMPATIBILITY.get(pattern_name)
+        if allowed and regime not in allowed:
+            reasons.append(f"PatternNotAllowedIn{regime}")
+            return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"regime": regime}}
+
+    # ---------------- 5️⃣ Pattern–Model Alignment ----------------
+    patt_bias = pattern_bias(pattern_name)
+    if not alignment_filter(model_signal, patt_bias):
+        reasons.append("SignalPatternConflict")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+
+    # ---------------- 6️⃣ Multi-Timeframe Agreement ----------------
+    if not timeframe_alignment(features, model_signal):
+        reasons.append("TimeframeMisalignment")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+
+    # ---------------- 7️⃣ Volume Confirmation ----------------
+    if not volume_gate(features):
+        reasons.append("VolumeGateFailed")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+
+    # ---------------- 8️⃣ Feature Consensus ----------------
+    consensus = feature_consensus_score(features)
+    if abs(consensus) < 2:
+        reasons.append("WeakFeatureConsensus")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"consensus": consensus}}
+
+    # ---------------- 9️⃣ Directional Pressure ----------------
+    pressure = directional_pressure(features)
+    if model_signal == "BUY" and pressure <= 0:
+        reasons.append("NoUpsidePressure")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"pressure": pressure}}
+    if model_signal == "SELL" and pressure >= 0:
+        reasons.append("NoDownsidePressure")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"pressure": pressure}}
+
+    # ---------------- 🔟 Fragility ----------------
+    frag = signal_fragility(features)
+    if frag >= 3:
+        reasons.append("SignalTooFragile")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"fragility": frag}}
+
+    # ---------------- 1️⃣1️⃣ Momentum Exhaustion ----------------
+    if momentum_exhaustion(features, model_signal):
+        reasons.append("MomentumExhausted")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+
+    # ---------------- 1️⃣2️⃣ Expected Value ----------------
+    ev = expected_value_score(pattern_history, frag)
+    if ev <= 0:
+        reasons.append("NegativeEV")
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"EV": ev}}
+
+    # ---------------- 1️⃣3️⃣ Rarity (context only) ----------------
+    rarity = signal_rarity(pattern_history, total_days)
+
+    # ---------------- ✅ PASSED ALL GATES ----------------
+    return {
+        "finalSignal": model_signal,
+        "decisionReasons": ["ALL_GATES_PASSED"],
+        "quality": {
+            "liquidity": liq,
+            "regime": regime,
+            "consensus": consensus,
+            "pressure": pressure,
+            "fragility": frag,
+            "EV": ev,
+            "rarity": rarity,
+        },
+    }
+
+# -----------------------------------------------------------
+# STEP 5: Pattern ↔ Regime Compatibility
+# -----------------------------------------------------------
+
+PATTERN_REGIME_COMPATIBILITY = {
+    # Trend continuation
+    "TREND ACCELERATION": {"TRENDING"},
+    "BUY THE DIP (UPTREND)": {"TRENDING"},
+    "BULL FLAG": {"TRENDING"},
+    "BEAR FLAG BREAKDOWN": {"TRENDING"},
+
+    # Breakouts
+    "GAP UP & RUNNING": {"TRENDING", "HIGH_VOL"},
+    "VOLUME BREAKOUT": {"TRENDING", "HIGH_VOL"},
+    "FAILED BREAKOUT TRAP": {"HIGH_VOL"},
+
+    # Mean reversion
+    "OVERSOLD BOUNCE": {"RANGING", "HIGH_VOL"},
+    "HAMMER REVERSAL": {"RANGING"},
+    "DEAD CAT BOUNCE": {"HIGH_VOL"},
+
+    # Neutral / compression
+    "INSIDE RANGE COMPRESSION": {"RANGING"},
+    "HIGH-WAVE INDECISION": {"RANGING"},
+}
+
+# -----------------------------------------------------------
+# STEP 6: Confidence Recalibration
+# -----------------------------------------------------------
+
+def recalibrate_confidence(
+    model_conf: float,
+    pattern_history: dict | None,
+    regime_ok: bool,
+) -> float:
+    """
+    Adjust model confidence using:
+    - Pattern historical win rate
+    - Forward returns strength
+    - Market regime compatibility
+    """
+
+    conf = float(model_conf or 0.0)
+
+    if not pattern_history:
+        return round(conf, 2)
+
+    days5 = pattern_history.get("forwardReturns", {}).get("days5")
+    if not days5:
+        return round(conf, 2)
+
+    win_rate = days5.get("winRate")
+    avg_ret = days5.get("avg")
+
+    # --- Pattern strength adjustments ---
+    if win_rate is not None:
+        if win_rate >= 0.75:
+            conf += 8
+        elif win_rate >= 0.70:
+            conf += 5
+        elif win_rate < 0.60:
+            conf -= 10
+
+    if avg_ret is not None:
+        if avg_ret >= 2.0:
+            conf += 5
+        elif avg_ret <= 0:
+            conf -= 8
+
+    # --- Regime penalty ---
+    if not regime_ok:
+        conf -= 15
+
+    # Clamp
+    conf = max(0.0, min(100.0, conf))
+    return round(conf, 2)
+
+# -----------------------------------------------------------
+# STEP 7: Signal Strength Tiering
+# -----------------------------------------------------------
+
+def derive_signal_strength(signal: str, confidence: float) -> str:
+    """
+    Convert signal + confidence into strength tier.
+    """
+
+    if signal == "HOLD":
+        return "HOLD"
+
+    if signal == "BUY":
+        if confidence >= 80:
+            return "STRONG_BUY"
+        if confidence >= 65:
+            return "BUY"
+        return "WEAK_BUY"
+
+    if signal == "SELL":
+        if confidence >= 80:
+            return "STRONG_SELL"
+        if confidence >= 65:
+            return "SELL"
+        return "WEAK_SELL"
+
+    return "HOLD"
+
+# -----------------------------------------------------------
+# STEP 8: Signal Expiry & Freshness Control
+# -----------------------------------------------------------
+
+def signal_is_fresh(as_of_iso: str, max_age_hours: int = 24) -> bool:
+    """
+    Check whether a signal is still fresh based on its timestamp.
+    """
+    try:
+        ts = datetime.datetime.fromisoformat(as_of_iso)
+        age = datetime.datetime.utcnow() - ts
+        return age.total_seconds() <= max_age_hours * 3600
+    except Exception:
+        return False
+# -----------------------------------------------------------
+# STEP 9: Confidence Time Decay
+# -----------------------------------------------------------
+
+def apply_confidence_decay(
+    confidence: float,
+    as_of_iso: str,
+    max_age_hours: int,
+    min_conf_floor: float = 40.0,
+) -> float:
+    """
+    Linearly decay confidence over time until expiry.
+    """
+
+    try:
+        ts = datetime.datetime.fromisoformat(as_of_iso)
+        age_hours = (datetime.datetime.utcnow() - ts).total_seconds() / 3600.0
+    except Exception:
+        return round(confidence, 2)
+
+    if age_hours <= 0:
+        return round(confidence, 2)
+
+    if age_hours >= max_age_hours:
+        return round(min_conf_floor, 2)
+
+    decay_ratio = age_hours / max_age_hours
+    decayed = confidence * (1 - decay_ratio)
+
+    return round(max(decayed, min_conf_floor), 2)
+
+# -----------------------------------------------------------
+# STEP 10: Probability Conflict Resolver
+# -----------------------------------------------------------
+
+def resolve_model_pattern_conflict(
+    signal: str,
+    model_prob_up: float,
+    pattern_history: dict | None,
+    min_agreement: float = 0.10,
+) -> str:
+    """
+    Ensure model and pattern probabilities do not contradict.
+    If disagreement exceeds threshold → HOLD.
+    """
+
+    if signal == "HOLD" or not pattern_history:
+        return signal
+
+    days5 = pattern_history.get("forwardReturns", {}).get("days5")
+    if not days5:
+        return signal
+
+    patt_win = days5.get("winRate")
+    if patt_win is None:
+        return signal
+
+    patt_prob_up = patt_win
+    patt_prob_down = 1.0 - patt_win
+
+    if signal == "BUY":
+        if patt_prob_up + min_agreement < model_prob_up:
+            return "HOLD"
+
+    if signal == "SELL":
+        if patt_prob_down + min_agreement < (1.0 - model_prob_up):
+            return "HOLD"
+
+    return signal
 
 # --------------------------------------------------------------------
 # TECHNICAL SNAPSHOT HELPERS
@@ -1190,262 +2103,6 @@ def _interpret_volatility(vol20: float | None) -> str:
     if vol20 < 4.0:
         return "Elevated volatility"
     return "High volatility regime"
-
-# -----------------------------------------------------------
-# SMART PATTERN DETECTOR (Hedge-Fund Level Pattern Engine)
-# -----------------------------------------------------------
-def detect_smart_pattern(features: dict, quote: dict, technical: dict):
-    """
-    Detect institutional-grade smart patterns using your 48-feature set,
-    polygon daily candles, and the technical snapshot. Returns the strongest
-    detected pattern with a human-friendly explanation and historical win rate.
-    """
-
-    if not features:
-        return None
-
-    # --- Extract key feature values (safe) ---
-    gap = features.get("gap_pct")
-    change = quote.get("changePct") if quote else None
-    vol_z = features.get("volume_zscore_20")
-    vol_ma20 = features.get("volume_vs_ma20_pct")
-    rsi = features.get("rsi14")
-    willr = features.get("williams_r_14")
-    lower_shadow = features.get("lower_shadow_pct")
-    body_pct = features.get("body_pct")
-    price_vs_sma20 = features.get("price_vs_sma20_pct")
-    trend = features.get("trend_strength_20")
-    ret5 = features.get("return_5d")
-    atr = features.get("atr14")
-    range_pct = features.get("intraday_range_pct")
-    stoch_k = features.get("stoch_k_14")
-    stoch_d = features.get("stoch_d_3")
-    sma5 = features.get("sma5")
-    sma10 = features.get("sma10")
-    sma20 = features.get("sma20")
-
-    patterns = []
-
-    # ------------------------------------------------------------
-    # 1) GAP UP & RUNNING
-    # ------------------------------------------------------------
-    if gap and gap > 1 and change and change > 2 and vol_ma20 and vol_ma20 > 20:
-        patterns.append({
-            "pattern": "GAP UP & RUNNING",
-            "winRate": 0.73,
-            "explanation": (
-                "The stock opened sharply higher than yesterday and kept climbing on strong volume. "
-                "This is a classic sign of momentum ignition — big buyers stepped in early."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 2) MASSIVE VOLUME BREAKOUT
-    # ------------------------------------------------------------
-    if vol_z and vol_z > 3:
-        patterns.append({
-            "pattern": "MASSIVE VOLUME BREAKOUT",
-            "winRate": 0.76,
-            "explanation": (
-                "Trading volume today is extremely high — the kind usually driven by large "
-                "institutional activity. Such surges often precede major price moves."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 3) OVERSOLD BOUNCE
-    # ------------------------------------------------------------
-    if rsi and rsi < 30 and willr and willr < -80 and vol_z and vol_z > 2:
-        patterns.append({
-            "pattern": "OVERSOLD BOUNCE",
-            "winRate": 0.80,
-            "explanation": (
-                "The stock reached an extreme oversold level, causing panic selling. "
-                "But large buyers stepped in with strong volume, often leading to a sharp rebound."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 4) HAMMER REVERSAL
-    # ------------------------------------------------------------
-    if lower_shadow and lower_shadow > 2.5 and body_pct > -1 and change and change > 0:
-        patterns.append({
-            "pattern": "HAMMER REVERSAL",
-            "winRate": 0.74,
-            "explanation": (
-                "Sellers pushed the stock down aggressively, but buyers reversed it and closed near the highs. "
-                "This candle shape is a classic sign of a potential bottom forming."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 5) BUY THE DIP (UPTREND)
-    # ------------------------------------------------------------
-    if trend and trend > 1 and price_vs_sma20 and price_vs_sma20 < -3 and change > 0:
-        patterns.append({
-            "pattern": "BUY THE DIP (UPTREND)",
-            "winRate": 0.69,
-            "explanation": (
-                "The stock is in a strong uptrend and recently pulled back to a normal level. "
-                "Today’s bounce suggests buyers are stepping back in — a healthy continuation signal."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 6) DEAD CAT BOUNCE
-    # ------------------------------------------------------------
-    if ret5 and ret5 < -8 and change and change > 0 and (vol_z is not None and vol_z < 1):
-        patterns.append({
-            "pattern": "DEAD CAT BOUNCE",
-            "winRate": 0.68,
-            "explanation": (
-                "After a major crash, the stock had a weak rebound with low volume — typically a fake recovery. "
-                "These setups often fail and lead to another leg lower."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 7) OVERBOUGHT DISTRIBUTION
-    # ------------------------------------------------------------
-    if rsi and rsi > 70 and vol_ma20 and vol_ma20 < 0:
-        patterns.append({
-            "pattern": "OVERBOUGHT DISTRIBUTION",
-            "winRate": 0.67,
-            "explanation": (
-                "The stock has risen too quickly into overbought territory. "
-                "Volume is drying up, suggesting large investors may be quietly taking profits."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 8) FAILED BREAKOUT TRAP
-    # ------------------------------------------------------------
-    if change and change < -2 and vol_z and vol_z > 2:
-        patterns.append({
-            "pattern": "FAILED BREAKOUT TRAP",
-            "winRate": 0.66,
-            "explanation": (
-                "The stock attempted a breakout but immediately failed on high volume — a classic bull trap. "
-                "This often leads to accelerated downside pressure."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 9) BULL FLAG
-    # ------------------------------------------------------------
-    if trend and trend > 2 and price_vs_sma20 and -5 < price_vs_sma20 < 1:
-        patterns.append({
-            "pattern": "BULL FLAG",
-            "winRate": 0.72,
-            "explanation": (
-                "After a strong rally, the stock is moving sideways on light volume. "
-                "This calm pullback often leads to the next upward move."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 10) BEAR FLAG BREAKDOWN
-    # ------------------------------------------------------------
-    if trend and trend < -2 and ret5 and ret5 < -4 and change and change < 0:
-        patterns.append({
-            "pattern": "BEAR FLAG BREAKDOWN",
-            "winRate": 0.71,
-            "explanation": (
-                "The stock fell sharply, attempted a weak recovery, and is now resuming its move down. "
-                "This is a classic continuation pattern in downtrends."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 11) SHORT SQUEEZE SETUP
-    # ------------------------------------------------------------
-    if rsi and rsi < 35 and change and change > 3 and vol_z and vol_z > 2:
-        patterns.append({
-            "pattern": "SHORT SQUEEZE SETUP",
-            "winRate": 0.78,
-            "explanation": (
-                "After a period of heavy shorting, a big green candle with strong volume suggests "
-                "short sellers may be getting squeezed — often leading to rapid upside moves."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 12) LONG LIQUIDATION FLUSH
-    # ------------------------------------------------------------
-    if change and change < -3 and vol_z and vol_z > 2 and range_pct and range_pct > 5:
-        patterns.append({
-            "pattern": "LONG LIQUIDATION FLUSH",
-            "winRate": 0.72,
-            "explanation": (
-                "A large red candle with high volume indicates forced selling by long holders. "
-                "These panic flushes often mark short-term bottoms."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 13) VOLATILITY EXPANSION
-    # ------------------------------------------------------------
-    if atr and atr > 20 and range_pct and range_pct > 5:
-        patterns.append({
-            "pattern": "VOLATILITY EXPANSION",
-            "winRate": 0.70,
-            "explanation": (
-                "Daily price swings are increasing sharply. The stock is entering a high-volatility phase — "
-                "expect bigger moves in both directions."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 14) VOLATILITY COMPRESSION
-    # ------------------------------------------------------------
-    if atr and atr < 10 and vol_ma20 and vol_ma20 < 0 and range_pct and range_pct < 2:
-        patterns.append({
-            "pattern": "VOLATILITY COMPRESSION",
-            "winRate": 0.64,
-            "explanation": (
-                "Price movement is tightening and volatility is shrinking. "
-                "This calm period often precedes a strong breakout move."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 15) MOMENTUM REVERSAL WARNING
-    # ------------------------------------------------------------
-    if rsi and rsi < 60 and rsi > 40 and change and change < 0 and sma5 and sma10 and sma5 < sma10:
-        patterns.append({
-            "pattern": "MOMENTUM REVERSAL WARNING",
-            "winRate": 0.68,
-            "explanation": (
-                "Short-term momentum is weakening and buyers are losing control. "
-                "The stock may be preparing for a trend reversal."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # 16) TREND ACCELERATION
-    # ------------------------------------------------------------
-    if sma5 and sma10 and sma20 and (sma5 > sma10 > sma20) and change and change > 1:
-        patterns.append({
-            "pattern": "TREND ACCELERATION",
-            "winRate": 0.74,
-            "explanation": (
-                "Short, medium, and long-term trends are aligned. "
-                "The stock is accelerating in the direction of the trend — a strong continuation signal."
-            )
-        })
-
-    # ------------------------------------------------------------
-    # Return strongest pattern (highest win rate)
-    # ------------------------------------------------------------
-    if patterns:
-        return sorted(patterns, key=lambda x: x["winRate"], reverse=True)[0]
-
-    return {
-        "pattern": "NO CLEAR PATTERN",
-        "winRate": None,
-        "explanation": "Today's price action does not match any strong institutional pattern."
-    }
-
 
 def build_technical_snapshot(symbol: str, feat: dict, last_close: float):
     symbol = symbol.upper()

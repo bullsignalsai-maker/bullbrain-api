@@ -55,7 +55,6 @@ from backend.quote_repo import get_quote_safe, is_quote_fresh
 # ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
 # If they already exist elsewhere, keep these imports here (no breaking).
 from backend.technicals import build_technical_snapshot
-from backend.smart_patterns import detect_smart_pattern, scan_smart_pattern_history
 
 try:
     from zoneinfo import ZoneInfo  # py3.9+
@@ -614,35 +613,17 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     if not _validate_feature_dict(symbol, feat_dict):
         log(f"⛔ {symbol} feature validation failed → skip")
         return None
-
     # ---------------------------------------------------------
-    # 4) Inference
+    # 4) Authoritative BullBrain Decision (patterns + ladder)
     # ---------------------------------------------------------
     try:
-        infer = backend.bullbrain_infer(feats_vec)
+        core, err = backend._run_bullbrain_for_symbol(symbol)
+        if err:
+            log(f"⛔ {symbol} bullbrain error: {err}")
+            return None
     except Exception as e:
-        log_exc(f"{symbol} bullbrain_infer threw", e)
+        log_exc(f"{symbol} _run_bullbrain_for_symbol crashed", e)
         return None
-
-    if not isinstance(infer, dict):
-        log(f"⛔ {symbol} infer invalid → skip")
-        return None
-
-    prob_up = float(infer.get("probability_up") or infer.get("raw_output") or 0.5)
-    prob_down = float(infer.get("probability_down") or (1.0 - prob_up))
-
-    if not _is_finite_number(prob_up) or not _is_finite_number(prob_down):
-        log(f"⛔ {symbol} inference non-finite probs → skip")
-        return None
-
-    if prob_up >= 0.58:
-        signal = "BUY"
-    elif prob_down >= 0.58:
-        signal = "SELL"
-    else:
-        signal = "HOLD"
-
-    confidence = round(max(prob_up, prob_down) * 100.0, 2)
 
     # ---------------------------------------------------------
     # 5) Quote (Firestore-only StockDetail needs this!)
@@ -673,47 +654,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} build_technical_snapshot failed", e)
         technical = None
 
-    # ---------------------------------------------------------
-    # 7) Smart patterns (NEVER NULL)
-    # ---------------------------------------------------------
-    try:
-        quote_for_pattern = {
-            "price": feat_dict.get("close"),
-            "changePct": feat_dict.get("return_1d"),  # fallback if quote changePct missing
-        }
-        smart_pattern = detect_smart_pattern(feat_dict, quote_for_pattern, technical)
-
-        # history scanner MUST receive dict-of-arrays
-        pattern_stats = scan_smart_pattern_history(symbol, candles_arrays) or {}
-
-        # force non-null objects
-        if not isinstance(smart_pattern, dict):
-            smart_pattern = {
-                "pattern": "NO CLEAR PATTERN",
-                "winRate": None,
-                "explanation": "Pattern engine produced no result.",
-            }
-        if not isinstance(pattern_stats, dict):
-            pattern_stats = {
-                "currentPattern": None,
-                "historyForCurrent": None,
-                "allPatterns": [],
-                "note": "Pattern stats unavailable.",
-            }
-    except Exception as e:
-        log_exc(f"{symbol} smart pattern failed", e)
-        smart_pattern = {
-            "pattern": "NO CLEAR PATTERN",
-            "winRate": None,
-            "explanation": "Pattern engine failed this run.",
-        }
-        pattern_stats = {
-            "currentPattern": None,
-            "historyForCurrent": None,
-            "allPatterns": [],
-            "note": "Pattern stats unavailable for this run.",
-        }
-
+    
     # ---------------------------------------------------------
     # 8) Insights (must never block)
     # ---------------------------------------------------------
@@ -751,18 +692,16 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
         "quote": quote,
 
-        "bullbrain": {
-            "signal": signal,
-            "confidence": confidence,
-            "prob_up": round(prob_up, 4),
-            "prob_down": round(prob_down, 4),
-        },
-
         "features_meta": feat_dict,
         "technical": technical,
+        "bullbrain": core["bullbrain"],
 
-        "smartPattern": smart_pattern,
-        "patternStats": pattern_stats,
+        "decision": core["decision"],
+
+        "pattern": core.get("pattern"),
+        "patternBias": core.get("patternBias"),
+        "patternHistory": core.get("patternHistory"),
+
 
         # UI helpers
         "candles": candle_summary,
@@ -771,7 +710,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "insights": insights,
 
         "computed_at": utc_now_iso(),
-        "schema_version": "v1",
+        "schema_version": "v2",
     }
 
     # ---------------------------------------------------------
@@ -795,7 +734,14 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             .set(doc, merge=True)
 
         dt = time.time() - t0
-        log(f"✅ {symbol} wrote stocks/symbols/{symbol} | signal={signal} conf={confidence}% | {dt:.2f}s")
+        final_signal = core["decision"]["finalSignal"]
+        conf = core["bullbrain"].get("confidence")
+
+        log(
+            f"✅ {symbol} wrote stocks/symbols/{symbol} | "
+            f"final={final_signal} conf={conf}% | {dt:.2f}s"
+        )
+
         return doc
 
     except Exception as e:
