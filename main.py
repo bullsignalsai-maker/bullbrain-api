@@ -4951,7 +4951,6 @@ def market_bearwatch():
         "bearwatch": cache.get("bearwatch", []),
         "updated_at": cache.get("updated_at"),
     }
-
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
@@ -4974,31 +4973,55 @@ def homescreen_mag7():
 
         d = doc.to_dict() or {}
         q = d.get("quote", {}) or {}
+        bull = d.get("bullbrain", {}) or {}
+        raw = bull.get("raw", {}) or {}
+        pattern = d.get("pattern", {}) or {}
+        history = d.get("patternHistory", {}) or {}
+        fr = history.get("forwardReturns", {}) or {}
+        days5 = fr.get("days5", {}) or {}
 
         items.append({
             "symbol": d.get("symbol"),
             "company_name": d.get("company_name"),
 
+            # -------------------------
+            # Quote
+            # -------------------------
             "quote": {
                 "price": q.get("price"),
                 "change": q.get("change"),
                 "changePct": q.get("changePct"),
             },
 
+            # -------------------------
+            # BullBrain (correct paths)
+            # -------------------------
             "bullbrain": {
-                "signal": d.get("bullbrain", {}).get("signal"),
-                "confidence": d.get("bullbrain", {}).get("confidence"),
-                "prob_up": d.get("bullbrain", {}).get("prob_up"),
-                "prob_down": d.get("bullbrain", {}).get("prob_down"),
+                "signal": bull.get("signal"),
+                "confidence": bull.get("confidence"),
+                "prob_up": raw.get("prob_up"),
+                "prob_down": raw.get("prob_down"),
             },
 
-            "insight": d.get("insights", {}).get("oneLiner"),
+            # -------------------------
+            # Insight (UI-friendly)
+            # -------------------------
+            "insight": (d.get("insights") or {}).get("oneLiner"),
 
+            # -------------------------
+            # Sparkline
+            # -------------------------
             "sparkline": d.get("sparkline", []),
 
+            # -------------------------
+            # Pattern (new structure)
+            # -------------------------
             "pattern": {
-                "name": d.get("smartPattern", {}).get("pattern"),
-                "winRate": d.get("smartPattern", {}).get("winRate"),
+                "name": pattern.get("pattern") or pattern.get("patternLabel"),
+                "bias": pattern.get("bias") or pattern.get("patternBias"),
+                "winRate_5d": days5.get("winRate"),
+                "avgReturn_5d": days5.get("avg"),
+                "samples": days5.get("count"),
             },
 
             "updated_at": d.get("computed_at"),
@@ -5007,8 +5030,9 @@ def homescreen_mag7():
     return {
         "count": len(items),
         "mag7": items,
-        "version": "v2",
+        "version": "v3",
     }
+   
 # ---------------------------------------------------------
 # /homescreen-context — UI-only data (NO intelligence NEW)
 # ---------------------------------------------------------
@@ -5097,7 +5121,6 @@ def homescreen_carousel():
         "version": cache.get("version"),
     }
 
-
 # ---------------------------------------------------------
 # Stock Detail API — Plan B (Firestore-only, ultra fast)
 # ---------------------------------------------------------
@@ -5115,11 +5138,10 @@ def stock_detail(symbol: str, source: str | None = None):
             from backend.active_symbols import touch_active_symbol
             touch_active_symbol(sym)
         except Exception:
-            # Analytics must NEVER break stock detail
-            pass
+            pass  # must never break stock detail
 
     # ---------------------------------------------------------
-    # 1️⃣ Read stock snapshot from Firestore (single document read)
+    # 1️⃣ Read stock snapshot from Firestore
     # ---------------------------------------------------------
     doc = (
         db.collection("bullsignals_ai")
@@ -5139,7 +5161,41 @@ def stock_detail(symbol: str, source: str | None = None):
     payload["symbol"] = sym  # defensive
 
     # ---------------------------------------------------------
-    # 2️⃣ UI ENHANCEMENTS (pure python, zero I/O)
+    # 2️⃣ Normalize BullBrain (new schema-safe)
+    # ---------------------------------------------------------
+    bull = payload.get("bullbrain", {}) or {}
+    raw = bull.get("raw", {}) or {}
+
+    payload["bullbrain"] = {
+        "signal": bull.get("signal"),
+        "confidence": bull.get("confidence"),
+        "prob_up": raw.get("prob_up"),
+        "prob_down": raw.get("prob_down"),
+    }
+
+    # ---------------------------------------------------------
+    # 3️⃣ Normalize Pattern (single + history)
+    # ---------------------------------------------------------
+    pattern = payload.get("pattern", {}) or {}
+    history = payload.get("patternHistory", {}) or {}
+    fr = history.get("forwardReturns", {}) or {}
+
+    payload["pattern"] = {
+        "name": pattern.get("pattern") or pattern.get("patternLabel"),
+        "bias": pattern.get("bias") or pattern.get("patternBias"),
+        "headline": pattern.get("headline"),
+        "changePct": pattern.get("changePct"),
+        "date": pattern.get("date"),
+    }
+
+    payload["patternStats"] = {
+        "days5": fr.get("days5"),
+        "days10": fr.get("days10"),
+        "occurrences": history.get("occurrences"),
+    }
+
+    # ---------------------------------------------------------
+    # 4️⃣ UI Enhancements (pure python)
     # ---------------------------------------------------------
     from backend.ui_stock_builder import build_ui_enhancements
 
@@ -5151,7 +5207,7 @@ def stock_detail(symbol: str, source: str | None = None):
         payload["ui"] = {}
 
     # ---------------------------------------------------------
-    # 3️⃣ LIVE COMPANY NEWS (Finnhub — symbol only)
+    # 5️⃣ Live Company News (Finnhub)
     # ---------------------------------------------------------
     from backend.news_repo import fetch_symbol_news
 
@@ -5169,12 +5225,11 @@ def stock_detail(symbol: str, source: str | None = None):
         )
 
         payload["news"] = news or []
-
     except Exception:
         payload["news"] = []
 
     # ---------------------------------------------------------
-    # 4️⃣ Return final payload
+    # 6️⃣ Return final payload
     # ---------------------------------------------------------
     return payload
 
@@ -5297,6 +5352,9 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
         "symbol": sym,
     }
 
+# -----------------------------
+# 4) Market Movers
+# -----------------------------
 
 @app.get("/market-movers")
 def get_market_movers():
@@ -5334,6 +5392,10 @@ def get_market_movers():
 
         s = stock_doc.to_dict() or {}
         q = s.get("quote", {}) or {}
+        tech = s.get("technical", {}) or {}
+        trend = tech.get("trend", {}) or {}
+        pattern = s.get("pattern", {}) or {}
+        insights = s.get("insights", {}) or {}
 
         out.append({
             "symbol": sym,
@@ -5345,22 +5407,22 @@ def get_market_movers():
                 "changePct": q.get("changePct"),
             },
 
-            "direction": m.get("direction"),  # up | down
+            # direction is computed earlier by cron (trusted)
+            "direction": m.get("direction"),  # "up" | "down"
 
             "trend": {
-                "label": s.get("technical", {})
-                           .get("trend", {})
-                           .get("label")
+                "label": trend.get("label")  # Bullish / Bearish / Sideways
             },
 
             "pattern": {
-                "name": s.get("smartPattern", {}).get("pattern")
+                "name": pattern.get("pattern") or pattern.get("patternLabel"),
+                "bias": pattern.get("bias") or pattern.get("patternBias"),
             },
 
-            "oneLiner": s.get("insights", {}).get("oneLiner"),
+            "oneLiner": insights.get("oneLiner"),
         })
 
-    meta = movers_doc.to_dict()
+    meta = movers_doc.to_dict() or {}
 
     return {
         "count": len(out),
@@ -5370,6 +5432,9 @@ def get_market_movers():
         "version": "v2",
     }
 
+# -----------------------------
+# 5) Market News
+# -----------------------------
 
 @app.get("/market-news")
 def market_news():

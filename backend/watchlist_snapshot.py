@@ -1,5 +1,3 @@
-# backend/watchlist_snapshot.py
-
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
@@ -37,16 +35,21 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------
-    # 2️⃣ Build snapshot items
+    # 2️⃣ Build snapshot items (Firestore is truth)
     # -----------------------------------------------------
     for sym in symbols:
         quote = get_quote_safe(sym) or {}
         stock = get_stock(sym) or {}
 
         bullbrain = stock.get("bullbrain") or {}
+        raw = bullbrain.get("raw") or {}
+
         insights = stock.get("insights") or {}
         stock_quote = stock.get("quote") or {}
-        smart_pattern = stock.get("smartPattern") or {}
+        pattern = stock.get("pattern") or {}
+        pattern_hist = stock.get("patternHistory") or {}
+        fwd = pattern_hist.get("forwardReturns") or {}
+        days5 = fwd.get("days5") or {}
 
         price = quote.get("price")
         change_pct = quote.get("changePct")
@@ -64,7 +67,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             "symbol": sym,
             "companyName": stock.get("company_name"),
 
-            # ── QUOTE (MATCH homescreen-mag7) ──
+            # ── QUOTE ──
             "quote": {
                 "price": price,
                 "change": change,
@@ -72,21 +75,25 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             },
             "quote_updated_at": quote.get("updated_at"),
 
-            # ── BULLBRAIN (MATCH homescreen-mag7) ──
+            # ── BULLBRAIN (authoritative) ──
             "bullbrain": {
                 "signal": bullbrain.get("signal", "HOLD"),
                 "confidence": bullbrain.get("confidence", 0),
+                "prob_up": raw.get("prob_up"),
+                "prob_down": raw.get("prob_down"),
             },
 
-            # ── SMART PATTERN (MATCH homescreen-mag7) ──
+            # ── PATTERN (new unified schema) ──
             "pattern": {
-                "name": smart_pattern.get("pattern"),
-                "winRate": smart_pattern.get("winRate"),
+                "name": pattern.get("pattern") or pattern.get("patternLabel"),
+                "bias": pattern.get("bias") or pattern.get("patternBias"),
+                "winRate": days5.get("winRate"),
             },
 
             # ── OPTIONAL UI DATA ──
             "sparkline": sparkline if isinstance(sparkline, list) else [],
 
+            # ── HUMAN SUMMARY ──
             "grokSummary": (
                 insights.get("oneLiner")
                 or insights.get("summaryLine")
@@ -105,7 +112,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v1",
+        "version": "v2",
     }
 
     db.collection(COL_SNAPSHOTS) \
