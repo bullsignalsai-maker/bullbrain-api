@@ -266,12 +266,16 @@ def _compute_williams_r(
 # -----------------------------------------------------------
 
 ELITE_PATTERNS = {
-    "BULLISH_ENGULFING_VOLUME",
-    "BEARISH_ENGULFING",
-    "POCKET_PIVOT",
-    "CLIMAX_BAR",
-    "EXHAUSTION_GAP",
+    "GAP UP & RUNNING",
+    "VOLUME BREAKOUT",
+    "OVERSOLD BOUNCE",
+    "HAMMER REVERSAL",
+    "BUY THE DIP (UPTREND)",
+    "TREND ACCELERATION",
+    "FAILED BREAKOUT TRAP",
+    "DEAD CAT BOUNCE",
 }
+
 ELITE_PATTERN_LABELS = {
     "BULLISH_ENGULFING_VOLUME": "Bullish Engulfing (Volume Confirmed)",
     "BEARISH_ENGULFING": "Bearish Engulfing",
@@ -563,7 +567,7 @@ def _evaluate_smart_pattern_row(
     # -------------------------------------------------
     patterns = [
         (score, p) for score, p in patterns
-        if p["pattern"] in ELITE_PATTERNS
+        if p["pattern"] not in DEPRECATED_PATTERNS
     ]
     if not patterns:
         return None
@@ -695,6 +699,7 @@ def scan_smart_pattern_history(
             {
                 "date": row["ts"],
                 "pattern": patt["pattern"],
+                "patternLabel": ELITE_PATTERN_LABELS.get(patt["pattern"], patt["pattern"]),
                 "headline": patt["headline"],
                
                 "bias": patt.get("bias"),
@@ -716,6 +721,9 @@ def scan_smart_pattern_history(
 
     # Current pattern = last valid pattern in history (ideally last trading day)
     current = pattern_rows[-1]
+    current["patternLabel"] = ELITE_PATTERN_LABELS.get(
+        current["pattern"], current["pattern"]
+    )
     current_name = current["pattern"]
 
     from collections import defaultdict
@@ -1113,6 +1121,66 @@ def compute_hybrid_signal(bull_conf: float, grok_prob: float):
         hybrid_signal = "HOLD"
     return round(hybrid_score, 2), hybrid_signal
 
+def run_bullbrain_from_inputs(
+    symbol: str,
+    *,
+    candles_arrays: dict,
+    feat_dict: dict
+) -> dict:
+    """
+    PURE BullBrain execution.
+    No I/O. No fetching. No recomputation.
+
+    Inputs:
+      - candles_arrays: dict-of-arrays (open/high/low/close/volume/timestamp)
+      - feat_dict: computed feature dictionary
+
+    Returns:
+      core decision payload used by cron + Firestore
+    """
+
+    # ---------------------------------------------------------
+    # 1) Pattern scan (uses candles ONLY)
+    # ---------------------------------------------------------
+    try:
+        pattern_result = scan_smart_pattern_history(candles_arrays)
+    except Exception:
+        pattern_result = None
+
+    # ---------------------------------------------------------
+    # 2) ML prediction (uses features ONLY)
+    # ---------------------------------------------------------
+    prob_up, prob_down, confidence = predict_from_features(feat_dict)
+
+    # ---------------------------------------------------------
+    # 3) Decision ladder (single authority)
+    # ---------------------------------------------------------
+    decision = decision_ladder(
+        prob_up=prob_up,
+        prob_down=prob_down,
+        pattern=pattern_result,
+        features=feat_dict,
+    )
+
+    final_signal = decision["finalSignal"]
+
+    # ---------------------------------------------------------
+    # 4) Normalized output (THIS is the contract)
+    # ---------------------------------------------------------
+    return {
+        "bullbrain": {
+            "signal": final_signal,
+            "confidence": confidence,
+            "raw": {
+                "prob_up": prob_up,
+                "prob_down": prob_down,
+            },
+        },
+        "decision": decision,
+        "pattern": pattern_result.get("pattern") if pattern_result else None,
+        "patternBias": pattern_result.get("bias") if pattern_result else None,
+        "patternHistory": pattern_result.get("history") if pattern_result else None,
+    }
 
 # --------------------------------------------------------------------
 # CORE PIPELINE FOR ONE SYMBOL (FINAL – STEP-16 AUTHORITY)

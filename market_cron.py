@@ -617,10 +617,27 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     # 4) Authoritative BullBrain Decision (patterns + ladder)
     # ---------------------------------------------------------
     try:
-        core, err = backend._run_bullbrain_for_symbol(symbol)
-        if err:
-            log(f"⛔ {symbol} bullbrain error: {err}")
-            return None
+        core = backend.run_bullbrain_from_inputs(
+            symbol=symbol,
+            candles_arrays=candles_arrays,
+            feat_dict=feat_dict,
+        )
+
+        # ---------------------------------------------------------
+        # Normalize BullBrain outputs (single authority)
+        # ---------------------------------------------------------
+        bull = core["bullbrain"]
+        decision = core["decision"]
+
+        final_signal = decision["finalSignal"]
+        confidence = bull.get("confidence", 0.0)
+
+        prob_up = bull.get("raw", {}).get("prob_up")
+        prob_down = bull.get("raw", {}).get("prob_down")
+
+        # 🔐 Defensive alias (legacy compatibility)
+        signal = final_signal
+        
     except Exception as e:
         log_exc(f"{symbol} _run_bullbrain_for_symbol crashed", e)
         return None
@@ -663,7 +680,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             symbol=symbol,
             features=feat_dict,
             bullbrain={
-                "signal": signal,
+                "signal": final_signal,
                 "confidence": confidence,
                 "prob_up": prob_up,
                 "prob_down": prob_down,
@@ -736,7 +753,8 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         dt = time.time() - t0
         final_signal = core["decision"]["finalSignal"]
         conf = core["bullbrain"].get("confidence")
-
+        # 🔐 Defensive alias (backward compatibility)
+        signal = final_signal
         log(
             f"✅ {symbol} wrote stocks/symbols/{symbol} | "
             f"final={final_signal} conf={conf}% | {dt:.2f}s"
