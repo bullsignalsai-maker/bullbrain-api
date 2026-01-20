@@ -687,6 +687,9 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             },
             technical=technical,
             seed_key=f"{symbol}:{utc_now_iso()}",
+            decision=core.get("decision"),
+            pattern=core.get("pattern"),
+            pattern_history=core.get("patternHistory"),
         )
     except Exception as e:
         log_exc(f"{symbol} generate_bull_insights failed", e)
@@ -719,9 +722,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "patternBias": core.get("patternBias"),
         "patternHistory": core.get("patternHistory"),
 
-
-        # UI helpers
-        "candles": candle_summary,
         "sparkline": sparkline,
 
         "insights": insights,
