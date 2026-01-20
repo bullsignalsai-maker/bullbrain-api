@@ -1140,32 +1140,48 @@ def run_bullbrain_from_inputs(
     """
 
     # ---------------------------------------------------------
-    # 1) Pattern scan (uses candles ONLY)
+    # 1) Pattern scan (single authoritative engine)
     # ---------------------------------------------------------
     try:
-        pattern_result = scan_smart_pattern_history(candles_arrays)
+        pattern_result = scan_smart_pattern_history(symbol, candles_arrays)
     except Exception:
         pattern_result = None
 
     # ---------------------------------------------------------
-    # 2) ML prediction (uses features ONLY)
+    # 2) ML prediction (SINGLE REAL MODEL PATH)
     # ---------------------------------------------------------
-    prob_up, prob_down, confidence = predict_from_features(feat_dict)
+    # Rebuild feature vector in correct order
+    values = [feat_dict.get(name) for name in BULLBRAIN_FEATURES]
+    features_vector = np.array([values], dtype=float)
+
+    inference = bullbrain_infer(features_vector)
+
+    prob_up = float(inference.get("probability_up"))
+    prob_down = float(inference.get("probability_down"))
+    confidence = float(inference.get("confidence"))
+    model_signal = inference.get("signal")
 
     # ---------------------------------------------------------
-    # 3) Decision ladder (single authority)
+    # 3) STEP-16 Decision Ladder (single authority)
     # ---------------------------------------------------------
-    decision = decision_ladder(
-        prob_up=prob_up,
-        prob_down=prob_down,
-        pattern=pattern_result,
+    decision = final_decision(
+        model_signal=model_signal,
         features=feat_dict,
+        pattern_name=(
+            pattern_result.get("currentPattern", {}).get("pattern")
+            if pattern_result else None
+        ),
+        pattern_history=(
+            pattern_result.get("historyForCurrent")
+            if pattern_result else None
+        ),
+        total_days=len(candles_arrays.get("close", [])),
     )
 
     final_signal = decision["finalSignal"]
 
     # ---------------------------------------------------------
-    # 4) Normalized output (THIS is the contract)
+    # 4) Normalized output (CONTRACT)
     # ---------------------------------------------------------
     return {
         "bullbrain": {
@@ -1177,9 +1193,16 @@ def run_bullbrain_from_inputs(
             },
         },
         "decision": decision,
-        "pattern": pattern_result.get("pattern") if pattern_result else None,
-        "patternBias": pattern_result.get("bias") if pattern_result else None,
-        "patternHistory": pattern_result.get("history") if pattern_result else None,
+        "pattern": pattern_result.get("currentPattern") if pattern_result else None,
+        "patternBias": (
+            pattern_bias(
+                pattern_result.get("currentPattern", {}).get("pattern")
+            ) if pattern_result else None
+        ),
+        "patternHistory": (
+            pattern_result.get("historyForCurrent")
+            if pattern_result else None
+        ),
     }
 
 # --------------------------------------------------------------------

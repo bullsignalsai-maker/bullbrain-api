@@ -637,9 +637,9 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
         # 🔐 Defensive alias (legacy compatibility)
         signal = final_signal
-        
+
     except Exception as e:
-        log_exc(f"{symbol} _run_bullbrain_for_symbol crashed", e)
+        log_exc(f"{symbol} run_bullbrain_from_inputs crashed", e)
         return None
 
     # ---------------------------------------------------------
