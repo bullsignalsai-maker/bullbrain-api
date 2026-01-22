@@ -22,6 +22,24 @@ def _num(v: Any, fallback: Optional[float] = None) -> Optional[float]:
         pass
     return fallback
 
+def _humanize_reason(r: str) -> str:
+    r = (r or "").strip()
+
+    mapping = {
+        "Liquidity=POOR": "Liquidity is weak, so signals are less reliable.",
+        "PatternQualityFailed": "The detected pattern has weak historical performance.",
+        "RegimePatternMismatch": "Pattern is not reliable in the current market regime.",
+        "AlignmentFailed": "Signal and technical alignment did not confirm.",
+        "TimeframeAlignmentFailed": "Multiple timeframes did not align.",
+        "VolumeGateFailed": "Volume confirmation is missing.",
+        "ConsensusFailed": "Signals across factors did not reach a strong consensus.",
+        "PressureMismatch": "Buying/selling pressure does not support the signal.",
+        "FragilityHigh": "Price structure looks fragile; risk of whipsaw.",
+        "ExhaustionTrue": "Move appears exhausted; reversal risk is high.",
+        "EVNegative": "Expected value is not favorable based on history.",
+    }
+
+    return mapping.get(r, r)
 
 def _seeded_pick(options: List[str], seed_key: str) -> str:
     """
@@ -53,11 +71,12 @@ def generate_bull_insights(
     features: Dict[str, Any],
     bullbrain: Dict[str, Any],
     technical: Optional[Dict[str, Any]] = None,
-    seed_key: Optional[str] = None,
     decision: Optional[Dict[str, Any]] = None,
     pattern: Optional[Dict[str, Any]] = None,
     pattern_history: Optional[Dict[str, Any]] = None,
+    seed_key: Optional[str] = None,
 ) -> Dict[str, Any]:
+
     """
     Returns a UI-friendly insights dict aligned with:
       - signal + confidence
@@ -67,6 +86,20 @@ def generate_bull_insights(
     """
 
     technical = technical or {}
+    decision = decision or {}
+    pattern = pattern or {}
+    pattern_history = pattern_history or {}
+
+    final_signal = (decision.get("finalSignal") or bullbrain.get("signal") or "HOLD")
+    final_signal = str(final_signal).upper()
+
+    reasons = decision.get("decisionReasons") or []
+    if not isinstance(reasons, list):
+        reasons = []
+
+    why_lines = [_humanize_reason(str(r)) for r in reasons[:4] if r]
+    why_signal = " ".join(why_lines).strip()
+
     decision = decision or {}
     reasons = decision.get("decisionReasons") or decision.get("reasons") or []
     quality = decision.get("quality") or {}
@@ -148,12 +181,8 @@ def generate_bull_insights(
     trend_strength_20 = _num(features.get("trend_strength_20"))
     intraday_range_pct = _num(features.get("intraday_range_pct"))
 
-    signal = (
-        (bullbrain.get("signal"))
-        or ((bullbrain.get("bullbrain") or {}).get("signal"))
-        or "HOLD"
-    )
-    signal = str(signal).upper()
+    signal = final_signal
+
 
     confidence = float(_num(bullbrain.get("confidence"), 0.0) or 0.0)
     conf_label = _conf_tier(confidence)
@@ -275,6 +304,14 @@ def generate_bull_insights(
             summary_line = f"{summary_line} • {patt_part} • {patt_stats_line}"
         else:
             summary_line = f"{summary_line} • {patt_part}"
+    
+    if why_signal:
+    summary_line = f"{summary_line} Why: {why_signal}"
+
+    # clean explanation for UI cards
+    if not why_signal:
+    why_signal = "No high-conviction confirmation yet; waiting for stronger alignment."
+
 
     # -----------------------------
     # Combined technical summary (kept, but cleaner)
@@ -303,15 +340,13 @@ def generate_bull_insights(
     }
 
     return {
-        # original fields (UI-safe)
         "oneLiner": one_liner,
+        "whySignal": why_signal,
         "summaryLine": summary_line,
         "trendSummary": trend_summary,
         "momentumSummary": momentum_summary,
         "volumeSummary": volume_summary,
         "volatilitySummary": volatility_summary,
         "combinedTechnicalSummary": combined,
-
-        # new fields (optional UI)
-        "explain": explain,
     }
+
