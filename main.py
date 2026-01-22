@@ -4987,10 +4987,17 @@ def homescreen_mag7():
         line1 = insights.get("oneLiner")
 
         line2 = (
-            insights.get("summaryLine")
-            or insights.get("trendSummary")
+            insights.get("combinedTechnicalSummary")
+            or (
+                f"{insights.get('trendSummary')} {insights.get('momentumSummary')}"
+                if insights.get("trendSummary") and insights.get("momentumSummary")
+                else None
+            )
             or insights.get("momentumSummary")
+            or insights.get("volumeSummary")
+            or insights.get("volatilitySummary")
         )
+
 
         insight = {
             "primary": line1,
