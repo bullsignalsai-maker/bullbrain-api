@@ -4979,6 +4979,23 @@ def homescreen_mag7():
         history = d.get("patternHistory", {}) or {}
         fr = history.get("forwardReturns", {}) or {}
         days5 = fr.get("days5", {}) or {}
+        insights = d.get("insights", {}) or {}
+
+        # -------------------------
+        # 🧠 Two-line insight logic
+        # -------------------------
+        line1 = insights.get("oneLiner")
+
+        line2 = (
+            insights.get("summaryLine")
+            or insights.get("trendSummary")
+            or insights.get("momentumSummary")
+        )
+
+        insight = {
+            "primary": line1,
+            "secondary": line2,
+        } if line1 else None
 
         items.append({
             "symbol": d.get("symbol"),
@@ -4994,7 +5011,7 @@ def homescreen_mag7():
             },
 
             # -------------------------
-            # BullBrain (correct paths)
+            # BullBrain
             # -------------------------
             "bullbrain": {
                 "signal": bull.get("signal"),
@@ -5004,17 +5021,17 @@ def homescreen_mag7():
             },
 
             # -------------------------
-            # Insight (UI-friendly)
+            # Insight (2 lines)
             # -------------------------
-            "insight": (d.get("insights") or {}).get("oneLiner"),
+            "insight": insight,
 
             # -------------------------
-            # Sparkline
+            # Sparkline (precomputed or empty)
             # -------------------------
             "sparkline": d.get("sparkline", []),
 
             # -------------------------
-            # Pattern (new structure)
+            # Pattern summary
             # -------------------------
             "pattern": {
                 "name": pattern.get("pattern") or pattern.get("patternLabel"),
@@ -5030,9 +5047,9 @@ def homescreen_mag7():
     return {
         "count": len(items),
         "mag7": items,
-        "version": "v3",
+        "version": "v4",
     }
-   
+ 
 # ---------------------------------------------------------
 # /homescreen-context — UI-only data (NO intelligence NEW)
 # ---------------------------------------------------------
@@ -5674,7 +5691,7 @@ def stock_decision_details(symbol: str):
     from backend.decision_explainer import explain_decision_ladder
 
     return explain_decision_ladder(stock)
-    
+
 # ---------------------------------------------------------
 # Quotes Bulk API — Symbol-Driven (Reusable)
 # ---------------------------------------------------------
