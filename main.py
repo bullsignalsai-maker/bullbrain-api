@@ -5674,38 +5674,64 @@ def stock_decision_details(symbol: str):
     from backend.decision_explainer import explain_decision_ladder
 
     return explain_decision_ladder(stock)
-
 # ---------------------------------------------------------
-# Quotes Bulk API — Full Quote Documents (Live)
+# Quotes Bulk API — Symbol-Driven (Reusable)
 # ---------------------------------------------------------
 @app.get("/quotes-bulk")
-def quotes_bulk(scope: str = "home"):
-    print("QUOTES-BULK HIT | scope =", scope)
+def quotes_bulk(
+    symbols: str | None = None,
+    scope: str | None = None,
+):
+    print("QUOTES-BULK HIT | scope =", scope, "| symbols =", symbols)
+
+    if not symbols:
+        return {
+            "scope": scope,
+            "count": 0,
+            "quotes": {},
+            "error": "symbols parameter required",
+        }
 
     # ---------------------------------------------------------
-    # 1️⃣ Firestore read (quotes collection ONLY)
+    # 1️⃣ Parse symbols from query
     # ---------------------------------------------------------
-    snaps = (
-        db.collection("bullsignals_ai")
-          .document("quotes")
-          .collection("symbols")
-          .stream()
-    )
+    symbol_list = [
+        s.strip().upper()
+        for s in symbols.split(",")
+        if s.strip()
+    ]
 
+    if not symbol_list:
+        return {
+            "scope": scope,
+            "count": 0,
+            "quotes": {},
+        }
+
+    # Safety cap
+    symbol_list = symbol_list[:100]
+
+    # ---------------------------------------------------------
+    # 2️⃣ Firestore reads (quotes ONLY)
+    # ---------------------------------------------------------
     quotes: dict[str, dict] = {}
-    MAX_QUOTES = 100   # safety cap
-    count = 0
 
-    for doc in snaps:
-        if count >= MAX_QUOTES:
-            break
+    for sym in symbol_list:
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("quotes")
+              .collection("symbols")
+              .document(sym)
+              .get()
+        )
 
-        sym = doc.id.upper()
+        if not doc.exists:
+            continue
+
         data = doc.to_dict() or {}
 
         # -----------------------------------------------------
-        # 2️⃣ PASS THROUGH — AUTHORITATIVE QUOTE SCHEMA
-        #    (NO mutation, NO recompute)
+        # 3️⃣ PASS THROUGH — AUTHORITATIVE QUOTE SCHEMA
         # -----------------------------------------------------
         quotes[sym] = {
             "symbol": data.get("symbol", sym),
@@ -5717,16 +5743,14 @@ def quotes_bulk(scope: str = "home"):
             "low": data.get("low"),
             "prevClose": data.get("prevClose"),
             "timestamp": data.get("timestamp"),
-            "updated_at": data.get("updated_at"),   # 🔥 use as-is
+            "updated_at": data.get("updated_at"),
             "needs_refresh": data.get("needs_refresh", False),
             "ttl_seconds": data.get("ttl_seconds", 30),
             "source": data.get("source"),
         }
 
-        count += 1
-
     # ---------------------------------------------------------
-    # 3️⃣ Response (UI merge friendly)
+    # 4️⃣ Response
     # ---------------------------------------------------------
     return {
         "scope": scope,
