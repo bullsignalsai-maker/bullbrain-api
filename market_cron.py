@@ -199,6 +199,35 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
     close_t = et.replace(hour=16, minute=0, second=0, microsecond=0)
     return open_t <= et <= close_t
 
+def get_canonical_quote(symbol: str, fallback_price: float | None = None) -> Dict[str, Any]:
+    """
+    Always return a FULL normalized quote.
+    Never degrades an existing good quote.
+    """
+    cached = get_quote_safe(symbol)
+
+    if isinstance(cached, dict) and cached.get("price") is not None:
+        return dict(cached)
+
+    # absolute last resort fallback
+    live = fetch_equity_quote(symbol) or {}
+
+    return {
+        "symbol": symbol,
+        "price": live.get("price") or fallback_price,
+        "change": live.get("change"),
+        "changePct": live.get("changePct"),
+        "open": live.get("open"),
+        "high": live.get("high"),
+        "low": live.get("low"),
+        "prevClose": live.get("prevClose"),
+        "timestamp": live.get("timestamp"),
+        "source": live.get("source", "fallback"),
+        "needs_refresh": True,
+        "schema_version": "v2",
+        "updated_at": utc_now_iso(),
+    }
+
 def _get_best_quote(symbol: str) -> Dict[str, Any]:
     """
     Prefer cached quote if fresh.
@@ -647,16 +676,19 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     #    This does NOT write elsewhere; we persist inside the symbol doc.
     # ---------------------------------------------------------
     try:
-        quote = _get_best_quote(symbol)
-        if not isinstance(quote, dict):
-            quote = {}
+        quote = get_canonical_quote(
+            symbol=symbol,
+            fallback_price=feat_dict.get("close"),
+        )
     except Exception as e:
-        log(f"⚠️ {symbol} fetch_equity_quote failed: {e}")
-        quote = {}
-
-    # Always keep at least a price if quote missing
-    quote.setdefault("price", feat_dict.get("close"))
-    quote["updated_at"] = utc_now_iso()
+        log(f"⚠️ {symbol} canonical quote failed: {e}")
+        quote = {
+            "symbol": symbol,
+            "price": feat_dict.get("close"),
+            "needs_refresh": True,
+            "schema_version": "v2",
+            "updated_at": utc_now_iso(),
+        }
 
     # ---------------------------------------------------------
     # 6) Technical snapshot
