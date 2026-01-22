@@ -96,12 +96,19 @@ def build_ui_sentiment(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         else "neutral"
     )
 
-    return {
+    why = insights.get("whySignal")
+
+    out = {
         "headline": headline,
         "tone": tone,
-        "signal": final_signal
-        "why": insights.get("whySignal")
+        "signal": final_signal,
     }
+
+    # Only add WHY if it exists (clean UI)
+    if why:
+        out["why"] = why
+
+    return out
 
 
 # -------------------------------------------------

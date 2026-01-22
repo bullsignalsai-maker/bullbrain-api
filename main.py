@@ -5131,17 +5131,17 @@ def stock_detail(symbol: str, source: str | None = None):
     sym = symbol.upper()
 
     # ---------------------------------------------------------
-    # 0️⃣ Track active symbol ONLY for UI-triggered navigation
+    # 0️⃣ Track active symbol (UI only)
     # ---------------------------------------------------------
     if source == "ui":
         try:
             from backend.active_symbols import touch_active_symbol
             touch_active_symbol(sym)
         except Exception:
-            pass  # must never break stock detail
+            pass
 
     # ---------------------------------------------------------
-    # 1️⃣ Read stock snapshot from Firestore
+    # 1️⃣ Read stock snapshot
     # ---------------------------------------------------------
     doc = (
         db.collection("bullsignals_ai")
@@ -5152,21 +5152,18 @@ def stock_detail(symbol: str, source: str | None = None):
     )
 
     if not doc.exists:
-        return {
-            "status": "not_ready",
-            "symbol": sym,
-        }
+        return {"status": "not_ready", "symbol": sym}
 
     payload = doc.to_dict() or {}
-    payload["symbol"] = sym  # defensive
+    payload["symbol"] = sym
 
     # ---------------------------------------------------------
-    # 2️⃣ Normalize BullBrain (new schema-safe)
+    # 2️⃣ Derived BullBrain (NON-DESTRUCTIVE)
     # ---------------------------------------------------------
-    bull = payload.get("bullbrain", {}) or {}
-    raw = bull.get("raw", {}) or {}
+    bull = payload.get("bullbrain") or {}
+    raw = bull.get("raw") or {}
 
-    payload["bullbrain"] = {
+    payload["bullbrain_ui"] = {
         "signal": bull.get("signal"),
         "confidence": bull.get("confidence"),
         "prob_up": raw.get("prob_up"),
@@ -5174,28 +5171,23 @@ def stock_detail(symbol: str, source: str | None = None):
     }
 
     # ---------------------------------------------------------
-    # 3️⃣ Normalize Pattern (single + history)
+    # 3️⃣ Normalize Pattern (KEEP CANONICAL KEYS)
     # ---------------------------------------------------------
-    pattern = payload.get("pattern", {}) or {}
-    history = payload.get("patternHistory", {}) or {}
-    fr = history.get("forwardReturns", {}) or {}
+    pattern = payload.get("pattern") or {}
+    history = payload.get("patternHistory") or {}
 
     payload["pattern"] = {
-        "name": pattern.get("pattern") or pattern.get("patternLabel"),
+        "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
         "bias": pattern.get("bias") or pattern.get("patternBias"),
         "headline": pattern.get("headline"),
         "changePct": pattern.get("changePct"),
         "date": pattern.get("date"),
     }
 
-    payload["patternStats"] = {
-        "days5": fr.get("days5"),
-        "days10": fr.get("days10"),
-        "occurrences": history.get("occurrences"),
-    }
+    # DO NOT create patternStats again ❌
 
     # ---------------------------------------------------------
-    # 4️⃣ UI Enhancements (pure python)
+    # 4️⃣ UI Enhancements
     # ---------------------------------------------------------
     from backend.ui_stock_builder import build_ui_enhancements
 
@@ -5207,7 +5199,7 @@ def stock_detail(symbol: str, source: str | None = None):
         payload["ui"] = {}
 
     # ---------------------------------------------------------
-    # 5️⃣ Live Company News (Finnhub)
+    # 5️⃣ Live Company News
     # ---------------------------------------------------------
     from backend.news_repo import fetch_symbol_news
 
@@ -5218,13 +5210,11 @@ def stock_detail(symbol: str, source: str | None = None):
             or payload.get("name")
         )
 
-        news = fetch_symbol_news(
+        payload["news"] = fetch_symbol_news(
             symbol=sym,
             company_name=company_name,
             limit=8,
-        )
-
-        payload["news"] = news or []
+        ) or []
     except Exception:
         payload["news"] = []
 
