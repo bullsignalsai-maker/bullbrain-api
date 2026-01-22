@@ -5121,8 +5121,10 @@ def homescreen_carousel():
         "version": cache.get("version"),
     }
 
+
+
 # ---------------------------------------------------------
-# Stock Detail API — Plan B (Firestore-only, ultra fast)
+# Stock Detail API — UI-Optimized (LIGHT PAYLOAD)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def stock_detail(symbol: str, source: str | None = None):
@@ -5130,9 +5132,7 @@ def stock_detail(symbol: str, source: str | None = None):
 
     sym = symbol.upper()
 
-    # ---------------------------------------------------------
     # 0️⃣ Track active symbol (UI only)
-    # ---------------------------------------------------------
     if source == "ui":
         try:
             from backend.active_symbols import touch_active_symbol
@@ -5140,9 +5140,7 @@ def stock_detail(symbol: str, source: str | None = None):
         except Exception:
             pass
 
-    # ---------------------------------------------------------
-    # 1️⃣ Read stock snapshot
-    # ---------------------------------------------------------
+    # 1️⃣ Firestore read
     doc = (
         db.collection("bullsignals_ai")
           .document("stocks")
@@ -5154,74 +5152,189 @@ def stock_detail(symbol: str, source: str | None = None):
     if not doc.exists:
         return {"status": "not_ready", "symbol": sym}
 
-    payload = doc.to_dict() or {}
-    payload["symbol"] = sym
+    stock = doc.to_dict() or {}
+    stock["symbol"] = sym
 
-    # ---------------------------------------------------------
-    # 2️⃣ Derived BullBrain (NON-DESTRUCTIVE)
-    # ---------------------------------------------------------
-    bull = payload.get("bullbrain") or {}
-    raw = bull.get("raw") or {}
+    # 2️⃣ Build shared header
+    from backend.header_builder import build_stock_header
+    header = build_stock_header(stock)
 
-    payload["bullbrain_ui"] = {
-        "signal": bull.get("signal"),
-        "confidence": bull.get("confidence"),
-        "prob_up": raw.get("prob_up"),
-        "prob_down": raw.get("prob_down"),
+    # 3️⃣ Content (SCREEN-SPECIFIC ONLY)
+    insights = stock.get("insights") or {}
+    technical = stock.get("technical") or {}
+
+    content = {
+        "summary": {
+            "oneLiner": insights.get("oneLiner"),
+            "summaryLine": insights.get("summaryLine"),
+        },
+        "risk": {
+            "level": (technical.get("volatility") or {}).get("label"),
+        },
+        "computed_at": stock.get("computed_at"),
     }
 
-    # ---------------------------------------------------------
-    # 3️⃣ Normalize Pattern (KEEP CANONICAL KEYS)
-    # ---------------------------------------------------------
-    pattern = payload.get("pattern") or {}
-    history = payload.get("patternHistory") or {}
+    # 4️⃣ Sparkline (safe fallback)
+    candles = (stock.get("candles") or {}).get("candles", [])
+    if candles:
+        from backend.ui_stock_builder import build_sparkline
+        content["sparkline"] = build_sparkline(candles)
 
-    payload["pattern"] = {
-        "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
-        "bias": pattern.get("bias") or pattern.get("patternBias"),
-        "headline": pattern.get("headline"),
-        "changePct": pattern.get("changePct"),
-        "date": pattern.get("date"),
-    }
-
-    # DO NOT create patternStats again ❌
-
-    # ---------------------------------------------------------
-    # 4️⃣ UI Enhancements
-    # ---------------------------------------------------------
+    # 5️⃣ UI Enhancements (MINIMAL)
     from backend.ui_stock_builder import build_ui_enhancements
-
     try:
-        ui = build_ui_enhancements(payload)
-        if ui:
-            payload["ui"] = ui
+        ui = build_ui_enhancements(stock) or {}
+        content["ui"] = {
+            "badges": ui.get("badges"),
+            "sentiment": ui.get("sentiment"),
+            "freshness": ui.get("freshness"),
+        }
     except Exception:
-        payload["ui"] = {}
+        content["ui"] = {}
 
-    # ---------------------------------------------------------
-    # 5️⃣ Live Company News
-    # ---------------------------------------------------------
+    # 6️⃣ Company News (capped)
     from backend.news_repo import fetch_symbol_news
-
     try:
-        company_name = (
-            payload.get("company_name")
-            or payload.get("companyName")
-            or payload.get("name")
-        )
-
-        payload["news"] = fetch_symbol_news(
+        content["news"] = fetch_symbol_news(
             symbol=sym,
-            company_name=company_name,
-            limit=8,
+            company_name=stock.get("company_name"),
+            limit=6,
         ) or []
     except Exception:
-        payload["news"] = []
+        content["news"] = []
 
-    # ---------------------------------------------------------
-    # 6️⃣ Return final payload
-    # ---------------------------------------------------------
-    return payload
+    # 7️⃣ Final response
+    return {
+        "header": header,
+        "content": content,
+    }
+
+
+# ---------------------------------------------------------
+# Stock Pattern Detail API — FULL PATTERN VIEW
+# ---------------------------------------------------------
+@app.get("/stockdetail/{symbol}/pattern")
+def stock_pattern_detail(symbol: str):
+    sym = symbol.upper()
+
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
+    )
+
+    if not doc.exists:
+        return {"status": "not_ready", "symbol": sym}
+
+    stock = doc.to_dict() or {}
+    stock["symbol"] = sym
+
+    # 1️⃣ Shared header
+    from backend.header_builder import build_stock_header
+    header = build_stock_header(stock)
+
+    # 2️⃣ Pattern content (MAX DETAIL)
+    content = {
+        "pattern": stock.get("pattern"),
+        "history": stock.get("patternHistory"),
+        "forwardReturns": (stock.get("patternHistory") or {}).get("forwardReturns"),
+        "occurrences": (stock.get("patternHistory") or {}).get("occurrences"),
+        "samples": (stock.get("patternHistory") or {}).get("samples"),
+        "explanation": {
+            "whatItMeans": (stock.get("pattern") or {}).get("headline"),
+            "bias": (stock.get("pattern") or {}).get("bias"),
+            "note": "Pattern statistics are based on historical occurrences, not predictions.",
+        },
+    }
+
+    return {
+        "header": header,
+        "content": content,
+    }
+
+# ---------------------------------------------------------
+# Stock Decision Detail API — FULL MODEL EXPLANATION
+# ---------------------------------------------------------
+@app.get("/stockdetail/{symbol}/decision")
+def stock_decision_detail(symbol: str):
+    sym = symbol.upper()
+
+    # 1️⃣ Firestore read (single doc, no recompute)
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
+    )
+
+    if not doc.exists:
+        return {"status": "not_ready", "symbol": sym}
+
+    stock = doc.to_dict() or {}
+    stock["symbol"] = sym
+
+    # 2️⃣ Shared header (same across all screens)
+    from backend.header_builder import build_stock_header
+    header = build_stock_header(stock)
+
+    # 3️⃣ Decision ladder (SINGLE SOURCE OF TRUTH)
+    from backend.decision_explainer import explain_decision_ladder
+    decision_payload = explain_decision_ladder(stock)
+
+    # 4️⃣ Final response
+    return {
+        "header": header,
+        "modelDecision": decision_payload,
+        "meta": {
+            "computed_at": stock.get("computed_at"),
+            "schema": "decision_v2",
+        },
+    }
+
+
+# ---------------------------------------------------------
+# Stock Technical Detail API — FULL TECH + FEATURES
+# ---------------------------------------------------------
+@app.get("/stockdetail/{symbol}/technical")
+def stock_technical_detail(symbol: str):
+    sym = symbol.upper()
+
+    # 1️⃣ Firestore read
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
+    )
+
+    if not doc.exists:
+        return {"status": "not_ready", "symbol": sym}
+
+    stock = doc.to_dict() or {}
+    stock["symbol"] = sym
+
+    # 2️⃣ Shared header
+    from backend.header_builder import build_stock_header
+    header = build_stock_header(stock)
+
+    # 3️⃣ Technical explainer
+    from backend.technical_explainer import explain_technical
+    technical_payload = explain_technical(stock)
+
+    # 4️⃣ Final response
+    return {
+        "header": header,
+        **technical_payload,
+        "meta": {
+            "computed_at": stock.get("computed_at"),
+            "schema": "technical_v1",
+        },
+    }
+
 
 # -----------------------------
 # Firestore helpers
@@ -5451,3 +5564,26 @@ def market_news():
         # News list
         "news": items,
     }
+
+
+@app.get("/stockdetail/{symbol}/decision")
+def stock_decision_details(symbol: str):
+    sym = symbol.upper()
+
+    doc = (
+        db.collection("bullsignals_ai")
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
+    )
+
+    if not doc.exists:
+        return {"status": "not_ready", "symbol": sym}
+
+    stock = doc.to_dict() or {}
+    stock["symbol"] = sym
+
+    from backend.decision_explainer import explain_decision_ladder
+
+    return explain_decision_ladder(stock)
