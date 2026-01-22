@@ -5121,18 +5121,33 @@ def homescreen_carousel():
         "version": cache.get("version"),
     }
 
-
+# ---------------------------------------------------------
+# Stock Detail API — UI-Optimized (Narrative First)
+# ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def stock_detail(symbol: str, source: str | None = None):
     sym = symbol.upper()
+    print("STOCKDETAIL HIT:", sym, "source =", source)
 
-    # 1️⃣ Firestore read
+    # ---------------------------------------------------------
+    # 0️⃣ Track active symbol (UI only, never block)
+    # ---------------------------------------------------------
+    if source == "ui":
+        try:
+            from backend.active_symbols import touch_active_symbol
+            touch_active_symbol(sym)
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # 1️⃣ Firestore read (single source of truth)
+    # ---------------------------------------------------------
     doc = (
         db.collection("bullsignals_ai")
-        .document("stocks")
-        .collection("symbols")
-        .document(sym)
-        .get()
+          .document("stocks")
+          .collection("symbols")
+          .document(sym)
+          .get()
     )
 
     if not doc.exists:
@@ -5141,96 +5156,146 @@ def stock_detail(symbol: str, source: str | None = None):
     stock = doc.to_dict() or {}
     stock["symbol"] = sym
 
-    # 2️⃣ Shared header (price, change, range, signal, badges)
-    from backend.header_builder import build_stock_header
-    header = build_stock_header(stock)
-
+    quote = stock.get("quote") or {}
+    bull = stock.get("bullbrain") or {}
+    decision = stock.get("decision") or {}
+    pattern = stock.get("pattern") or {}
+    history = stock.get("patternHistory") or {}
     insights = stock.get("insights") or {}
     technical = stock.get("technical") or {}
     features = stock.get("features_meta") or {}
-    pattern = stock.get("pattern") or {}
-    history = stock.get("patternHistory") or {}
 
+    # ---------------------------------------------------------
+    # 2️⃣ Header (shared across all screens)
+    # ---------------------------------------------------------
+    from backend.header_builder import build_stock_header
+    header = build_stock_header(stock)
+
+    # ---------------------------------------------------------
+    # 3️⃣ SMART PATTERN CARD (Stock Detail only)
+    # ---------------------------------------------------------
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
+    win_rate = days5.get("winRate")
 
-    # 3️⃣ Content (STRICTLY UI sections)
-    content = {
-
-        # -------------------------
-        # SMART PATTERN CARD
-        # -------------------------
-        "smartPattern": {
+    smart_pattern = None
+    if pattern:
+        smart_pattern = {
             "name": pattern.get("pattern") or pattern.get("patternLabel"),
-            "winRate": days5.get("winRate"),
-            "strength":
-                "Historically Strong"
-                if days5.get("winRate") and days5.get("winRate") >= 0.7
-                else "Neutral / Weak",
+            "winRate": win_rate,
+            "strength": (
+                "Historically Strong" if isinstance(win_rate, (int, float)) and win_rate >= 0.7
+                else "Neutral / Weak" if isinstance(win_rate, (int, float))
+                else None
+            ),
             "explanation": pattern.get("headline"),
-        },
+        }
 
-        # -------------------------
-        # OUTLOOK
-        # -------------------------
-        "outlook": {
-            "shortTerm": insights.get("outlook_short"),
-            "longTerm": insights.get("outlook_long"),
-        },
-
-        # -------------------------
-        # TECHNICAL SNAPSHOT
-        # -------------------------
-        "technicalSnapshot": {
-            "trend": {
-                "summary": technical.get("trend", {}).get("summary"),
-                "detail": technical.get("trend", {}).get("comment"),
-            },
-            "momentum": {
-                "summary": technical.get("momentum", {}).get("summary"),
-                "detail": technical.get("momentum", {}).get("comment"),
-                "rsi": features.get("rsi14"),
-            },
-            "volatility": {
-                "summary": technical.get("volatility", {}).get("summary"),
-                "atr": features.get("atr14"),
-            },
-            "volume": {
-                "summary": technical.get("volume", {}).get("summary"),
-                "vsAvgPct": technical.get("volume", {}).get("volume_vs_ma20_pct"),
-            },
-        },
-
-        # -------------------------
-        # PRICE ACTION TODAY
-        # -------------------------
-        "priceAction": {
-            "intradayRangePct": features.get("intraday_range_pct"),
-            "gapPct": features.get("gap_pct"),
-            "candleBodyPct": features.get("body_pct"),
-            "upperWickPct": features.get("upper_shadow_pct"),
-            "lowerWickPct": features.get("lower_shadow_pct"),
-            "interpretation": insights.get("priceActionComment"),
-        },
-
-        # -------------------------
-        # EXECUTIVE SUMMARY
-        # -------------------------
-        "executiveSummary": insights.get("executiveSummary"),
-
-        "computed_at": stock.get("computed_at"),
+    # ---------------------------------------------------------
+    # 4️⃣ OUTLOOK (Narrative driven)
+    # ---------------------------------------------------------
+    outlook = {
+        "shortTerm": insights.get("trendSummary"),
+        "longTerm": insights.get("combinedTechnicalSummary"),
     }
 
-    # 4️⃣ Sparkline (fallback safe)
+    # ---------------------------------------------------------
+    # 5️⃣ TECHNICAL SNAPSHOT (Narrative + Key Numbers)
+    # ---------------------------------------------------------
+    technical_snapshot = {
+        "trend": {
+            "summary": insights.get("trendSummary"),
+            "detail": (technical.get("trend") or {}).get("comment"),
+        },
+        "momentum": {
+            "summary": insights.get("momentumSummary"),
+            "detail": (technical.get("rsi") or {}).get("comment"),
+            "rsi": features.get("rsi14"),
+        },
+        "volatility": {
+            "summary": insights.get("volatilitySummary"),
+            "atr": features.get("atr14"),
+        },
+        "volume": {
+            "summary": insights.get("volumeSummary"),
+            "vsAvgPct": features.get("volume_vs_ma20_pct"),
+        },
+    }
+
+    # ---------------------------------------------------------
+    # 6️⃣ PRICE ACTION TODAY
+    # ---------------------------------------------------------
+    price_action = {
+        "intradayRangePct": features.get("intraday_range_pct"),
+        "gapPct": features.get("gap_pct"),
+        "candleBodyPct": features.get("body_pct"),
+        "upperWickPct": features.get("upper_shadow_pct"),
+        "lowerWickPct": features.get("lower_shadow_pct"),
+        "interpretation": insights.get("oneLiner"),
+    }
+
+    # ---------------------------------------------------------
+    # 7️⃣ EXECUTIVE SUMMARY
+    # ---------------------------------------------------------
+    executive_summary = (
+        insights.get("combinedTechnicalSummary")
+        or insights.get("summaryLine")
+        or insights.get("oneLiner")
+    )
+
+    # ---------------------------------------------------------
+    # 8️⃣ Sparkline (fallback-safe)
+    # ---------------------------------------------------------
+    content = {}
     candles = (stock.get("candles") or {}).get("candles", [])
     if candles:
-        from backend.ui_stock_builder import build_sparkline
-        content["sparkline"] = build_sparkline(candles)
+        try:
+            from backend.ui_stock_builder import build_sparkline
+            content["sparkline"] = build_sparkline(candles)
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
+    # 9️⃣ UI Enhancements (badges, freshness)
+    # ---------------------------------------------------------
+    try:
+        from backend.ui_stock_builder import build_ui_enhancements
+        ui = build_ui_enhancements(stock) or {}
+        content["ui"] = {
+            "badges": ui.get("badges"),
+            "freshness": ui.get("freshness"),
+        }
+    except Exception:
+        content["ui"] = {}
+
+    # ---------------------------------------------------------
+    # 🔟 Company News (RESTORED)
+    # ---------------------------------------------------------
+    try:
+        from backend.news_repo import fetch_symbol_news
+        content["news"] = fetch_symbol_news(
+            symbol=sym,
+            company_name=stock.get("company_name"),
+            limit=6,
+        ) or []
+    except Exception:
+        content["news"] = []
+
+    # ---------------------------------------------------------
+    # 1️⃣1️⃣ Final Response (UI-Optimized)
+    # ---------------------------------------------------------
+    content.update({
+        "smartPattern": smart_pattern,
+        "outlook": outlook,
+        "technicalSnapshot": technical_snapshot,
+        "priceAction": price_action,
+        "executiveSummary": executive_summary,
+        "computed_at": stock.get("computed_at"),
+    })
 
     return {
         "header": header,
         "content": content,
     }
-
 
 # ---------------------------------------------------------
 # Stock Pattern Detail API — FULL PATTERN VIEW
