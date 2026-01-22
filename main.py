@@ -4959,6 +4959,9 @@ def homescreen_mag7():
     MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
     items = []
 
+    # Track all used insight lines (primary + secondary)
+    used_insights = set()
+
     for sym in MAG7:
         doc = (
             db.collection("bullsignals_ai")
@@ -4981,45 +4984,82 @@ def homescreen_mag7():
         days5 = fr.get("days5", {}) or {}
         insights = d.get("insights", {}) or {}
 
-        # -------------------------
-        # 🧠 Two-line insight logic
-        # -------------------------
-        line1 = insights.get("oneLiner")
+        # -------------------------------------------------
+        # 🧠 PRIMARY INSIGHT (unique + cleaned)
+        # -------------------------------------------------
+        raw_primary = insights.get("oneLiner")
 
-        line2 = (
-            insights.get("combinedTechnicalSummary")
-            or (
+        clean_primary = (
+            raw_primary.replace("HOLD:", "")
+                       .replace("BUY:", "")
+                       .replace("SELL:", "")
+                       .strip()
+            if isinstance(raw_primary, str)
+            else None
+        )
+
+        primary = None
+        if clean_primary:
+            key = clean_primary.lower()
+            if key not in used_insights:
+                primary = clean_primary
+                used_insights.add(key)
+
+        # -------------------------------------------------
+        # 🧠 SECONDARY INSIGHT (priority + unique)
+        # -------------------------------------------------
+        candidates = [
+            insights.get("combinedTechnicalSummary"),
+            (
                 f"{insights.get('trendSummary')} {insights.get('momentumSummary')}"
                 if insights.get("trendSummary") and insights.get("momentumSummary")
                 else None
-            )
-            or insights.get("momentumSummary")
-            or insights.get("volumeSummary")
-            or insights.get("volatilitySummary")
-        )
+            ),
+            insights.get("trendSummary"),
+            insights.get("momentumSummary"),
+            insights.get("volumeSummary"),
+            insights.get("volatilitySummary"),
+        ]
 
+        secondary = None
+        for c in candidates:
+            if not isinstance(c, str):
+                continue
+
+            c = c.strip()
+            key = c.lower()
+
+            if key not in used_insights:
+                secondary = c
+                used_insights.add(key)
+                break
+
+        # -------------------------------------------------
+        # 🔒 FINAL FALLBACK (guaranteed unique)
+        # -------------------------------------------------
+        if not secondary:
+            secondary = f"Signal derived from multi-factor analysis for {sym}."
 
         insight = {
-            "primary": line1,
-            "secondary": line2,
-        } if line1 else None
+            "primary": primary,
+            "secondary": secondary,
+        } if (primary or secondary) else None
 
+        # -------------------------------------------------
+        # 📦 RESPONSE ITEM
+        # -------------------------------------------------
         items.append({
             "symbol": d.get("symbol"),
             "company_name": d.get("company_name"),
 
-            # -------------------------
             # Quote
-            # -------------------------
             "quote": {
                 "price": q.get("price"),
                 "change": q.get("change"),
                 "changePct": q.get("changePct"),
             },
 
-            # -------------------------
             # BullBrain
-            # -------------------------
             "bullbrain": {
                 "signal": bull.get("signal"),
                 "confidence": bull.get("confidence"),
@@ -5027,19 +5067,13 @@ def homescreen_mag7():
                 "prob_down": raw.get("prob_down"),
             },
 
-            # -------------------------
-            # Insight (2 lines)
-            # -------------------------
+            # Insight (unique, clean, human)
             "insight": insight,
 
-            # -------------------------
-            # Sparkline (precomputed or empty)
-            # -------------------------
+            # Sparkline
             "sparkline": d.get("sparkline", []),
 
-            # -------------------------
             # Pattern summary
-            # -------------------------
             "pattern": {
                 "name": pattern.get("pattern") or pattern.get("patternLabel"),
                 "bias": pattern.get("bias") or pattern.get("patternBias"),
@@ -5054,9 +5088,9 @@ def homescreen_mag7():
     return {
         "count": len(items),
         "mag7": items,
-        "version": "v4",
+        "version": "v5",
     }
- 
+
 # ---------------------------------------------------------
 # /homescreen-context — UI-only data (NO intelligence NEW)
 # ---------------------------------------------------------
