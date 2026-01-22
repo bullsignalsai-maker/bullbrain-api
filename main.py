@@ -4959,8 +4959,6 @@ def homescreen_mag7():
     MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
     items = []
 
-    used_categories = set()
-
     for sym in MAG7:
         doc = (
             db.collection("bullsignals_ai")
@@ -4983,41 +4981,6 @@ def homescreen_mag7():
         days5 = fr.get("days5", {}) or {}
         insights = d.get("insights", {}) or {}
 
-        # -------------------------
-        # PRIMARY (always exists)
-        # -------------------------
-        primary = (
-            insights.get("oneLiner")
-            or insights.get("summaryLine")
-            or insights.get("trendSummary")
-            or f"Market signal evaluated for {sym}."
-        )
-
-        # remove HOLD:/BUY:/SELL:
-        primary = primary.replace("HOLD:", "").replace("BUY:", "").replace("SELL:", "").strip()
-
-        # -------------------------
-        # SECONDARY (category-unique)
-        # -------------------------
-        secondary = None
-
-        candidates = [
-            ("combined", insights.get("combinedTechnicalSummary")),
-            ("trend", insights.get("trendSummary")),
-            ("momentum", insights.get("momentumSummary")),
-            ("volume", insights.get("volumeSummary")),
-            ("volatility", insights.get("volatilitySummary")),
-        ]
-
-        for category, text in candidates:
-            if text and category not in used_categories:
-                secondary = text
-                used_categories.add(category)
-                break
-
-        if not secondary:
-            secondary = f"Additional technical factors assessed for {sym}."
-
         items.append({
             "symbol": d.get("symbol"),
             "company_name": d.get("company_name"),
@@ -5035,9 +4998,10 @@ def homescreen_mag7():
                 "prob_down": raw.get("prob_down"),
             },
 
+            # 🔑 SINGLE SOURCE OF TRUTH
             "insight": {
-                "primary": primary,
-                "secondary": secondary,
+                "primary": insights.get("oneLiner"),
+                "secondary": insights.get("summaryLine"),
             },
 
             "sparkline": d.get("sparkline", []),
@@ -5056,7 +5020,7 @@ def homescreen_mag7():
     return {
         "count": len(items),
         "mag7": items,
-        "version": "v6",
+        "version": "v7",
     }
 
 # ---------------------------------------------------------
