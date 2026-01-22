@@ -5675,7 +5675,6 @@ def stock_decision_details(symbol: str):
 
     return explain_decision_ladder(stock)
 
-
 # ---------------------------------------------------------
 # Quotes Bulk API — Full Quote Documents (Live)
 # ---------------------------------------------------------
@@ -5705,7 +5704,8 @@ def quotes_bulk(scope: str = "home"):
         data = doc.to_dict() or {}
 
         # -----------------------------------------------------
-        # 2️⃣ PASS THROUGH — NO FIELD DROPPING
+        # 2️⃣ PASS THROUGH — AUTHORITATIVE QUOTE SCHEMA
+        #    (NO mutation, NO recompute)
         # -----------------------------------------------------
         quotes[sym] = {
             "symbol": data.get("symbol", sym),
@@ -5717,9 +5717,9 @@ def quotes_bulk(scope: str = "home"):
             "low": data.get("low"),
             "prevClose": data.get("prevClose"),
             "timestamp": data.get("timestamp"),
-            "updated_at": data.get("updated_at"),
-            "needs_refresh": data.get("needs_refresh"),
-            "ttl_seconds": data.get("ttl_seconds"),
+            "updated_at": data.get("updated_at"),   # 🔥 use as-is
+            "needs_refresh": data.get("needs_refresh", False),
+            "ttl_seconds": data.get("ttl_seconds", 30),
             "source": data.get("source"),
         }
 
@@ -5732,5 +5732,4 @@ def quotes_bulk(scope: str = "home"):
         "scope": scope,
         "count": len(quotes),
         "quotes": quotes,
-        "updated_at": utc_now_iso(),
     }
