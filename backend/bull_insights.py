@@ -86,23 +86,21 @@ def generate_bull_insights(
     """
 
     technical = technical or {}
-    decision = decision or {}
     pattern = pattern or {}
     pattern_history = pattern_history or {}
 
     final_signal = (decision.get("finalSignal") or bullbrain.get("signal") or "HOLD")
     final_signal = str(final_signal).upper()
 
-    reasons = decision.get("decisionReasons") or []
+    decision = decision or {}
+    reasons = decision.get("decisionReasons") or decision.get("reasons") or []
     if not isinstance(reasons, list):
         reasons = []
 
+    quality = decision.get("quality") or {}
+
     why_lines = [_humanize_reason(str(r)) for r in reasons[:4] if r]
     why_signal = " ".join(why_lines).strip()
-
-    decision = decision or {}
-    reasons = decision.get("decisionReasons") or decision.get("reasons") or []
-    quality = decision.get("quality") or {}
 
     # -----------------------------
     # Helpers
@@ -306,11 +304,14 @@ def generate_bull_insights(
             summary_line = f"{summary_line} • {patt_part}"
     
     if why_signal:
-    summary_line = f"{summary_line} Why: {why_signal}"
+        if summary_line:
+            summary_line = f"{summary_line} Why: {why_signal}"
+        else:
+            summary_line = f"Why: {why_signal}"
 
     # clean explanation for UI cards
     if not why_signal:
-    why_signal = "No high-conviction confirmation yet; waiting for stronger alignment."
+        why_signal = "No high-conviction confirmation yet; waiting for stronger alignment."
 
 
     # -----------------------------
