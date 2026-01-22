@@ -5674,6 +5674,7 @@ def stock_decision_details(symbol: str):
     from backend.decision_explainer import explain_decision_ladder
 
     return explain_decision_ladder(stock)
+    
 # ---------------------------------------------------------
 # Quotes Bulk API — Symbol-Driven (Reusable)
 # ---------------------------------------------------------
@@ -5693,29 +5694,19 @@ def quotes_bulk(
         }
 
     # ---------------------------------------------------------
-    # 1️⃣ Parse symbols from query
+    # 1️⃣ Parse symbols
     # ---------------------------------------------------------
     symbol_list = [
         s.strip().upper()
         for s in symbols.split(",")
         if s.strip()
-    ]
+    ][:100]
 
-    if not symbol_list:
-        return {
-            "scope": scope,
-            "count": 0,
-            "quotes": {},
-        }
-
-    # Safety cap
-    symbol_list = symbol_list[:100]
+    quotes = {}
 
     # ---------------------------------------------------------
     # 2️⃣ Firestore reads (quotes ONLY)
     # ---------------------------------------------------------
-    quotes: dict[str, dict] = {}
-
     for sym in symbol_list:
         doc = (
             db.collection("bullsignals_ai")
@@ -5730,9 +5721,6 @@ def quotes_bulk(
 
         data = doc.to_dict() or {}
 
-        # -----------------------------------------------------
-        # 3️⃣ PASS THROUGH — AUTHORITATIVE QUOTE SCHEMA
-        # -----------------------------------------------------
         quotes[sym] = {
             "symbol": data.get("symbol", sym),
             "price": data.get("price"),
@@ -5749,9 +5737,6 @@ def quotes_bulk(
             "source": data.get("source"),
         }
 
-    # ---------------------------------------------------------
-    # 4️⃣ Response
-    # ---------------------------------------------------------
     return {
         "scope": scope,
         "count": len(quotes),
