@@ -5674,3 +5674,63 @@ def stock_decision_details(symbol: str):
     from backend.decision_explainer import explain_decision_ladder
 
     return explain_decision_ladder(stock)
+
+
+# ---------------------------------------------------------
+# Quotes Bulk API — Full Quote Documents (Live)
+# ---------------------------------------------------------
+@app.get("/quotes-bulk")
+def quotes_bulk(scope: str = "home"):
+    print("QUOTES-BULK HIT | scope =", scope)
+
+    # ---------------------------------------------------------
+    # 1️⃣ Firestore read (quotes collection ONLY)
+    # ---------------------------------------------------------
+    snaps = (
+        db.collection("bullsignals_ai")
+          .document("quotes")
+          .collection("symbols")
+          .stream()
+    )
+
+    quotes: dict[str, dict] = {}
+    MAX_QUOTES = 100   # safety cap
+    count = 0
+
+    for doc in snaps:
+        if count >= MAX_QUOTES:
+            break
+
+        sym = doc.id.upper()
+        data = doc.to_dict() or {}
+
+        # -----------------------------------------------------
+        # 2️⃣ PASS THROUGH — NO FIELD DROPPING
+        # -----------------------------------------------------
+        quotes[sym] = {
+            "symbol": data.get("symbol", sym),
+            "price": data.get("price"),
+            "change": data.get("change"),
+            "changePct": data.get("changePct"),
+            "open": data.get("open"),
+            "high": data.get("high"),
+            "low": data.get("low"),
+            "prevClose": data.get("prevClose"),
+            "timestamp": data.get("timestamp"),
+            "updated_at": data.get("updated_at"),
+            "needs_refresh": data.get("needs_refresh"),
+            "ttl_seconds": data.get("ttl_seconds"),
+            "source": data.get("source"),
+        }
+
+        count += 1
+
+    # ---------------------------------------------------------
+    # 3️⃣ Response (UI merge friendly)
+    # ---------------------------------------------------------
+    return {
+        "scope": scope,
+        "count": len(quotes),
+        "quotes": quotes,
+        "updated_at": utc_now_iso(),
+    }
