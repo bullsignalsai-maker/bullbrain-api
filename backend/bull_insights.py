@@ -1,18 +1,17 @@
 # backend/bull_insights.py
 # ------------------------------------------------------
 # BullBrain Insights Generator (Backend)
-# - Port of services/generateBullInsights.js (concept parity)
-# - Pure function: (features, bullbrain, technical) -> insights dict
-# - Frontend becomes dumb render (insights come from API/Firestore)
 # ------------------------------------------------------
 
 from __future__ import annotations
-
 from typing import Any, Dict, Optional, List
 import math
-import random
 import hashlib
 
+
+# ======================================================
+# Utilities
+# ======================================================
 
 def _num(v: Any, fallback: Optional[float] = None) -> Optional[float]:
     try:
@@ -22,48 +21,136 @@ def _num(v: Any, fallback: Optional[float] = None) -> Optional[float]:
         pass
     return fallback
 
-def _humanize_reason(r: str) -> str:
-    r = (r or "").strip()
-
-    mapping = {
-        "Liquidity=POOR": "Liquidity is weak, so signals are less reliable.",
-        "PatternQualityFailed": "The detected pattern has weak historical performance.",
-        "RegimePatternMismatch": "Pattern is not reliable in the current market regime.",
-        "AlignmentFailed": "Signal and technical alignment did not confirm.",
-        "TimeframeAlignmentFailed": "Multiple timeframes did not align.",
-        "VolumeGateFailed": "Volume confirmation is missing.",
-        "ConsensusFailed": "Signals across factors did not reach a strong consensus.",
-        "PressureMismatch": "Buying/selling pressure does not support the signal.",
-        "FragilityHigh": "Price structure looks fragile; risk of whipsaw.",
-        "ExhaustionTrue": "Move appears exhausted; reversal risk is high.",
-        "EVNegative": "Expected value is not favorable based on history.",
-    }
-
-    return mapping.get(r, r)
 
 def _seeded_pick(options: List[str], seed_key: str) -> str:
-    """
-    Deterministic pick per (symbol + day) or any seed_key you pass.
-    Prevents UI text from changing every refresh.
-    """
     if not options:
         return ""
     h = hashlib.sha256(seed_key.encode("utf-8")).hexdigest()
-    # use first 8 hex chars as deterministic int
     idx = int(h[:8], 16) % len(options)
     return options[idx]
 
-def _soften_if_hold(text: str, signal: str) -> str:
-    if signal != "HOLD":
-        return text
-    if not text:
-        return text
-    return (
-        text
-        .replace("potential", "possible")
-        .replace("may be", "could be")
-        .replace("is", "appears")
-    )
+
+def _conf_tier(conf: float) -> str:
+    if conf >= 80:
+        return "high"
+    if conf >= 65:
+        return "moderate"
+    return "low"
+
+
+def _humanize_reason(code: str) -> str:
+    mapping = {
+        "PatternQualityFailed": "the detected pattern lacks a strong historical edge",
+        "WeakFeatureConsensus": "technical signals are not aligned strongly enough",
+        "VolumeGateFailed": "volume confirmation is missing",
+        "SignalTooFragile": "price action is unstable and prone to whipsaws",
+        "MomentumExhausted": "the recent move appears stretched",
+        "NegativeEV": "historical outcomes do not favor this setup",
+        "Liquidity=POOR": "liquidity conditions reduce signal reliability",
+    }
+    return mapping.get(code, code.lower())
+
+
+# ======================================================
+# Narrative Builders
+# ======================================================
+
+def _build_market_state_sentence(
+    *,
+    sma5: Optional[float],
+    sma20: Optional[float],
+    rsi14: Optional[float],
+    macd: Optional[float],
+    macd_signal: Optional[float],
+    vol_z: Optional[float],
+    intraday_range_pct: Optional[float],
+    seed_key: str,
+) -> str:
+    parts = []
+
+    # Price / trend
+    if sma5 is not None and sma20 is not None:
+        if sma5 > sma20:
+            parts.append("price is holding above its short-term average")
+        elif sma5 < sma20:
+            parts.append("price remains below its short-term average")
+
+    # Momentum
+    if rsi14 is not None:
+        if rsi14 < 30:
+            parts.append("momentum looks oversold and stretched")
+        elif rsi14 > 70:
+            parts.append("momentum appears overheated after a strong run")
+        else:
+            if macd is not None and macd_signal is not None:
+                if macd < macd_signal:
+                    parts.append("momentum continues to weaken")
+                elif macd > macd_signal:
+                    parts.append("momentum is gradually improving")
+
+    # Volume
+    if vol_z is not None:
+        if vol_z > 2:
+            parts.append("trading activity is unusually strong")
+        elif vol_z < -1:
+            parts.append("trading participation remains thin")
+
+    # Volatility
+    if intraday_range_pct is not None:
+        if intraday_range_pct > 4:
+            parts.append("price swings remain elevated")
+        elif intraday_range_pct > 2:
+            parts.append("intraday price movement is moderately volatile")
+
+    if not parts:
+        return "Market conditions remain mixed with no dominant technical driver."
+
+    connectors = ["while", "and", "with", "as"]
+    joiner = _seeded_pick(connectors, seed_key)
+    return f"{parts[0]} {joiner} {', '.join(parts[1:])}."
+
+
+def _build_signal_sentence(
+    *,
+    signal: str,
+    confidence: float,
+    reasons: List[str],
+    seed_key: str,
+) -> str:
+    conf_label = _conf_tier(confidence)
+
+    if signal == "BUY":
+        base = "Conditions favor bullish continuation"
+    elif signal == "SELL":
+        base = "Downside risk remains dominant"
+    else:
+        base = "Clear directional edge is not yet established"
+
+    if reasons:
+        reason_text = _seeded_pick(reasons, seed_key)
+        return f"{base}, but {reason_text}."
+
+    return f"{base}, suggesting a {conf_label}-confidence environment."
+
+
+def _build_pattern_sentence(
+    *,
+    patt_name: Optional[str],
+    patt_bias: Optional[str],
+    patt_stats_line: Optional[str],
+) -> Optional[str]:
+    if not patt_name:
+        return None
+
+    bias_part = f" with a {patt_bias} bias" if patt_bias else ""
+    if patt_stats_line:
+        return f"The current pattern ({patt_name}){bias_part}, showing {patt_stats_line.lower()}."
+    return f"The current pattern ({patt_name}){bias_part} is influencing price behavior."
+
+
+# ======================================================
+# Main Generator
+# ======================================================
 
 def generate_bull_insights(
     *,
@@ -77,277 +164,93 @@ def generate_bull_insights(
     seed_key: Optional[str] = None,
 ) -> Dict[str, Any]:
 
-    """
-    Returns a UI-friendly insights dict aligned with:
-      - signal + confidence
-      - decision reasons + quality
-      - pattern + patternHistory forward stats
-      - features_meta + technical summaries
-    """
-
     technical = technical or {}
+    decision = decision or {}
     pattern = pattern or {}
     pattern_history = pattern_history or {}
 
-    final_signal = (decision.get("finalSignal") or bullbrain.get("signal") or "HOLD")
-    final_signal = str(final_signal).upper()
+    signal = str(
+        decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
+    ).upper()
 
-    decision = decision or {}
-    reasons = decision.get("decisionReasons") or decision.get("reasons") or []
-    if not isinstance(reasons, list):
-        reasons = []
+    confidence = float(_num(bullbrain.get("confidence"), 0.0) or 0.0)
+    reasons_raw = decision.get("decisionReasons") or decision.get("reasons") or []
+    reasons = [_humanize_reason(str(r)) for r in reasons_raw if r]
 
-    quality = decision.get("quality") or {}
+    seed_key = seed_key or f"{symbol}:{technical.get('updated_at') or ''}"
 
-    why_lines = [_humanize_reason(str(r)) for r in reasons[:4] if r]
-    why_signal = " ".join(why_lines).strip()
-
-    # -----------------------------
-    # Helpers
-    # -----------------------------
-    def _as_list(x):
-        return x if isinstance(x, list) else []
-
-    def _pct(v: Optional[float]) -> str:
-        if v is None:
-            return "--"
-        try:
-            return f"{float(v):+.2f}%"
-        except Exception:
-            return "--"
-
-    def _conf_tier(conf: float) -> str:
-        if conf >= 80:
-            return "High"
-        if conf >= 65:
-            return "Medium"
-        return "Low"
-
-    def _reason_explain(code: str) -> str:
-        # Decision ladder reason → human explanation
-        if not isinstance(code, str):
-            return ""
-        if code.startswith("Liquidity="):
-            val = code.split("=", 1)[1]
-            return f"Liquidity looks {val.lower()} (thin volume / unreliable moves), so the system avoids aggressive calls."
-        if code == "PatternQualityFailed":
-            return "This pattern has weak historical edge (win rate / average return not strong enough), so signal is blocked."
-        if code == "TimeframeMisalignment":
-            return "Short-, mid-, and 10-day returns don’t agree yet, so the setup isn’t consistent across timeframes."
-        if code == "VolumeGateFailed":
-            return "Volume confirmation is missing, so the move may not have strong participation."
-        if code == "WeakFeatureConsensus":
-            return "Trend, momentum, and volume signals are mixed, so there isn’t enough agreement for a directional call."
-        if code == "NoUpsidePressure":
-            return "Indicators don’t show enough upside pressure to justify a BUY despite some positive signals."
-        if code == "NoDownsidePressure":
-            return "Indicators don’t show enough downside pressure to justify a SELL despite some negative signals."
-        if code == "SignalTooFragile":
-            return "Price action is unstable (wide swings / indecision), so risk is elevated and signal is blocked."
-        if code == "MomentumExhausted":
-            return "The move looks stretched (exhaustion risk), so the system avoids chasing."
-        if code == "NegativeEV":
-            return "Expected value is negative based on historical outcomes + risk penalties, so signal is blocked."
-        if code == "SignalPatternConflict":
-            return "Model direction conflicts with pattern bias, so the system avoids a contradictory trade."
-        if code == "ALL_GATES_PASSED":
-            return "All quality gates passed: the signal is considered actionable."
-        return code
-
-    def _pick_top_reasons(reason_list: List[Any], max_n: int = 2) -> List[str]:
-        out = []
-        for r in reason_list:
-            txt = _reason_explain(str(r))
-            if txt and txt not in out:
-                out.append(txt)
-            if len(out) >= max_n:
-                break
-        return out
-
-    # -----------------------------
-    # Extract important numbers
-    # -----------------------------
-    close = _num(features.get("close"))
+    # --- Extract features
     sma5 = _num(features.get("sma5"))
     sma20 = _num(features.get("sma20"))
     rsi14 = _num(features.get("rsi14"))
     macd = _num(features.get("macd"))
     macd_signal = _num(features.get("macd_signal"))
-    macd_hist = _num(features.get("macd_hist"))
     vol_z = _num(features.get("volume_zscore_20"))
-    vol20 = _num(features.get("volatility_20d"))
-    trend_strength_20 = _num(features.get("trend_strength_20"))
     intraday_range_pct = _num(features.get("intraday_range_pct"))
 
-    signal = final_signal
+    # --- Pattern context
+    patt_name = pattern.get("pattern") or pattern.get("patternLabel")
+    patt_bias = pattern.get("bias") or pattern.get("patternBias")
 
+    patt_stats_line = None
+    days5 = (pattern_history.get("forwardReturns") or {}).get("days5") or {}
+    if days5.get("winRate") is not None and days5.get("avg") is not None:
+        patt_stats_line = (
+            f"a {days5['winRate']:.0%} win rate and "
+            f"{days5['avg']:+.2f}% average return over 5 days"
+        )
 
-    confidence = float(_num(bullbrain.get("confidence"), 0.0) or 0.0)
-    conf_label = _conf_tier(confidence)
+    # ==================================================
+    # Build Narratives
+    # ==================================================
 
-    prob_up = _num(bullbrain.get("prob_up"))
-    prob_down = _num(bullbrain.get("prob_down"))
+    market_sentence = _build_market_state_sentence(
+        sma5=sma5,
+        sma20=sma20,
+        rsi14=rsi14,
+        macd=macd,
+        macd_signal=macd_signal,
+        vol_z=vol_z,
+        intraday_range_pct=intraday_range_pct,
+        seed_key=seed_key,
+    )
 
-    # Deterministic seed
-    seed_key = seed_key or f"{symbol}:{(technical.get('updated_at') or '')}"
+    signal_sentence = _build_signal_sentence(
+        signal=signal,
+        confidence=confidence,
+        reasons=reasons,
+        seed_key=seed_key,
+    )
 
-    # -----------------------------
-    # Pattern context (if present)
-    # -----------------------------
-    patt_name = None
-    patt_bias = None
-    if isinstance(pattern, dict):
-        patt_name = pattern.get("pattern") or pattern.get("patternLabel")
-        patt_bias = pattern.get("bias") or pattern.get("patternBias")
+    pattern_sentence = _build_pattern_sentence(
+        patt_name=patt_name,
+        patt_bias=patt_bias,
+        patt_stats_line=patt_stats_line,
+    )
 
-    patt_stats_line = ""
-    if isinstance(pattern_history, dict):
-        days5 = (pattern_history.get("forwardReturns") or {}).get("days5") or {}
-        wr = days5.get("winRate")
-        avg = days5.get("avg")
-        cnt = days5.get("count")
-        if wr is not None and avg is not None and cnt:
-            patt_stats_line = f"Pattern edge (5D): winRate={wr:.0%}, avg={avg:+.2f}%, samples={cnt}"
+    # ==================================================
+    # Final Assembly (UI-facing)
+    # ==================================================
 
-    # -----------------------------
-    # Trend / Momentum / Volume / Volatility (base)
-    # -----------------------------
-    trend_summary = ""
-    if sma5 is not None and sma20 is not None:
-        if sma5 > sma20:
-            trend_summary = "Trend: short-term strength (price above key averages)."
-        elif sma5 < sma20:
-            trend_summary = "Trend: short-term weakness (price below key averages)."
-        else:
-            trend_summary = "Trend: neutral (averages aligned)."
+    one_liner = market_sentence
 
-    tech_trend = (technical.get("trend") or {}).get("summary")
-    if isinstance(tech_trend, str) and tech_trend.strip():
-        trend_summary = tech_trend.strip().rstrip(".") + "."
+    summary_parts = [signal_sentence]
+    if pattern_sentence:
+        summary_parts.append(pattern_sentence)
 
-    momentum_summary = "Momentum: mixed."
-    mh = macd_hist if macd_hist is not None else 0.0
-    if rsi14 is not None:
-        if rsi14 < 30:
-            momentum_summary = "Momentum: oversold (bounce possible, needs confirmation)."
-        elif rsi14 > 70:
-            momentum_summary = "Momentum: overbought (pullback risk)."
-        else:
-            if macd is not None and macd_signal is not None:
-                if macd > macd_signal and mh > 0:
-                    momentum_summary = "Momentum: strengthening (positive MACD structure)."
-                elif macd < macd_signal and mh < 0:
-                    momentum_summary = "Momentum: weakening (negative MACD structure)."
+    summary_line = " ".join(summary_parts)
 
-    tech_mom = (technical.get("momentum") or {}).get("summary_rsi")
-    if isinstance(tech_mom, str) and tech_mom.strip():
-        momentum_summary = tech_mom.strip().rstrip(".") + "."
-
-    volume_summary = "Volume: near normal."
-    if vol_z is not None:
-        if vol_z > 2:
-            volume_summary = "Volume: strong spike (high participation)."
-        elif vol_z > 1:
-            volume_summary = "Volume: elevated (above average)."
-        elif vol_z < -1:
-            volume_summary = "Volume: unusually low (thin participation)."
-
-    tech_vol = (technical.get("volume") or {}).get("summary")
-    if isinstance(tech_vol, str) and tech_vol.strip():
-        volume_summary = tech_vol.strip().rstrip(".") + "."
-
-    volatility_summary = "Volatility: normal."
-    if intraday_range_pct is not None:
-        if intraday_range_pct > 4:
-            volatility_summary = "Volatility: high (wide intraday swings)."
-        elif intraday_range_pct > 2:
-            volatility_summary = "Volatility: moderate."
-
-    tech_vola = (technical.get("volatility") or {}).get("summary")
-    if isinstance(tech_vola, str) and tech_vola.strip():
-        volatility_summary = tech_vola.strip().rstrip(".") + "."
-
-    # -----------------------------
-    # Signal-aligned, confidence-aware OneLiner + Summary
-    # -----------------------------
-    # Key idea:
-    # - BUY: “Actionable bullish bias” (with confidence + risk cue)
-    # - SELL: “Defensive / downside bias”
-    # - HOLD: “Blocked by X” OR “No edge yet”
-    top_reason_lines = _pick_top_reasons(_as_list(reasons), max_n=2)
-
-    if signal == "BUY":
-        one_liner = f"Bullish setup ({conf_label} confidence) — conditions support a long bias with risk controls."
-        summary_line = "BUY signal: trend/momentum/volume align well enough to be actionable."
-    elif signal == "SELL":
-        one_liner = f"Bearish setup ({conf_label} confidence) — downside risk remains, consider defensive positioning."
-        summary_line = "SELL signal: weakness/pressure dominates with enough confirmation to act."
-    else:
-        # HOLD: be explicit why, if we have reasons
-        if top_reason_lines:
-            one_liner = "HOLD: setup is blocked by quality filters — waiting avoids low-edge trades."
-            summary_line = " | ".join(top_reason_lines[:1])
-        else:
-            one_liner = "HOLD: no clean edge yet — wait for confirmation."
-            summary_line = "Trend/momentum are not aligned enough for a directional call."
-
-    # -----------------------------
-    # Add pattern context into summary if available
-    # -----------------------------
-    if patt_name:
-        patt_part = f"Pattern: {patt_name}"
-        if patt_bias:
-            patt_part += f" ({patt_bias})"
-        if patt_stats_line:
-            summary_line = f"{summary_line} • {patt_part} • {patt_stats_line}"
-        else:
-            summary_line = f"{summary_line} • {patt_part}"
-    
-    if why_signal:
-        if summary_line:
-            summary_line = f"{summary_line} Why: {why_signal}"
-        else:
-            summary_line = f"Why: {why_signal}"
-
-    # clean explanation for UI cards
-    if not why_signal:
-        why_signal = "No high-conviction confirmation yet; waiting for stronger alignment."
-
-
-    # -----------------------------
-    # Combined technical summary (kept, but cleaner)
-    # -----------------------------
     combined = " ".join(
-        [s for s in [trend_summary, momentum_summary, volume_summary, volatility_summary] if s]
-    ).strip()
-
-    # -----------------------------
-    # NEW: Structured explanations (still inside insights map)
-    # -----------------------------
-    explain = {
-        "signal": signal,
-        "confidence": round(confidence, 2),
-        "confidenceLabel": conf_label,
-        "prob_up": prob_up,
-        "prob_down": prob_down,
-        "decisionReasons": [str(x) for x in _as_list(reasons)],
-        "decisionWhy": top_reason_lines,          # human readable
-        "quality": quality,                       # already in Firestore; just mirrored for UI
-        "pattern": {
-            "name": patt_name,
-            "bias": patt_bias,
-            "statsLine": patt_stats_line or None,
-        },
-    }
+        p for p in [market_sentence, signal_sentence, pattern_sentence] if p
+    )
 
     return {
         "oneLiner": one_liner,
-        "whySignal": why_signal,
+        "whySignal": signal_sentence,
         "summaryLine": summary_line,
-        "trendSummary": trend_summary,
-        "momentumSummary": momentum_summary,
-        "volumeSummary": volume_summary,
-        "volatilitySummary": volatility_summary,
+        "trendSummary": None,
+        "momentumSummary": None,
+        "volumeSummary": None,
+        "volatilitySummary": None,
         "combinedTechnicalSummary": combined,
     }
-
