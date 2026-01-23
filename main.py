@@ -5110,7 +5110,6 @@ def homescreen_carousel():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
     }
-
 # ---------------------------------------------------------
 # Stock Detail API — UI-Optimized (Narrative First)
 # ---------------------------------------------------------
@@ -5146,9 +5145,6 @@ def stock_detail(symbol: str, source: str | None = None):
     stock = doc.to_dict() or {}
     stock["symbol"] = sym
 
-    quote = stock.get("quote") or {}
-    bull = stock.get("bullbrain") or {}
-    decision = stock.get("decision") or {}
     pattern = stock.get("pattern") or {}
     history = stock.get("patternHistory") or {}
     insights = stock.get("insights") or {}
@@ -5162,7 +5158,7 @@ def stock_detail(symbol: str, source: str | None = None):
     header = build_stock_header(stock)
 
     # ---------------------------------------------------------
-    # 3️⃣ SMART PATTERN CARD (Stock Detail only)
+    # 3️⃣ SMART PATTERN CARD (Light, factual)
     # ---------------------------------------------------------
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
     win_rate = days5.get("winRate")
@@ -5173,11 +5169,12 @@ def stock_detail(symbol: str, source: str | None = None):
             "name": pattern.get("pattern") or pattern.get("patternLabel"),
             "winRate": win_rate,
             "strength": (
-                "Historically Strong" if isinstance(win_rate, (int, float)) and win_rate >= 0.7
-                else "Neutral / Weak" if isinstance(win_rate, (int, float))
+                "Historically Strong"
+                if isinstance(win_rate, (int, float)) and win_rate >= 0.7
+                else "Mixed / Neutral"
+                if isinstance(win_rate, (int, float))
                 else None
             ),
-            "explanation": pattern.get("headline"),
         }
 
     # ---------------------------------------------------------
@@ -5224,18 +5221,10 @@ def stock_detail(symbol: str, source: str | None = None):
     }
 
     # ---------------------------------------------------------
-    # 7️⃣ EXECUTIVE SUMMARY
+    # 7️⃣ Sparkline (fallback-safe)
     # ---------------------------------------------------------
-    executive_summary = (
-        insights.get("combinedTechnicalSummary")
-        or insights.get("summaryLine")
-        or insights.get("oneLiner")
-    )
+    content: dict[str, Any] = {}
 
-    # ---------------------------------------------------------
-    # 8️⃣ Sparkline (fallback-safe)
-    # ---------------------------------------------------------
-    content = {}
     candles = (stock.get("candles") or {}).get("candles", [])
     if candles:
         try:
@@ -5245,20 +5234,16 @@ def stock_detail(symbol: str, source: str | None = None):
             pass
 
     # ---------------------------------------------------------
-    # 9️⃣ UI Enhancements (badges, freshness)
+    # 8️⃣ UI Enhancements (FULL, canonical)
     # ---------------------------------------------------------
     try:
         from backend.ui_stock_builder import build_ui_enhancements
-        ui = build_ui_enhancements(stock) or {}
-        content["ui"] = {
-            "badges": ui.get("badges"),
-            "freshness": ui.get("freshness"),
-        }
+        content["ui"] = build_ui_enhancements(stock) or {}
     except Exception:
         content["ui"] = {}
 
     # ---------------------------------------------------------
-    # 🔟 Company News (RESTORED)
+    # 9️⃣ Company News
     # ---------------------------------------------------------
     try:
         from backend.news_repo import fetch_symbol_news
@@ -5271,14 +5256,13 @@ def stock_detail(symbol: str, source: str | None = None):
         content["news"] = []
 
     # ---------------------------------------------------------
-    # 1️⃣1️⃣ Final Response (UI-Optimized)
+    # 🔟 Final Response (Clean, Narrative-First)
     # ---------------------------------------------------------
     content.update({
         "smartPattern": smart_pattern,
         "outlook": outlook,
         "technicalSnapshot": technical_snapshot,
         "priceAction": price_action,
-        "executiveSummary": executive_summary,
         "computed_at": stock.get("computed_at"),
     })
 
