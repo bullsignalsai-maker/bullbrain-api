@@ -718,7 +718,13 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
                 "prob_down": prob_down,
             },
             technical=technical,
-            seed_key=f"{symbol}:{utc_now_iso()}",
+            seed_key=(
+                f"{symbol}:"
+                f"{round(feat_dict.get('close', 0), 1)}:"
+                f"{round(feat_dict.get('rsi14', 0), 0)}:"
+                f"{round(feat_dict.get('volatility_20d', 0), 2)}"
+            ),
+
             decision=core.get("decision"),
             pattern=core.get("pattern"),
             pattern_history=core.get("patternHistory"),
