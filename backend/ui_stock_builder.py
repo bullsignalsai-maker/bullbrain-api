@@ -330,6 +330,25 @@ def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"stance": stance.title(), "summary": summary, "note": note}
 
+def build_sparkline_from_prices(prices: list[float]) -> dict[str, Any]:
+    if not prices or len(prices) < 2:
+        return {}
+
+    min_p, max_p = min(prices), max(prices)
+    span = max_p - min_p or 1
+
+    points = []
+    for i, price in enumerate(prices):
+        x = round(i * 100 / (len(prices) - 1), 1)
+        y = round((max_p - price) * 30 / span, 1)
+        points.append(f"{x},{y}")
+
+    return {
+        "path": "M " + " L ".join(points),
+        "min": round(min_p, 2),
+        "max": round(max_p, 2),
+        "direction": "up" if prices[-1] >= prices[0] else "down",
+    }
 
 # =================================================
 # Master UI Enhancer
@@ -342,7 +361,16 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     # -------------------------------------------------
     existing = stockdetail.get("sparkline")
 
-    if not (isinstance(existing, dict) and existing.get("path")):
+    # Case 1: Already render-ready (rare)
+    if isinstance(existing, dict) and existing.get("path"):
+        ui["sparkline"] = existing
+
+    # Case 2: Firestore raw sparkline array (THIS IS YOUR CASE)
+    elif isinstance(existing, list) and len(existing) >= 2:
+        ui["sparkline"] = build_sparkline_from_prices(existing)
+
+    # Case 3: Candle-based fallback (future-safe)
+    else:
         candles_block = stockdetail.get("candles") or []
 
         if isinstance(candles_block, dict):
