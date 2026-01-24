@@ -5221,12 +5221,18 @@ def stock_detail(symbol: str, source: str | None = None):
     }
 
     # ---------------------------------------------------------
-    # 7️⃣ Sparkline (fallback-safe)
+    # 7️⃣ Sparkline (schema-agnostic, primary)
     # ---------------------------------------------------------
-    content: dict[str, Any] = {}
+    candles_block = stock.get("candles") or []
 
-    candles = (stock.get("candles") or {}).get("candles", [])
-    if candles:
+    if isinstance(candles_block, dict):
+        candles = candles_block.get("candles", [])
+    elif isinstance(candles_block, list):
+        candles = candles_block
+    else:
+        candles = []
+
+    if candles and len(candles) >= 2:
         try:
             from backend.ui_stock_builder import build_sparkline
             content["sparkline"] = build_sparkline(candles)

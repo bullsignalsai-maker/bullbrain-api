@@ -337,11 +337,22 @@ def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     ui: Dict[str, Any] = {}
 
-    # Sparkline
+    # -------------------------------------------------
+    # Sparkline (fallback-only, schema-safe)
+    # -------------------------------------------------
     existing = stockdetail.get("sparkline")
+
     if not (isinstance(existing, dict) and existing.get("path")):
-        candles = (stockdetail.get("candles") or {}).get("candles", [])
-        if candles:
+        candles_block = stockdetail.get("candles") or []
+
+        if isinstance(candles_block, dict):
+            candles = candles_block.get("candles", [])
+        elif isinstance(candles_block, list):
+            candles = candles_block
+        else:
+            candles = []
+
+        if candles and len(candles) >= 2:
             ui["sparkline"] = build_sparkline(candles)
 
     ui["badges"] = build_ui_badges(stockdetail)
