@@ -431,4 +431,51 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if stockdetail.get("features_meta") and stockdetail.get("technical"):
         ui["explanations"] = build_technical_explanations(stockdetail)
 
+    # -------------------------------------------------
+    # Decision Intelligence (EXPLICIT, UI-SAFE)
+    # -------------------------------------------------
+    decision = stockdetail.get("decision") or {}
+    bullbrain = stockdetail.get("bullbrain") or {}
+    raw = bullbrain.get("raw") or {}
+
+    decision_ui = {}
+
+    # Probabilities
+    if isinstance(raw.get("prob_up"), (int, float)) and isinstance(raw.get("prob_down"), (int, float)):
+        decision_ui["probability"] = {
+            "up": round(raw["prob_up"] * 100, 1),
+            "down": round(raw["prob_down"] * 100, 1),
+        }
+
+    # Bias label (UI-ready)
+    if "probability" in decision_ui:
+        up = decision_ui["probability"]["up"]
+        down = decision_ui["probability"]["down"]
+
+        if abs(up - down) < 5:
+            bias = "Neutral"
+        elif up > down:
+            bias = "Bullish"
+        else:
+            bias = "Bearish"
+
+        decision_ui["bias"] = {
+            "label": bias,
+            "strength": abs(up - down)  # percentage gap
+        }
+
+    # Decision reasons
+    reasons = decision.get("decisionReasons")
+    if isinstance(reasons, list) and reasons:
+        decision_ui["reasons"] = reasons
+
+    # Market regime / quality
+    regime = (decision.get("quality") or {}).get("regime")
+    if regime:
+        decision_ui["regime"] = regime
+
+    if decision_ui:
+        ui["decision"] = decision_ui
+    
+
     return ui
