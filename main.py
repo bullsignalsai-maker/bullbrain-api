@@ -5144,6 +5144,7 @@ def stock_detail(symbol: str, source: str | None = None):
 
     stock = doc.to_dict() or {}
     stock["symbol"] = sym
+    content: dict[str, Any] = {}
 
     pattern = stock.get("pattern") or {}
     history = stock.get("patternHistory") or {}
