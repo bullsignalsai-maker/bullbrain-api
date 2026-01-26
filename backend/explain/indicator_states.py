@@ -554,6 +554,17 @@ def _pattern_edge_state(winrate: Optional[float], avg_ret_pct: Optional[float], 
         return "NEGATIVE_EDGE"
     return "MIXED_EDGE"
 
+def _state_action_blocker(
+    trend_state: str,
+    prob_down_state: str,
+    liquidity_state: str
+) -> str:
+    if trend_state in ("STRONG_DOWNTREND", "DOWNTREND") and prob_down_state in ("HIGH", "VERY_HIGH"):
+        return "DOWNSIDE_DOMINANT"
+    if liquidity_state in ("POOR", "THIN"):
+        return "LIQUIDITY_CONSTRAINED"
+    return "NO_BLOCKER"
+
 
 # ------------------------------------------------------------
 # Public API (pure)
@@ -655,13 +666,19 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     vol60 = values.get("volatility_60d")
     atr14 = values.get("atr14")
     liq_q = _liquidity_quality_from_features(vol_z, vol_vs_ma20, intraday, vol20)
+    
     regime = _detect_regime_from_features(values.get("trend_strength_20"), vol20, vol60, atr14)
+        states["action_blocker"] = _state_action_blocker(
+        states.get("trend_strength_20"),
+        states.get("hybrid_prob_down"),
+        states.get("liquidity_quality"),
+    )
 
     # pattern stats (5d)
     patt_win = _to_float(days5.get("winRate"))
     patt_avg = _to_float(days5.get("avg"))          # already % in your storage
     patt_cnt = _to_float(days5.get("count"))
-    patt_occ = _to_float(patt_hist.get("occurrences"))
+    patt_occ = _to_float(patt_hist.get("occurrences")) or patt_cnt
 
     values.update({
         "quote_change_pct": q_change_pct,
@@ -826,7 +843,20 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     states["regime_state"] = regime
 
     # Pattern stats
-    states["pattern_winrate_5d"] = _state_prob(values.get("pattern_winrate_5d"))
+    wr = values.get("pattern_winrate_5d")
+    if wr is None:
+        states["pattern_winrate_5d"] = "UNKNOWN"
+    elif wr >= 0.65:
+        states["pattern_winrate_5d"] = "HIGH"
+    elif wr >= 0.55:
+        states["pattern_winrate_5d"] = "LEAN_HIGH"
+    elif wr >= 0.45:
+        states["pattern_winrate_5d"] = "BALANCED"
+    elif wr >= 0.35:
+        states["pattern_winrate_5d"] = "LEAN_LOW"
+    else:
+        states["pattern_winrate_5d"] = "LOW"
+
     # avg 5d is in percent units (e.g., +1.03)
     patt_avg_v = values.get("pattern_avg_5d")
     states["pattern_avg_5d"] = _state_return(patt_avg_v)  # same tiering works well
@@ -860,10 +890,11 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
             states["pattern_occurrences"] = "VERY_RARE"
 
     states["pattern_edge_5d"] = _pattern_edge_state(
-        values.get("pattern_winrate_5d"),
-        values.get("pattern_avg_5d"),
-        values.get("pattern_sample_count_5d"),
+        patt_win,
+        patt_avg,
+        patt_cnt,
     )
+
 
     # Freshness
     states["freshness_minutes_ago"] = "VALUE_ONLY" if values.get("freshness_minutes_ago") is not None else "UNKNOWN"

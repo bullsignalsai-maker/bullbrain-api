@@ -21,6 +21,18 @@ from backend.explain.indicator_templates import INDICATOR_TEMPLATES
 from backend.explain.screen_specs import SCREEN_SPECS
 
 
+def _dedupe_lines(lines: List[str]) -> List[str]:
+    """
+    Remove duplicate sentences while preserving order.
+    """
+    seen = set()
+    out = []
+    for line in lines:
+        if line and line not in seen:
+            seen.add(line)
+            out.append(line)
+    return out
+
 # ------------------------------------------------------------
 # Deterministic template selector
 # ------------------------------------------------------------
@@ -133,11 +145,11 @@ def build_summary_narrative(
     indicators: List[str],
     indicator_states: Dict[str, str],
     seed: Optional[int] = None,
-    max_sentences: int = 3
+    max_sentences: int = 2
 ) -> str:
     """
-    Build short professional summary.
-    Used near BUY / SELL / HOLD signal.
+    High-level STATE summary.
+    No action, no advice, no trade framing.
     """
 
     lines: List[str] = []
@@ -155,11 +167,9 @@ def build_summary_narrative(
         if text:
             lines.append(text)
 
-        if len(lines) >= max_sentences:
-            break
+    lines = _dedupe_lines(lines)
 
-    return " ".join(lines)
-
+    return " ".join(lines[:max_sentences])
 
 # ------------------------------------------------------------
 # Probability / bias narration
@@ -170,16 +180,24 @@ def build_probability_narrative(
     seed: Optional[int] = None
 ) -> Optional[str]:
     """
-    Dedicated narration for probability bar / bias meter.
+    Probabilistic dominance explanation.
     """
 
-    state = indicator_states.get("hybrid_prob_up")
-    if not state:
-        return None
+    up = indicator_states.get("hybrid_prob_up")
+    down = indicator_states.get("hybrid_prob_down")
+
+    if down in ("HIGH", "VERY_HIGH"):
+        return "Downside scenarios dominate the probabilistic distribution, indicating asymmetric risk to the downside."
+
+    if up in ("HIGH", "VERY_HIGH"):
+        return "Upside scenarios dominate the probabilistic distribution, indicating favorable asymmetry."
+
+    if up == "LOW":
+        return "Upside probability remains limited, suggesting bullish outcomes are less favored."
 
     return narrate_indicator(
         indicator="hybrid_prob_up",
-        state=state,
+        state=up,
         seed=seed
     )
 
@@ -193,20 +211,19 @@ def build_trade_idea_narrative(
     seed: Optional[int] = None
 ) -> Optional[str]:
     """
-    Builds a 1–2 sentence trade idea explanation.
+    Trade posture explanation.
+    Focuses on structure + participation + volatility.
     """
 
-    priority_indicators = [
+    priority = [
         "trend_strength_20",
-        "rsi14",
-        "macd_hist",
         "volatility_20d",
-        "volume_vs_ma20_pct"
+        "volume_vs_ma20_pct",
     ]
 
     lines: List[str] = []
 
-    for indicator in priority_indicators:
+    for indicator in priority:
         state = indicator_states.get(indicator)
         if not state:
             continue
@@ -219,14 +236,13 @@ def build_trade_idea_narrative(
         if text:
             lines.append(text)
 
-        if len(lines) >= 2:
-            break
+    lines = _dedupe_lines(lines)
 
     if not lines:
         return None
 
-    return " ".join(lines)
-
+    # Force action framing (institutional, neutral)
+    return " ".join(lines[:2])
 
 # ------------------------------------------------------------
 # Full Stock Detail narration bundle
@@ -263,5 +279,17 @@ def build_full_narrative_bundle(
         "tradeIdea": build_trade_idea_narrative(
             indicator_states=indicator_states,
             seed=seed
+        ),
+        "pattern": build_summary_narrative(
+            indicators=[
+                "pattern_winrate_5d",
+                "pattern_edge_5d",
+                "pattern_occurrences"
+            ],
+            indicator_states=indicator_states,
+            seed=seed,
+            max_sentences=3
         )
+        "pattern": pattern_lines if pattern_lines else None
     }
+

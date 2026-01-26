@@ -29,9 +29,10 @@ INDICATOR_TEMPLATES = {
             "Momentum is severely compressed to the downside. Historically, such conditions often attract short-covering, but trend confirmation remains critical."
         ],
         "OVERSOLD": [
-            "RSI is in oversold territory, suggesting downside momentum may be stretched. Stabilization becomes more likely, though confirmation is still required.",
-            "Selling pressure appears elevated relative to recent history, reducing downside efficiency but not yet shifting control."
+            "RSI is in oversold territory, indicating downside momentum may be stretched and selling pressure is elevated.",
+            "While oversold conditions can support short-term stabilization, they do not by themselves confirm a durable reversal."
         ],
+
         "BEARISH": [
             "RSI remains below neutral, reflecting bearish momentum conditions.",
             "Momentum continues to favor sellers, with limited evidence of accumulation."
@@ -243,13 +244,15 @@ INDICATOR_TEMPLATES = {
             "The model does not identify a strong directional advantage."
         ],
         "LEAN_LOW": [
-            "Upside probability is below average, indicating increased downside risk.",
-            "Bullish outcomes are possible but less favored."
+            "Upside probability is below average, with downside scenarios carrying greater statistical weight.",
+            "Risk-reward conditions are not favorable enough to justify aggressive bullish positioning."
         ],
+
         "LOW": [
-            "Upside probability is low, reflecting a challenging environment for bullish outcomes.",
-            "Downside scenarios dominate the probabilistic distribution."
+            "Upside probability is low, with downside scenarios clearly dominating the probabilistic distribution.",
+            "This probability skew argues for caution rather than directional exposure."
         ],
+
         "VERY_LOW": [
             "Upside probability is extremely low, suggesting strong downside bias.",
             "Bullish trades in this regime carry elevated risk."
@@ -258,4 +261,54 @@ INDICATOR_TEMPLATES = {
             "Hybrid probability data is unavailable."
         ]
     }
+    # ========================================================
+    # ACTION BLOCKER — HOLD JUSTIFICATION (action_blocker)
+    # ========================================================
+    "action_blocker": {
+        "DOWNSIDE_DOMINANT": [
+            "Downside risk currently outweighs upside potential, limiting the attractiveness of new positions.",
+            "Market conditions favor capital preservation over directional exposure."
+        ],
+        "LIQUIDITY_CONSTRAINED": [
+            "Liquidity conditions are thin, reducing execution quality and increasing noise risk.",
+            "Such environments typically warrant patience rather than active positioning."
+        ],
+        "NO_BLOCKER": [
+            "No dominant structural blocker is currently present."
+        ],
+        "UNKNOWN": [
+            "Structural constraints on action cannot be fully assessed."
+        ]
+    },
+
+
+    # ========================================================
+    # PATTERN — EDGE QUALITY (pattern_edge_5d)
+    # ========================================================
+    "pattern_edge_5d": {
+        "POSITIVE_EDGE": [
+            "Historical samples show a favorable win rate and positive average returns following this pattern.",
+            "Pattern statistics suggest a measurable edge when aligned with broader trend conditions."
+        ],
+        "LEAN_POSITIVE": [
+            "Pattern outcomes lean positive, though the edge is modest.",
+            "Effectiveness improves when confirmed by trend and momentum alignment."
+        ],
+        "MIXED_EDGE": [
+            "Pattern outcomes have been mixed, with no consistent directional advantage.",
+            "Reliance on this pattern alone offers limited predictive value."
+        ],
+        "NEGATIVE_EDGE": [
+            "Historical outcomes following this pattern skew negative.",
+            "Pattern statistics caution against assuming upside follow-through."
+        ],
+        "INSUFFICIENT_SAMPLES": [
+            "Historical sample size is limited, reducing statistical confidence.",
+            "Pattern reliability cannot be firmly established."
+        ],
+        "UNKNOWN": [
+            "Pattern edge statistics are unavailable."
+        ]
+    },
+
 }

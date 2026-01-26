@@ -19,6 +19,11 @@ SCREEN_SPECS = {
     # HOMESCREEN (very compact)
     # ========================================================
     "HOMESCREEN": {
+        # 2-line signal explanation should come from:
+        # - summary (trend/momentum) + action_blocker (why HOLD)
+        "signal": [
+            "action_blocker",
+        ],
         "momentum": [
             "rsi14",
             "macd_hist",
@@ -27,21 +32,26 @@ SCREEN_SPECS = {
             "price_vs_sma20_pct",
             "trend_strength_20",
         ],
-        "volume": [
-            "volume_zscore_20",
-        ],
         "volatility": [
             "volatility_20d",
         ],
         "probability": [
             "hybrid_prob_up",
         ],
+        "pattern": [
+            "pattern_edge_5d",
+        ],
     },
+
 
     # ========================================================
     # WATCHLIST
     # ========================================================
     "WATCHLIST": {
+        "signal": [
+            "action_blocker",
+        ],
+
         "momentum": [
             "return_1d",
             "rsi14",
@@ -62,6 +72,9 @@ SCREEN_SPECS = {
     # STOCK DETAIL (main screen)
     # ========================================================
     "STOCK_DETAIL": {
+        "signal": [
+            "action_blocker",
+        ],
         "trend": [
             "trend_strength_20",
             "price_vs_sma20_pct",
@@ -106,6 +119,9 @@ SCREEN_SPECS = {
     # FULL SIGNAL DETAILS
     # ========================================================
     "FULL_SIGNAL_DETAILS": {
+        "signal": [
+            "action_blocker",
+        ],
         "probability": [
             "hybrid_prob_up",
             "model_prob_up",
@@ -116,6 +132,7 @@ SCREEN_SPECS = {
             "regime_state",
         ],
     },
+
 
     # ========================================================
     # FULL PATTERN DETAILS
