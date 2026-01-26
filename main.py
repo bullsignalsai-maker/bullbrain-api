@@ -5159,6 +5159,9 @@ def stock_detail(symbol: str, source: str | None = None):
         return {"status": "not_ready", "symbol": sym}
 
     stock = doc.to_dict() or {}
+    narratives = stock.get("narratives") or {}
+    decision = stock.get("decision") or {}
+
     stock["symbol"] = sym
     content: dict[str, Any] = {}
 
@@ -5236,6 +5239,53 @@ def stock_detail(symbol: str, source: str | None = None):
         "lowerWickPct": features.get("lower_shadow_pct"),
         "interpretation": insights.get("oneLiner"),
     }
+    # ---------------------------------------------------------
+    # 6.5️⃣ EXPLANATIONS (Narrative blocks, non-breaking)
+    # ---------------------------------------------------------
+
+    # 1️⃣ Signal explanation (2 lines)
+    signal_explanation = {
+        "primary": narratives.get("summary"),
+        "secondary": narratives.get("tradeIdea"),
+    }
+
+    # 2️⃣ Probability & decision explanation
+    probability_explanation = narratives.get("probability")
+    bias = (decision.get("bias") or {})
+    if probability_explanation and bias.get("label"):
+        probability_explanation = (
+            f"{probability_explanation} "
+            f"Decision bias remains {bias.get('label')}, "
+            f"with {bias.get('strength')}% conviction."
+            if bias.get("strength") is not None
+            else probability_explanation
+        )
+
+    # 3️⃣ Pattern explanation (2–3 sentences)
+    pattern_explanation = None
+    if pattern:
+        days5 = (history.get("forwardReturns") or {}).get("days5") or {}
+        win_rate = days5.get("winRate")
+
+        pattern_explanation = (
+            f"{pattern.get('headline') or 'Price is forming a recognizable pattern.'} "
+            f"Historically, similar setups show a "
+            f"{'moderate' if isinstance(win_rate, (int, float)) and 0.4 <= win_rate < 0.6 else 'mixed'} "
+            f"short-term outcome profile."
+        )
+
+    # 4️⃣ Technical snapshot paragraph (3–4 sentences)
+    technical_explanation_parts = []
+    if technical.get("trend", {}).get("comment"):
+        technical_explanation_parts.append(technical["trend"]["comment"])
+    if technical.get("rsi", {}).get("comment"):
+        technical_explanation_parts.append(technical["rsi"]["comment"])
+    if technical.get("volatility", {}).get("comment"):
+        technical_explanation_parts.append(technical["volatility"]["comment"])
+    if technical.get("volume", {}).get("comment"):
+        technical_explanation_parts.append(technical["volume"]["comment"])
+
+    technical_explanation = " ".join(technical_explanation_parts[:4])
 
     # ---------------------------------------------------------
     # 7️⃣ Sparkline (schema-agnostic, primary)
@@ -5286,6 +5336,13 @@ def stock_detail(symbol: str, source: str | None = None):
         "outlook": outlook,
         "technicalSnapshot": technical_snapshot,
         "priceAction": price_action,
+        # ✅ NEW — optional, additive
+        "explanations": {
+            "signal": signal_explanation,
+            "probability": probability_explanation,
+            "pattern": pattern_explanation,
+            "technical": technical_explanation,
+        },
         "computed_at": stock.get("computed_at"),
     })
 
