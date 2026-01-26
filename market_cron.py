@@ -45,7 +45,9 @@ import main as backend
 from symbols_clean import COMPANY_NAMES
 
 from backend.candle_store import get_candles
-from backend.bull_insights import generate_bull_insights
+from backend.explain.indicator_states import compute_indicator_states
+from backend.explain.narrative_engine import build_full_narrative_bundle
+
 
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
@@ -652,9 +654,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             feat_dict=feat_dict,
         )
 
-        # ---------------------------------------------------------
-        # Normalize BullBrain outputs (single authority)
-        # ---------------------------------------------------------
         bull = core["bullbrain"]
         decision = core["decision"]
 
@@ -664,12 +663,32 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         prob_up = bull.get("raw", {}).get("prob_up")
         prob_down = bull.get("raw", {}).get("prob_down")
 
-        # 🔐 Defensive alias (legacy compatibility)
-        signal = final_signal
-
     except Exception as e:
         log_exc(f"{symbol} run_bullbrain_from_inputs crashed", e)
         return None
+
+    # ---------------------------------------------------------
+    # 4.1) Compute Indicator States (DETERMINISTIC)
+    # ---------------------------------------------------------
+    indicator_state_bundle = compute_indicator_states({
+        "features_meta": feat_dict,
+        "bullbrain": bull,
+        "decision": decision,
+        "patternHistory": core.get("patternHistory"),
+        "content": {
+            "ui": {
+                "hybridProbUp": prob_up
+            }
+        }
+    })
+
+    # ---------------------------------------------------------
+    # 4.2) Build Institutional Narratives (ONCE)
+    # ---------------------------------------------------------
+    narratives = build_full_narrative_bundle(
+        indicator_states=indicator_state_bundle["states"],
+        seed=hash(symbol)
+    )
 
     # ---------------------------------------------------------
     # 5) Quote (Firestore-only StockDetail needs this!)
@@ -703,43 +722,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} build_technical_snapshot failed", e)
         technical = None
 
-    
-    # ---------------------------------------------------------
-    # 8) Insights (must never block)
-    # ---------------------------------------------------------
-    try:
-        insights = generate_bull_insights(
-            symbol=symbol,
-            features=feat_dict,
-            bullbrain={
-                "signal": final_signal,
-                "confidence": confidence,
-                "prob_up": prob_up,
-                "prob_down": prob_down,
-            },
-            technical=technical,
-            seed_key=(
-                f"{symbol}:"
-                f"{round(feat_dict.get('close', 0), 1)}:"
-                f"{round(feat_dict.get('rsi14', 0), 0)}:"
-                f"{round(feat_dict.get('volatility_20d', 0), 2)}"
-            ),
-
-            decision=core.get("decision"),
-            pattern=core.get("pattern"),
-            pattern_history=core.get("patternHistory"),
-        )
-    except Exception as e:
-        log_exc(f"{symbol} generate_bull_insights failed", e)
-        insights = {
-            "oneLiner": "Insights unavailable.",
-            "summaryLine": "Insights unavailable.",
-            "trendSummary": "Insights unavailable.",
-            "momentumSummary": "Insights unavailable.",
-            "volumeSummary": "Insights unavailable.",
-            "volatilitySummary": "Insights unavailable.",
-            "combinedTechnicalSummary": "Insights unavailable.",
-        }
 
     # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)
@@ -762,7 +744,10 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
         "sparkline": sparkline,
 
-        "insights": insights,
+        "indicator_states": indicator_state_bundle["states"],
+
+        "narratives": narratives,   
+
 
         "computed_at": utc_now_iso(),
         "schema_version": "v2",
