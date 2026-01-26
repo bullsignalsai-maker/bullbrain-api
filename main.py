@@ -4951,6 +4951,25 @@ def market_bearwatch():
         "bearwatch": cache.get("bearwatch", []),
         "updated_at": cache.get("updated_at"),
     }
+
+def build_insight_from_narratives(d: dict) -> dict:
+    narratives = d.get("narratives") or {}
+
+    primary = narratives.get("summary")
+    secondary = narratives.get("tradeIdea")
+
+    # fallback safety
+    if not primary:
+        primary = narratives.get("probability")
+
+    if not secondary:
+        secondary = narratives.get("probability")
+
+    return {
+        "primary": primary,
+        "secondary": secondary,
+    }
+
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
@@ -4979,7 +4998,7 @@ def homescreen_mag7():
         history = d.get("patternHistory", {}) or {}
         fr = history.get("forwardReturns", {}) or {}
         days5 = fr.get("days5", {}) or {}
-        insights = d.get("insights", {}) or {}
+        
 
         items.append({
             "symbol": d.get("symbol"),
@@ -4998,11 +5017,8 @@ def homescreen_mag7():
                 "prob_down": raw.get("prob_down"),
             },
 
-            # 🔑 SINGLE SOURCE OF TRUTH
-            "insight": {
-                "primary": insights.get("oneLiner"),
-                "secondary": insights.get("summaryLine"),
-            },
+            "insight": build_insight_from_narratives(d),
+
 
             "sparkline": d.get("sparkline", []),
 
