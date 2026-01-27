@@ -201,6 +201,25 @@ def build_probability_narrative(
         seed=seed
     )
 
+def build_signal_narrative(
+    *,
+    indicator_states: Dict[str, str],
+    seed: Optional[int] = None
+) -> Optional[str]:
+    """
+    Single-sentence HOLD / action justification.
+    Used near signal pill only.
+    """
+
+    blocker = indicator_states.get("action_blocker")
+    if not blocker or blocker == "NO_BLOCKER":
+        return None
+
+    return narrate_indicator(
+        indicator="action_blocker",
+        state=blocker,
+        seed=seed
+    )
 
 # ------------------------------------------------------------
 # Trade idea narration
@@ -244,6 +263,31 @@ def build_trade_idea_narrative(
     # Force action framing (institutional, neutral)
     return " ".join(lines[:2])
 
+def build_pattern_narrative(
+    *,
+    indicator_states: Dict[str, str],
+    seed: Optional[int] = None
+) -> Optional[str]:
+    indicators = [
+        "pattern_edge_5d",
+        "pattern_winrate_5d",
+        "pattern_occurrences",
+    ]
+
+    lines = []
+
+    for ind in indicators:
+        state = indicator_states.get(ind)
+        if not state:
+            continue
+
+        text = narrate_indicator(ind, state, seed=seed)
+        if text:
+            lines.append(text)
+
+    lines = _dedupe_lines(lines)
+    return " ".join(lines[:3]) if lines else None
+
 # ------------------------------------------------------------
 # Full Stock Detail narration bundle
 # ------------------------------------------------------------
@@ -267,6 +311,11 @@ def build_full_narrative_bundle(
             seed=seed,
             max_sentences=2
         ),
+        # 👇 NEW (single sentence)
+        "signal": build_signal_narrative(
+            indicator_states=indicator_states,
+            seed=seed
+        ),
         "sections": build_screen_narrative(
             screen="STOCK_DETAIL",
             indicator_states=indicator_states,
@@ -280,14 +329,8 @@ def build_full_narrative_bundle(
             indicator_states=indicator_states,
             seed=seed
         ),
-        "pattern": build_summary_narrative(
-            indicators=[
-                "pattern_winrate_5d",
-                "pattern_edge_5d",
-                "pattern_occurrences"
-            ],
+        "pattern": build_pattern_narrative(
             indicator_states=indicator_states,
-            seed=seed,
-            max_sentences=3
+            seed=seed
         ),
     }
