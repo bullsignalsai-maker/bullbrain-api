@@ -289,7 +289,5 @@ def build_full_narrative_bundle(
             indicator_states=indicator_states,
             seed=seed,
             max_sentences=3
-        )
-        "pattern": pattern_lines if pattern_lines else None
+        ),
     }
-
