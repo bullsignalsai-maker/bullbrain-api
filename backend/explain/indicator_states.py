@@ -97,6 +97,7 @@ DISPLAY_LAYER_20 = [
     # Decision ladder / quality
     "liquidity_quality",      # state based on volume_zscore/vol_vs_ma20/intraday_range
     "regime_state",           # uses your regime thresholds
+    "action_blocker",
 
     # Pattern stats (when present)
     "pattern_winrate_5d",
@@ -668,11 +669,6 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     liq_q = _liquidity_quality_from_features(vol_z, vol_vs_ma20, intraday, vol20)
     
     regime = _detect_regime_from_features(values.get("trend_strength_20"), vol20, vol60, atr14)
-        states["action_blocker"] = _state_action_blocker(
-        states.get("trend_strength_20"),
-        states.get("hybrid_prob_down"),
-        states.get("liquidity_quality"),
-    )
 
     # pattern stats (5d)
     patt_win = _to_float(days5.get("winRate"))
@@ -841,6 +837,14 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     # Derived liquidity & regime states
     states["liquidity_quality"] = liq_q
     states["regime_state"] = regime
+
+    # Action blocker (HOLD justification)
+    states["action_blocker"] = _state_action_blocker(
+        states.get("trend_strength_20"),
+        states.get("hybrid_prob_down"),
+        states.get("liquidity_quality"),
+    )
+
 
     # Pattern stats
     wr = values.get("pattern_winrate_5d")
