@@ -1,7 +1,6 @@
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
-from backend.quote_repo import get_quote_safe
 from backend.stock_repo import get_stock
 from backend.firestore_utils import utc_now_iso, get_db
 
@@ -38,21 +37,27 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
     # 2️⃣ Build snapshot items (Firestore is truth)
     # -----------------------------------------------------
     for sym in symbols:
-        quote = get_quote_safe(sym) or {}
         stock = get_stock(sym) or {}
+
+        # ── NARRATIVES (Firestore-first) ──
+        narratives = stock.get("narratives") or {}
+        watchlist_summary = (
+            narratives.get("signal")
+            or narratives.get("summary")
+            or narratives.get("probability")
+        )
 
         bullbrain = stock.get("bullbrain") or {}
         raw = bullbrain.get("raw") or {}
 
-        insights = stock.get("insights") or {}
-        stock_quote = stock.get("quote") or {}
         pattern = stock.get("pattern") or {}
         pattern_hist = stock.get("patternHistory") or {}
         fwd = pattern_hist.get("forwardReturns") or {}
         days5 = fwd.get("days5") or {}
 
-        price = quote.get("price")
-        change_pct = quote.get("changePct")
+        stock_quote = stock.get("quote") or {}
+        price = stock_quote.get("price")
+        change_pct = stock_quote.get("changePct")
 
         change = None
         try:
@@ -73,9 +78,9 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "change": change,
                 "changePct": change_pct,
             },
-            "quote_updated_at": quote.get("updated_at"),
+            "quote_updated_at": stock_quote.get("updated_at"),
 
-            # ── BULLBRAIN (authoritative) ──
+            # ── BULLBRAIN ──
             "bullbrain": {
                 "signal": bullbrain.get("signal", "HOLD"),
                 "confidence": bullbrain.get("confidence", 0),
@@ -83,7 +88,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "prob_down": raw.get("prob_down"),
             },
 
-            # ── PATTERN (new unified schema) ──
+            # ── PATTERN ──
             "pattern": {
                 "name": pattern.get("pattern") or pattern.get("patternLabel"),
                 "bias": pattern.get("bias") or pattern.get("patternBias"),
@@ -94,11 +99,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             "sparkline": sparkline if isinstance(sparkline, list) else [],
 
             # ── HUMAN SUMMARY ──
-            "grokSummary": (
-                insights.get("oneLiner")
-                or insights.get("summaryLine")
-                or "Market signal based on trend and momentum."
-            ),
+            "grokSummary": watchlist_summary,
 
             "updated_at": stock.get("computed_at"),
         })
