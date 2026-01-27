@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from backend.stock_repo import get_stock
 from backend.firestore_utils import utc_now_iso, get_db
+from backend.explain.watchlist_summary import resolve_watchlist_summary
 
 
 COL_SNAPSHOTS = "watchlist_snapshots"
@@ -107,10 +108,8 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # -------------------------------------------------
         # WATCHLIST SUMMARY (FIXED PRIORITY)
         # -------------------------------------------------
-        from backend.explain.watchlist_summary import resolve_watchlist_summary
 
         watchlist_summary = resolve_watchlist_summary(stock)
-
 
         # -------------------------------------------------
         # OPTIONAL PATTERN OVERRIDE (ONLY IF MEANINGFUL)
