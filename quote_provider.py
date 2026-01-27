@@ -89,11 +89,11 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
 # ---------------------------------------------------------
 # CRYPTO SNAPSHOT — CoinGecko SIMPLE PRICE (LOW RATE)
 # ---------------------------------------------------------
-def fetch_crypto_simple_snapshot() -> Dict[str, Optional[float]]:
+def fetch_crypto_simple_snapshot() -> Dict[str, Dict[str, Optional[float]]]:
     """
     Uses CoinGecko simple/price endpoint.
-    MUCH lower rate-limit impact.
-    Returns 24h % change.
+    Returns price + 24h % change.
+    Rate-limit safe.
     """
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
@@ -109,20 +109,34 @@ def fetch_crypto_simple_snapshot() -> Dict[str, Optional[float]]:
         if not isinstance(data, dict):
             return {}
 
-        def pct(key):
-            v = data.get(key, {}).get("usd_24h_change")
+        def num(v):
             return float(v) if isinstance(v, (int, float)) else None
 
         return {
-            "BTC": pct("bitcoin"),
-            "ETH": pct("ethereum"),
-            "SOL": pct("solana"),
-            "XRP": pct("ripple"),
-            "DOGE": pct("dogecoin"),
+            "BTC": {
+                "price": num(data.get("bitcoin", {}).get("usd")),
+                "changePct": num(data.get("bitcoin", {}).get("usd_24h_change")),
+            },
+            "ETH": {
+                "price": num(data.get("ethereum", {}).get("usd")),
+                "changePct": num(data.get("ethereum", {}).get("usd_24h_change")),
+            },
+            "SOL": {
+                "price": num(data.get("solana", {}).get("usd")),
+                "changePct": num(data.get("solana", {}).get("usd_24h_change")),
+            },
+            "XRP": {
+                "price": num(data.get("ripple", {}).get("usd")),
+                "changePct": num(data.get("ripple", {}).get("usd_24h_change")),
+            },
+            "DOGE": {
+                "price": num(data.get("dogecoin", {}).get("usd")),
+                "changePct": num(data.get("dogecoin", {}).get("usd_24h_change")),
+            },
         }
 
     except Exception as e:
-        print(f"[quote-provider] Simple crypto fetch failed: {e}", flush=True)
+        print(f"[quote-provider] Crypto price fetch failed: {e}", flush=True)
         return {}
 
 

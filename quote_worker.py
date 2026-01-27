@@ -355,11 +355,32 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
                         continue
 
                     chg = q.get("changePct")
+                    price = q.get("price")
 
-                    # ✅ ONLY update when real number exists
-                    if isinstance(chg, (int, float)):
+                    chg_ok = isinstance(chg, (int, float))
+                    price_ok = isinstance(price, (int, float))
+
+                    # ✅ Update % only when available
+                    if chg_ok:
                         it["value"] = f"{chg:+.2f}%"
+
+                    # ✅ Attach full quote if ANY useful data exists
+                    if chg_ok or price_ok:
+                        it["quote"] = {
+                            "price": price,
+                            "change": q.get("change"),
+                            "changePct": chg,
+                            "open": q.get("open"),
+                            "high": q.get("high"),
+                            "low": q.get("low"),
+                            "prevClose": q.get("prevClose"),
+                            "timestamp": q.get("timestamp"),
+                            "source": q.get("source"),
+                        }
+
                         it["quote_updated_at"] = now
+
+
                     # ❌ else → preserve existing value
 
         ref.set(
@@ -582,35 +603,67 @@ def update_market_overview(db) -> None:
         },
         after_id="commodities",
     )
-
+    
     # -----------------------------
     # 1) Crypto update (RATE-LIMIT SAFE)
     # -----------------------------
+
     
-    from backend.quote_repo import save_quote
+    from backend.quote_repo import get_quote_safe
+
+    btc = get_quote_safe("BTC") or {}
+    age = _seconds_since(btc.get("updated_at"))
+
+    # ✅ throttle crypto refresh
+    if age is not None and age < CRYPTO_MIN_REFRESH_SECONDS:
+        crypto = {}
+    else:
+        crypto = fetch_crypto_simple_snapshot()
+
 
     crypto = fetch_crypto_simple_snapshot()
 
-    # If CoinGecko returns nothing → DO NOTHING
-    if not any(isinstance(v, (int, float)) for v in crypto.values()):
-        log("⚠️ Crypto snapshot empty — preserving existing carousel values")
-    
-        # update carousel ONLY when data exists
-        for card in carousel:
-            if isinstance(card, dict) and card.get("id") == "crypto":
-                card.setdefault("title", "Crypto Movers")
-                card.setdefault("subtitle", "24h change")
+    # ✅ Persist crypto quotes to Firestore
+    for sym, data in crypto.items():
+        if not isinstance(data, dict):
+            continue
 
-                card["items"] = [
+        save_quote(
+            sym,
+            {
+                "symbol": sym,
+                "price": data.get("price"),
+                "changePct": data.get("changePct"),
+                "source": "crypto",
+            },
+        )
+
+
+    symbols = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
+
+    for card in carousel:
+        if isinstance(card, dict) and card.get("id") == "crypto":
+            items = []
+
+            for sym in symbols:
+                q = get_quote_safe(sym) or {}
+                # ✅ Prefer freshly fetched value (same run), fallback to Firestore
+                chg = crypto.get(sym)
+                if not isinstance(chg, (int, float)):
+                    chg = q.get("changePct")
+
+
+                items.append(
                     {
                         "label": sym,
                         "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                        "quote_updated_at": now_iso,
+                        "quote": q,
+                        "quote_updated_at": q.get("updated_at"),
                     }
-                    for sym, chg in crypto.items()
-                ]
+                )
 
-                card["updated_at"] = now_iso
+            card["items"] = items
+            card["updated_at"] = now_iso
 
     # -----------------------------
     # 2) Sentiment sync (from market_overview.fearGreed)
