@@ -571,6 +571,7 @@ for sym in CRYPTO_SYMBOLS:
                 "needs_refresh": True,
             },
         )
+        clear_needs_refresh(sym)
 
 def update_market_overview(db) -> None:
     now_iso = utc_now_iso()
@@ -633,13 +634,20 @@ def update_market_overview(db) -> None:
     from backend.quote_repo import get_quote_safe
 
     btc = get_quote_safe("BTC") or {}
+
+    needs = btc.get("needs_refresh") is True
     age = _seconds_since(btc.get("updated_at"))
 
-    # ✅ throttle crypto refresh
-    if age is not None and age < CRYPTO_MIN_REFRESH_SECONDS:
+    # 🔑 Rule:
+    # - If needs_refresh == True → ALWAYS fetch
+    # - Else respect throttling
+    if needs:
+        crypto = fetch_crypto_simple_snapshot()
+    elif age is not None and age < CRYPTO_MIN_REFRESH_SECONDS:
         crypto = {}
     else:
         crypto = fetch_crypto_simple_snapshot()
+
 
     # ✅ Persist crypto quotes to Firestore
     for sym, data in crypto.items():
