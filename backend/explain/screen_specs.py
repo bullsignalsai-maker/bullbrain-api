@@ -36,6 +36,14 @@ SCREEN_SPECS = {
         "pattern": [
             "pattern_edge_5d",
         ],
+        "summary": [
+        "momentum_composite",
+        "probability_composite",
+        ],
+        "risk": [
+            "volatility_composite",
+            "regime_state",
+        ],
     },
 
 
@@ -58,6 +66,14 @@ SCREEN_SPECS = {
         "probability": [
             "hybrid_prob_up",
         ],
+        "signal": [
+        "momentum_composite",
+        "probability_composite",
+        ],
+        "risk": [
+            "volatility_composite",
+            "liquidity_quality",
+        ],
     },
 
 
@@ -65,6 +81,10 @@ SCREEN_SPECS = {
     # STOCK DETAIL (main screen)
     # ========================================================
     "STOCK_DETAIL": {
+        "summary": [
+            "momentum_composite",
+            "probability_composite",
+        ],
         "trend": [
             "trend_strength_20",
             "price_vs_sma20_pct",
@@ -80,15 +100,7 @@ SCREEN_SPECS = {
             "volume_vs_ma20_pct",
         ],
         "volatility": [
-            "volatility_20d",
-            "atr14",
-        ],
-        "candle": [
-            "gap_pct",
-            "body_pct",
-            "upper_shadow_pct",
-            "lower_shadow_pct",
-            "intraday_range_pct",
+            "volatility_composite",
         ],
         "regime": [
             "liquidity_quality",
@@ -97,7 +109,6 @@ SCREEN_SPECS = {
         "pattern": [
             "pattern_edge_5d",
             "pattern_winrate_5d",
-            "pattern_avg_5d",
             "pattern_sample_count_5d",
         ],
     },
@@ -131,7 +142,12 @@ SCREEN_SPECS = {
             "pattern_sample_count_5d",
             "pattern_occurrences",
         ],
+        "probability": [
+        "probability_composite",
+        "model_confidence",
+        ],
         "regime": [
+            "liquidity_quality",
             "regime_state",
         ],
     },
@@ -195,6 +211,12 @@ SCREEN_SPECS = {
         ],
         "probability": [
             "hybrid_prob_up",
+        ],
+        "signal": [
+        "momentum_composite",
+        ],
+        "risk": [
+            "volatility_composite",
         ],
     },
 

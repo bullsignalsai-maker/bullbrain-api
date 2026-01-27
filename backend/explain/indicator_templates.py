@@ -311,4 +311,71 @@ INDICATOR_TEMPLATES = {
         ]
     },
 
+    # ========================================================
+    # MOMENTUM — COMPOSITE (momentum_composite)
+    # ========================================================
+    "momentum_composite": {
+        "MOMENTUM_BULLISH": [
+            "Momentum conditions are aligned to the upside, with indicators reinforcing bullish continuation."
+        ],
+        "MOMENTUM_BEARISH": [
+            "Momentum conditions are aligned to the downside, reflecting sustained selling pressure."
+        ],
+        "MOMENTUM_BULL_STRETCHED": [
+            "Upside momentum remains positive but increasingly stretched, reducing follow-through efficiency."
+        ],
+        "MOMENTUM_BEAR_STRETCHED": [
+            "Downside momentum is extended, increasing the risk of reflexive stabilization."
+        ],
+        "MOMENTUM_MIXED": [
+            "Momentum signals are mixed, limiting directional conviction."
+        ],
+        "UNKNOWN": [
+            "Momentum alignment cannot be fully assessed."
+        ]
+    },
+
+    # ========================================================
+    # PROBABILITY — COMPOSITE (probability_composite)
+    # ========================================================
+    "probability_composite": {
+        "PROB_STRONGLY_UP": [
+            "Upside scenarios dominate the probability distribution with strong conviction."
+        ],
+        "PROB_WEAKLY_UP": [
+            "Upside probability holds a modest edge over downside risk."
+        ],
+        "PROB_BALANCED": [
+            "Upside and downside probabilities remain closely balanced."
+        ],
+        "PROB_WEAKLY_DOWN": [
+            "Downside probability modestly outweighs upside scenarios."
+        ],
+        "PROB_STRONGLY_DOWN": [
+            "Downside scenarios dominate the probability distribution."
+        ],
+        "UNKNOWN": [
+            "Probability alignment cannot be fully determined."
+        ]
+    },
+
+    # ========================================================
+    # VOLATILITY — COMPOSITE (volatility_composite)
+    # ========================================================
+    "volatility_composite": {
+        "VOLATILITY_EXPANDING": [
+            "Volatility is expanding, increasing outcome dispersion and reducing signal reliability."
+        ],
+        "VOLATILITY_CONTRACTING": [
+            "Volatility is compressed, often preceding directional expansion."
+        ],
+        "VOLATILITY_NORMAL": [
+            "Volatility conditions are stable, supporting clearer signal interpretation."
+        ],
+        "UNKNOWN": [
+            "Volatility regime cannot be clearly classified."
+        ]
+    },
+
+
 }
