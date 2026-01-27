@@ -9,6 +9,46 @@ COL_SNAPSHOTS = "watchlist_snapshots"
 
 
 # =========================================================
+# INTERNAL HELPERS (WATCHLIST-SAFE)
+# =========================================================
+def _confidence_badge(confidence: float | None) -> str:
+    """
+    Convert numeric confidence into a UI-friendly badge.
+    No text interpretation.
+    """
+    try:
+        c = float(confidence or 0)
+        if c >= 65:
+            return "HIGH"
+        if c >= 50:
+            return "MEDIUM"
+        return "LOW"
+    except Exception:
+        return "UNKNOWN"
+
+
+def _apply_hold_caution(summary: str | None, signal: str) -> str | None:
+    """
+    Append a mild HOLD caution if summary sounds directional.
+    """
+    if not summary or signal != "HOLD":
+        return summary
+
+    caution_phrases = (
+        "confirmation remains limited",
+        "directional edge remains limited",
+        "requires confirmation",
+        "risk remains elevated",
+    )
+
+    lower = summary.lower()
+    if any(p in lower for p in caution_phrases):
+        return summary
+
+    return f"{summary} Confirmation remains limited."
+
+
+# =========================================================
 # SNAPSHOT BUILDER (SINGLE SOURCE OF TRUTH)
 # =========================================================
 def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
@@ -34,19 +74,12 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------
-    # 2️⃣ Build snapshot items (Firestore is truth)
+    # 2️⃣ Build snapshot items (Firestore-first)
     # -----------------------------------------------------
     for sym in symbols:
         stock = get_stock(sym) or {}
 
-        # ── NARRATIVES (Firestore-first) ──
         narratives = stock.get("narratives") or {}
-        watchlist_summary = (
-            narratives.get("signal")
-            or narratives.get("summary")
-            or narratives.get("probability")
-        )
-
         bullbrain = stock.get("bullbrain") or {}
         raw = bullbrain.get("raw") or {}
 
@@ -59,6 +92,9 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         price = stock_quote.get("price")
         change_pct = stock_quote.get("changePct")
 
+        # -------------------------------------------------
+        # PRICE CHANGE (derived, safe)
+        # -------------------------------------------------
         change = None
         try:
             if price is not None and change_pct is not None:
@@ -67,6 +103,31 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             change = None
 
         sparkline = stock.get("sparkline")
+
+        # -------------------------------------------------
+        # WATCHLIST SUMMARY (FIXED PRIORITY)
+        # -------------------------------------------------
+        watchlist_summary = (
+            narratives.get("summary")       # trend + momentum (best)
+            or narratives.get("probability")
+            or narratives.get("signal")
+        )
+
+        # -------------------------------------------------
+        # OPTIONAL PATTERN OVERRIDE (ONLY IF MEANINGFUL)
+        # -------------------------------------------------
+        pattern_narrative = narratives.get("pattern")
+        if pattern_narrative and isinstance(pattern_narrative, str):
+            if "negative" not in pattern_narrative.lower():
+                watchlist_summary = pattern_narrative
+
+        # -------------------------------------------------
+        # HOLD CAUTION (MILD, INSTITUTIONAL)
+        # -------------------------------------------------
+        watchlist_summary = _apply_hold_caution(
+            watchlist_summary,
+            bullbrain.get("signal", "HOLD")
+        )
 
         items.append({
             "symbol": sym,
@@ -84,6 +145,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             "bullbrain": {
                 "signal": bullbrain.get("signal", "HOLD"),
                 "confidence": bullbrain.get("confidence", 0),
+                "confidenceBadge": _confidence_badge(bullbrain.get("confidence")),
                 "prob_up": raw.get("prob_up"),
                 "prob_down": raw.get("prob_down"),
             },
@@ -98,8 +160,8 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             # ── OPTIONAL UI DATA ──
             "sparkline": sparkline if isinstance(sparkline, list) else [],
 
-            # ── HUMAN SUMMARY ──
-            "grokSummary": watchlist_summary,
+            # ── WATCHLIST SUMMARY ──
+            "watchlistSummary": watchlist_summary,
 
             "updated_at": stock.get("computed_at"),
         })
@@ -113,7 +175,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v2",
+        "version": "v3",  # bumped due to summary logic improvement
     }
 
     db.collection(COL_SNAPSHOTS) \
