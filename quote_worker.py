@@ -620,23 +620,26 @@ def update_market_overview(db) -> None:
     else:
         crypto = fetch_crypto_simple_snapshot()
 
-
-    crypto = fetch_crypto_simple_snapshot()
-
     # ✅ Persist crypto quotes to Firestore
     for sym, data in crypto.items():
         if not isinstance(data, dict):
             continue
 
-        save_quote(
-            sym,
-            {
-                "symbol": sym,
-                "price": data.get("price"),
-                "changePct": data.get("changePct"),
-                "source": "crypto",
-            },
-        )
+        payload = {
+            "symbol": sym,
+            "source": "crypto",
+        }
+
+        if isinstance(data.get("price"), (int, float)):
+            payload["price"] = data["price"]
+
+        if isinstance(data.get("changePct"), (int, float)):
+            payload["changePct"] = data["changePct"]
+
+        # 🔒 Only save if at least ONE numeric value exists
+        if len(payload) > 2:
+            save_quote(sym, payload)
+
 
 
     symbols = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
@@ -648,10 +651,11 @@ def update_market_overview(db) -> None:
             for sym in symbols:
                 q = get_quote_safe(sym) or {}
                 # ✅ Prefer freshly fetched value (same run), fallback to Firestore
-                chg = crypto.get(sym)
+                fresh = crypto.get(sym) if isinstance(crypto.get(sym), dict) else {}
+                chg = fresh.get("changePct")
+
                 if not isinstance(chg, (int, float)):
                     chg = q.get("changePct")
-
 
                 items.append(
                     {
