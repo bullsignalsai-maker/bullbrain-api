@@ -45,7 +45,7 @@ def _apply_hold_caution(summary: str | None, signal: str) -> str | None:
     if any(p in lower for p in caution_phrases):
         return summary
 
-    return f"{summary} Confirmation remains limited."
+    return f"{summary}"
 
 
 # =========================================================
@@ -107,11 +107,10 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # -------------------------------------------------
         # WATCHLIST SUMMARY (FIXED PRIORITY)
         # -------------------------------------------------
-        watchlist_summary = (
-            narratives.get("summary")       # trend + momentum (best)
-            or narratives.get("probability")
-            or narratives.get("signal")
-        )
+        from backend.explain.watchlist_summary import resolve_watchlist_summary
+
+        watchlist_summary = resolve_watchlist_summary(stock)
+
 
         # -------------------------------------------------
         # OPTIONAL PATTERN OVERRIDE (ONLY IF MEANINGFUL)
