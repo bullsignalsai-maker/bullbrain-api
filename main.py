@@ -5477,10 +5477,16 @@ def _watchlist_col(user_id: str):
 # -----------------------------
 @app.get("/watchlist/{user_id}")
 def get_watchlist(user_id: str):
-    # 1️⃣ Try snapshot first
     snapshot = get_watchlist_snapshot(user_id)
 
-    if snapshot and is_snapshot_fresh(snapshot):
+    # ✅ REQUIRED: invalidate old logic snapshots
+    SNAPSHOT_VERSION = "v3"
+
+    if (
+        snapshot
+        and is_snapshot_fresh(snapshot)
+        and snapshot.get("version") == SNAPSHOT_VERSION
+    ):
         items = snapshot.get("items", [])
         return {
             "status": "ok",
@@ -5489,7 +5495,7 @@ def get_watchlist(user_id: str):
             "source": "snapshot",
         }
 
-    # 2️⃣ Snapshot missing or stale → rebuild
+    # 🔥 Rebuild if stale OR version mismatch
     snapshot = build_watchlist_snapshot(user_id)
     items = snapshot.get("items", [])
 

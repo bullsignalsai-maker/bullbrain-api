@@ -103,7 +103,6 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         except Exception:
             change = None
 
-        sparkline = stock.get("sparkline")
 
         # -------------------------------------------------
         # WATCHLIST SUMMARY (FIXED PRIORITY)
@@ -154,9 +153,6 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "bias": pattern.get("bias") or pattern.get("patternBias"),
                 "winRate": days5.get("winRate"),
             },
-
-            # ── OPTIONAL UI DATA ──
-            "sparkline": sparkline if isinstance(sparkline, list) else [],
 
             # ── WATCHLIST SUMMARY ──
             "watchlistSummary": watchlist_summary,
