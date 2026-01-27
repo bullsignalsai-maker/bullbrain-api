@@ -114,9 +114,14 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # OPTIONAL PATTERN OVERRIDE (ONLY IF MEANINGFUL)
         # -------------------------------------------------
         pattern_narrative = narratives.get("pattern")
-        if pattern_narrative and isinstance(pattern_narrative, str):
-            if "negative" not in pattern_narrative.lower():
-                watchlist_summary = pattern_narrative
+
+        # ONLY override if explicitly marked as watchlist-grade
+        if (
+            pattern_narrative
+            and isinstance(pattern_narrative, str)
+            and pattern_narrative.startswith("[WATCHLIST]")
+        ):
+            watchlist_summary = pattern_narrative.replace("[WATCHLIST]", "").strip()
 
         # -------------------------------------------------
         # HOLD CAUTION (MILD, INSTITUTIONAL)
