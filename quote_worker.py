@@ -550,6 +550,27 @@ def ensure_homescreen_base(d: Dict[str, Any], now_iso: str) -> Dict[str, Any]:
 
     return d
 
+# -------------------------------------------------
+# Ensure crypto quote docs always exist (SEED)
+# -------------------------------------------------
+CRYPTO_SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE"]
+
+for sym in CRYPTO_SYMBOLS:
+    ref = (
+        db.collection("bullsignals_ai")
+          .document("quotes")
+          .collection("symbols")
+          .document(sym)
+    )
+    if not ref.get().exists:
+        save_quote(
+            sym,
+            {
+                "symbol": sym,
+                "source": "crypto",
+                "needs_refresh": True,
+            },
+        )
 
 def update_market_overview(db) -> None:
     now_iso = utc_now_iso()
