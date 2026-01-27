@@ -802,9 +802,16 @@ def main() -> None:
             # -------------------------------------------------
             # SAFE QUOTE FETCH LOOP (NO POISONING)
             # -------------------------------------------------
+            CRYPTO_SYMBOLS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+
             for sym in sorted(all_tickers):
                 try:
+                    # ❌ NEVER fetch crypto via Finnhub
+                    if sym in CRYPTO_SYMBOLS:
+                        continue
+
                     q = fetch_equity_quote(sym)
+
 
                     price = q.get("price") if isinstance(q, dict) else None
                     chg = q.get("changePct") if isinstance(q, dict) else None
