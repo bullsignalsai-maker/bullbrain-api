@@ -260,7 +260,7 @@ INDICATOR_TEMPLATES = {
         "UNKNOWN": [
             "Hybrid probability data is unavailable."
         ]
-    }
+    },
     # ========================================================
     # ACTION BLOCKER — HOLD JUSTIFICATION (action_blocker)
     # ========================================================
