@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 # ------------------------------------------------------------
     
 # backend/explain/indicator_states.py
