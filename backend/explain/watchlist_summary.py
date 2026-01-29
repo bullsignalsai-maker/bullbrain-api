@@ -62,66 +62,52 @@ def resolve_watchlist_summary(stock: dict) -> str:
         )
 
     # ==================================================
-    # HOLD — probability imbalance (primary HOLD reason)
+    # HOLD — layered explanation (primary + qualifier)
     # ==================================================
+
+    primary = None
+    secondary = None
+
+    # 1️⃣ Primary HOLD reason (dominant)
     if prob_up is not None and prob_down is not None:
         delta = abs(prob_up - prob_down)
         if delta >= 0.12:
-            dominant = "upside" if prob_up > prob_down else "downside"
-            return (
-                f"{dominant.capitalize()} probability currently dominates, "
-                "but conviction remains insufficient for directional commitment."
+            primary = (
+                "Upside probability currently dominates"
+                if prob_up > prob_down
+                else "Downside probability currently dominates"
             )
 
-    # ==================================================
-    # HOLD — trend vs momentum conflict
-    # ==================================================
-    if trend in ("STRONG_DOWNTREND", "DOWNTREND") and momentum in (
-        "MOMENTUM_BULLISH",
-        "MOMENTUM_BULL_STRETCHED",
-    ):
-        return (
-            "Momentum stabilization contrasts with a still-weak trend backdrop. "
-            "This divergence reduces the reliability of early directional entries."
-        )
+    if not primary and volatility == "VOLATILITY_EXPANDING":
+        primary = "Expanding volatility increases outcome dispersion and execution risk"
 
-    # ==================================================
-    # HOLD — volatility regime
-    # ==================================================
-    if volatility == "VOLATILITY_EXPANDING":
-        return (
-            "Expanding volatility increases outcome dispersion and execution risk. "
-            "Directional positioning is less reliable under current conditions."
-        )
+    if not primary and liquidity in ("THIN", "POOR"):
+        primary = "Thin liquidity reduces signal reliability"
 
-    # ==================================================
-    # HOLD — participation / liquidity
-    # ==================================================
-    if liquidity in ("THIN", "POOR"):
-        return (
-            "Thin liquidity limits follow-through and signal reliability. "
-            "Improved participation would be needed to support conviction."
-        )
+    # 2️⃣ Secondary qualifier (symbol-specific color)
+    if trend in ("STRONG_DOWNTREND", "DOWNTREND"):
+        secondary = "trend structure remains unsupportive of sustained upside"
 
-    if volume in ("LOW", "VERY_LOW"):
-        return (
-            "Subdued volume reduces confirmation behind recent price moves. "
-            "Directional setups remain fragile without stronger participation."
-        )
+    elif momentum in ("MOMENTUM_BULL_STRETCHED", "MOMENTUM_BEAR_STRETCHED"):
+        secondary = "momentum conditions appear stretched and unstable"
 
-    # ==================================================
-    # HOLD — pattern-only context
-    # ==================================================
-    if pname:
-        return (
-            f"The current pattern ({pname}) provides contextual insight but limited standalone edge. "
-            "Broader trend and probability alignment remain inconclusive."
-        )
+    elif volume in ("LOW", "VERY_LOW"):
+        secondary = "participation remains too weak to confirm directional intent"
 
-    # ==================================================
-    # Fallback (guaranteed, non-generic)
-    # ==================================================
+    elif pname:
+        secondary = f"the current {pname.lower()} pattern offers context but limited edge"
+
+    # 3️⃣ Final assembly (guaranteed 2 sentences)
+    if primary:
+        if secondary:
+            return f"{primary}. {secondary.capitalize()}."
+        return f"{primary}. Conviction remains insufficient for directional commitment."
+
+    # --------------------------------------------------
+    # Safe fallback (guaranteed 2 sentences)
+    # --------------------------------------------------
     return (
         "Market inputs remain mixed with no dominant directional driver. "
         "Waiting for clearer alignment before committing capital remains prudent."
     )
+
