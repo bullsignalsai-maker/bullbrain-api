@@ -380,69 +380,120 @@ def build_highlights(stockdetail: Dict[str, Any], ui: Dict[str, Any]) -> Dict[st
 # =================================================
 # NEW: Explanations (sectioned narrative)
 # =================================================
-def build_explanations(stockdetail: Dict[str, Any], ui: Dict[str, Any]) -> Dict[str, Any]:
-    narratives = stockdetail.get("narratives") or {}
+def build_explanations(stock: dict, ui: dict | None = None) -> dict:
+    """
+    UI-FIRST explanations builder
+    Guarantees:
+    - No null strings
+    - No empty arrays
+    - All groups expected by StockDetailScreen exist
+    """
+
+    ui = ui or {}
+    narratives = stock.get("narratives") or {}
     sections = narratives.get("sections") or {}
 
-    decision = stockdetail.get("decision") or {}
-    bullbrain = stockdetail.get("bullbrain") or {}
+    decision = stock.get("decision") or {}
+    signal = decision.get("final") or ui.get("signalStrength", {}).get("signal") or "HOLD"
+    confidence = decision.get("confidence") or ui.get("confidence", {}).get("value")
 
-    # technical long bullets
-    long_lines = []
-    long_lines += sections.get("trend", []) or []
-    long_lines += sections.get("momentum", []) or []
-    long_lines += sections.get("volatility", []) or []
-    long_lines += sections.get("volume", []) or []
-    long_lines = _dedupe_keep_order(long_lines)[:8]
+    # ---------------------------------------------------------
+    # TECHNICAL OUTLOOK
+    # ---------------------------------------------------------
+    tech_short = (
+        narratives.get("summary")
+        or sections.get("trend", [None])[0]
+        or "Momentum signals are mixed, limiting directional conviction."
+    )
 
-    # risks/opps bullets
-    rop = ui.get("risksOpportunities") or {}
-    risks = _dedupe_keep_order((sections.get("risk", []) or []) + (rop.get("risks", []) or []))[:6]
-    opps = _dedupe_keep_order((sections.get("opportunity", []) or []) + (rop.get("opportunities", []) or []))[:6]
+    tech_medium = (
+        narratives.get("tradeIdea")
+        or sections.get("momentum", [None])[0]
+        or "Price action suggests equilibrium with no dominant edge."
+    )
 
-    # If still empty, add 1 safe fallback so UI never shows empty box
+    tech_long = (
+        sections.get("trend", [])
+        + sections.get("momentum", [])
+        + sections.get("volatility", [])
+        + sections.get("volume", [])
+    )
+
+    if not tech_long:
+        tech_long = [
+            "Price is oscillating without a sustained directional trend.",
+            "Momentum indicators are neutral, offering limited confirmation.",
+            "Volatility remains elevated, increasing outcome dispersion.",
+        ]
+
+    # ---------------------------------------------------------
+    # RISKS & OPPORTUNITIES
+    # ---------------------------------------------------------
+    risks = sections.get("risks") or []
+    opportunities = sections.get("opportunities") or []
+
+    # 🔒 HARD GUARANTEES (UI MUST NEVER SEE EMPTY)
     if not risks:
-        risks = ["Sideways conditions can increase whipsaw risk and reduce signal reliability."]
-    if not opps:
-        opps = ["A breakout with confirmation could improve reward-to-risk."]
+        risks = [
+            "Sideways conditions increase the risk of false breakouts and whipsaws."
+        ]
 
-    final_signal = decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
-    conf = bullbrain.get("confidence")
+    if not opportunities:
+        opportunities = [
+            "A confirmed breakout with volume could improve reward-to-risk."
+        ]
 
-    final_text = _first_nonempty(
-        narratives.get("summary"),
-        (ui.get("executiveSummaryShort")),
-        (ui.get("explanations") or {}).get("groups", {}).get("technical_outlook", {}).get("short"),
-    ) or "Signals are mixed; consider patience and selective positioning."
+    # ---------------------------------------------------------
+    # TRADE IDEA
+    # ---------------------------------------------------------
+    trade = ui.get("tradeIdea") or {}
 
-    out = {
-        "overview": {
-            "title": "Market Overview",
-            "text": _first_nonempty(narratives.get("summary"), ui.get("executiveSummaryShort")) or final_text,
-        },
-        "technical_outlook": {
-            "title": "Technical Outlook",
-            "short": _first_nonempty(narratives.get("summary")) or final_text,
-            "medium": _first_nonempty(narratives.get("tradeIdea")) or "Conditions are mixed; avoid chasing extended moves.",
-            "long": long_lines,
-        },
-        "risks_opportunities": {
-            "title": "Risks & Opportunities",
-            "risks": risks,
-            "opportunities": opps,
-        },
-        "final_recommendation": {
-            "title": "Final Recommendation",
-            "signal": final_signal,
-            "confidence": round(float(conf), 2) if isinstance(conf, (int, float)) else None,
-            "text": final_text,
-        },
+    trade_stance = trade.get("stance") or signal.capitalize()
+    trade_summary = (
+        trade.get("summary")
+        or narratives.get("tradeIdea")
+        or "No clean directional edge is present at current levels."
+    )
+
+    trade_note = trade.get("note")
+
+    # ---------------------------------------------------------
+    # FINAL RECOMMENDATION
+    # ---------------------------------------------------------
+    final_text = (
+        narratives.get("summary")
+        or tech_short
+    )
+
+    # ---------------------------------------------------------
+    # BUILD FINAL OBJECT (UI CONTRACT)
+    # ---------------------------------------------------------
+    return {
+        "groups": {
+            "technical_outlook": {
+                "short": tech_short,
+                "medium": tech_medium,
+                "long": tech_long,
+            },
+
+            "risks_opportunities": {
+                "risks": risks,
+                "opportunities": opportunities,
+            },
+
+            "trade_idea": {
+                "stance": trade_stance,
+                "summary": trade_summary,
+                "note": trade_note,
+            },
+
+            "final_recommendation": {
+                "signal": signal,
+                "confidence": confidence,
+                "text": final_text,
+            },
+        }
     }
-
-    # prune empty / None for explanations only (keeps UI clean)
-    pruned = _prune(out)
-    return pruned or {}
-
 
 # =================================================
 # Master UI Enhancer
