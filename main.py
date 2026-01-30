@@ -5264,17 +5264,33 @@ def stock_detail(symbol: str, source: str | None = None):
     # ---------------------------------------------------------
     ui_stock = dict(stock)
 
-    # attach NEW canonical blocks for UI use
-    ui_stock["probabilities"] = content.get("probabilities")
+    # ✅ canonical blocks (must come from stock, not content)
+    ui_stock["probabilities"] = stock.get("probabilities") or {}
     ui_stock["indicator_states"] = stock.get("indicator_states") or {}
     ui_stock["narratives"] = stock.get("narratives") or {}
-    ui_stock["decision_quality"] = (stock.get("decision") or {}).get("quality") or {}
+
+    # ✅ risk meter expects decision_quality.regime/liquidity
+    dec = stock.get("decision") or {}
+    ui_stock["decision_quality"] = dec.get("quality") or dec or {}
 
     try:
         from backend.ui_stock_builder import build_ui_enhancements
         content["ui"] = build_ui_enhancements(ui_stock) or {}
     except Exception:
         content["ui"] = {}
+
+    # ---------------------------------------------------------
+    # 9️⃣ Company News (non-blocking)
+    # ---------------------------------------------------------
+    try:
+        from backend.news_repo import fetch_symbol_news
+        content["news"] = fetch_symbol_news(
+            symbol=sym,
+            company_name=stock.get("company_name"),
+            limit=6,
+        ) or []
+    except Exception:
+        content["news"] = []
 
     # ---------------------------------------------------------
     # 🔟 Final Response (Clean, Narrative-First)

@@ -123,30 +123,6 @@ def build_ui_badges(stockdetail: Dict[str, Any]) -> List[Dict[str, str]]:
 
 
 # =================================================
-# Signal / Pattern One-liners
-# =================================================
-def build_signal_one_liner(stockdetail: Dict[str, Any]) -> str:
-    return (stockdetail.get("insights") or {}).get("whySignal") or ""
-
-
-def build_pattern_one_liner(stockdetail: Dict[str, Any]) -> str:
-    pattern = stockdetail.get("pattern") or {}
-    headline = pattern.get("headline")
-
-    if headline and len(headline) > 20:
-        return headline.rstrip(".")
-
-    insights = stockdetail.get("insights") or {}
-    trend = insights.get("trendSummary")
-    momentum = insights.get("momentumSummary")
-
-    if trend and momentum:
-        return f"{trend} {momentum}".strip()
-
-    return ""
-
-
-# =================================================
 # Confidence / Strength / Risk
 # =================================================
 def build_confidence_tier(confidence: float | None) -> Dict[str, Any]:
@@ -300,10 +276,8 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     # 🔒 UI contract version
     ui["ui_version"] = "v2"
 
-
-    # ---- Sparkline (schema-safe) ----
+    # ---- Sparkline ----
     existing = stockdetail.get("sparkline")
-
     if isinstance(existing, dict) and existing.get("path"):
         ui["sparkline"] = existing
     elif isinstance(existing, list) and len(existing) >= 2:
@@ -314,7 +288,7 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(candles, list) and len(candles) >= 2:
             ui["sparkline"] = build_sparkline(candles)
 
-    # ---- Core UI helpers ----
+    # ---- Core helpers ----
     ui["badges"] = build_ui_badges(stockdetail)
 
     if stockdetail.get("bullbrain"):
@@ -322,6 +296,7 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         ui["signalStrength"] = build_signal_strength(stockdetail)
         ui["hybridScore"] = round(stockdetail["bullbrain"].get("confidence", 0), 1)
 
+    ui["risk"] = build_risk_meter(stockdetail)
     ui["freshness"] = build_freshness(stockdetail)
 
     insights = stockdetail.get("insights") or {}
@@ -340,6 +315,7 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if trade:
         ui["tradeIdea"] = trade
 
+    # ---- Explanations ----
     narratives = stockdetail.get("narratives") or {}
     sections = narratives.get("sections") or {}
 
@@ -369,35 +345,29 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
             },
         }
 
-
-    ui["risk"] = build_risk_meter(stockdetail)
-
-    # ---- Decision Intelligence (probability bar) ----
-    decision_ui = {}
-
+    # ---- Decision Intelligence ----
     probs = stockdetail.get("probabilities") or {}
     indicator_states = stockdetail.get("indicator_states") or {}
 
     if isinstance(probs.get("up"), (int, float)) and isinstance(probs.get("down"), (int, float)):
-        decision_ui["probability"] = {
-            "up": round(probs["up"], 4),
-            "down": round(probs["down"], 4),
-        }
-        ui["hybridProbUp"] = decision_ui["probability"]["up"]
-
         diff = abs(probs["up"] - probs["down"])
-        decision_ui["bias"] = {
-            "label": (
-                "Neutral"
-                if diff < 0.05
-                else "Bullish"
-                if probs["up"] > probs["down"]
-                else "Bearish"
-            ),
-            "strength": round(diff * 100, 1),
-            "state": indicator_states.get("probability_composite"),
+        ui["hybridProbUp"] = round(probs["up"], 4)
+        ui["decision"] = {
+            "probability": {
+                "up": round(probs["up"], 4),
+                "down": round(probs["down"], 4),
+            },
+            "bias": {
+                "label": (
+                    "Neutral"
+                    if diff < 0.05
+                    else "Bullish"
+                    if probs["up"] > probs["down"]
+                    else "Bearish"
+                ),
+                "strength": round(diff * 100, 1),
+                "state": indicator_states.get("probability_composite"),
+            },
         }
 
-    if decision_ui:
-        ui["decision"] = decision_ui
-
+    return ui
