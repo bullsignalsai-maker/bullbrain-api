@@ -5192,10 +5192,22 @@ def stock_detail(symbol: str, source: str | None = None):
             sparkline = None
 
     # ---------------------------------------------------------
-    # 4️⃣ FULL Stock Detail Report (v1.0)
+    # 4️⃣ Company News (external I/O — endpoint responsibility)
+    # ---------------------------------------------------------
+    try:
+        from backend.news_repo import fetch_symbol_news
+        stock["news"] = fetch_symbol_news(
+            symbol=sym,
+            company_name=stock.get("company_name"),
+            limit=6,
+        ) or []
+    except Exception:
+        stock["news"] = []
+
+    # ---------------------------------------------------------
+    # 5️⃣ FULL Stock Detail Report (v1.0 — deterministic)
     # ---------------------------------------------------------
     from backend.ui_stock_builder import build_stockdetail_v1
-
     content = build_stockdetail_v1(stock) or {}
 
     # Ensure sparkline is available at top-level for UI
@@ -5203,7 +5215,7 @@ def stock_detail(symbol: str, source: str | None = None):
         content["sparkline"] = sparkline
 
     # ---------------------------------------------------------
-    # 5️⃣ Final Response (Clean & Stable)
+    # 6️⃣ Final Response (Clean & Stable)
     # ---------------------------------------------------------
     return {
         "header": header,
