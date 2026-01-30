@@ -5127,7 +5127,7 @@ def homescreen_carousel():
         "version": cache.get("version"),
     }
 # ---------------------------------------------------------
-# Stock Detail API — UI-Optimized (Narrative First, Complete)
+# Stock Detail API — UI-Optimized (Narrative First)
 # ---------------------------------------------------------
 @app.get("/stockdetail/{symbol}")
 def stock_detail(symbol: str, source: str | None = None):
@@ -5159,33 +5159,26 @@ def stock_detail(symbol: str, source: str | None = None):
         return {"status": "not_ready", "symbol": sym}
 
     stock = doc.to_dict() or {}
-    stock["symbol"] = sym
-
-    # ---------------------------------------------------------
-    # 2️⃣ Common blocks
-    # ---------------------------------------------------------
     narratives = stock.get("narratives") or {}
     decision = stock.get("decision") or {}
-    bullbrain = stock.get("bullbrain") or {}
-    raw_probs = bullbrain.get("raw") or {}
-    indicator_states = stock.get("indicator_states") or {}
+
+    stock["symbol"] = sym
+    content: dict[str, Any] = {}
 
     pattern = stock.get("pattern") or {}
     history = stock.get("patternHistory") or {}
+    insights = stock.get("insights") or {}
     technical = stock.get("technical") or {}
     features = stock.get("features_meta") or {}
-    quote = stock.get("quote") or {}
-
-    content: dict[str, any] = {}
 
     # ---------------------------------------------------------
-    # 3️⃣ Header (price, signal, confidence, sparkline)
+    # 2️⃣ Header (shared across all screens)
     # ---------------------------------------------------------
     from backend.header_builder import build_stock_header
     header = build_stock_header(stock)
 
     # ---------------------------------------------------------
-    # 4️⃣ Smart Pattern (compact, statistical)
+    # 3️⃣ SMART PATTERN CARD (Light, factual)
     # ---------------------------------------------------------
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
     win_rate = days5.get("winRate")
@@ -5193,11 +5186,8 @@ def stock_detail(symbol: str, source: str | None = None):
     smart_pattern = None
     if pattern:
         smart_pattern = {
-            "name": pattern.get("patternLabel") or pattern.get("pattern"),
-            "bias": pattern.get("patternBias"),
+            "name": pattern.get("pattern") or pattern.get("patternLabel"),
             "winRate": win_rate,
-            "occurrences": history.get("occurrences"),
-            "medianReturn5d": days5.get("median"),
             "strength": (
                 "Historically Strong"
                 if isinstance(win_rate, (int, float)) and win_rate >= 0.7
@@ -5205,90 +5195,62 @@ def stock_detail(symbol: str, source: str | None = None):
                 if isinstance(win_rate, (int, float))
                 else None
             ),
-            "headline": pattern.get("headline"),
         }
 
     # ---------------------------------------------------------
-    # 5️⃣ Outlook (human, narrative)
+    # 4️⃣ OUTLOOK (Narrative driven)
     # ---------------------------------------------------------
     outlook = {
-        "summary": narratives.get("summary"),
-        "tradeIdea": narratives.get("tradeIdea"),
+        "shortTerm": insights.get("trendSummary"),
+        "longTerm": insights.get("combinedTechnicalSummary"),
     }
 
     # ---------------------------------------------------------
-    # 6️⃣ Probabilities & Model Edge (NEW – missing earlier)
-    # ---------------------------------------------------------
-    probabilities = {
-        "up": raw_probs.get("prob_up"),
-        "down": raw_probs.get("prob_down"),
-        "confidence": bullbrain.get("confidence"),
-        "composite": indicator_states.get("probability_composite"),
-        "modelConfidence": indicator_states.get("model_confidence"),
-    }
-
-    # ---------------------------------------------------------
-    # 7️⃣ Decision Details (NEW – surfaced cleanly)
-    # ---------------------------------------------------------
-    decision_block = {
-        "finalSignal": decision.get("finalSignal"),
-        "reasons": decision.get("decisionReasons") or [],
-        "regime": (decision.get("quality") or {}).get("regime"),
-        "liquidity": (decision.get("quality") or {}).get("liquidity"),
-    }
-
-    # ---------------------------------------------------------
-    # 8️⃣ Technical Snapshot (digestible, label-first)
+    # 5️⃣ TECHNICAL SNAPSHOT (Narrative + Key Numbers)
     # ---------------------------------------------------------
     technical_snapshot = {
         "trend": {
-            "label": (technical.get("trend") or {}).get("label"),
-            "comment": (technical.get("trend") or {}).get("comment"),
-            "state": indicator_states.get("trend_strength_20"),
+            "summary": insights.get("trendSummary"),
+            "detail": (technical.get("trend") or {}).get("comment"),
         },
         "momentum": {
-            "label": (technical.get("rsi") or {}).get("label"),
-            "value": features.get("rsi14"),
-            "state": indicator_states.get("rsi14"),
+            "summary": insights.get("momentumSummary"),
+            "detail": (technical.get("rsi") or {}).get("comment"),
+            "rsi": features.get("rsi14"),
         },
         "volatility": {
-            "label": (technical.get("volatility") or {}).get("label"),
+            "summary": insights.get("volatilitySummary"),
             "atr": features.get("atr14"),
-            "state": indicator_states.get("volatility_composite"),
         },
         "volume": {
-            "label": (technical.get("volume") or {}).get("label"),
+            "summary": insights.get("volumeSummary"),
             "vsAvgPct": features.get("volume_vs_ma20_pct"),
-            "state": indicator_states.get("volume_zscore_20"),
         },
     }
 
     # ---------------------------------------------------------
-    # 9️⃣ Price Action (today’s candle intelligence)
+    # 6️⃣ PRICE ACTION TODAY
     # ---------------------------------------------------------
     price_action = {
-        "price": quote.get("price"),
-        "change": quote.get("change"),
-        "changePct": quote.get("changePct"),
         "intradayRangePct": features.get("intraday_range_pct"),
         "gapPct": features.get("gap_pct"),
-        "bodyPct": features.get("body_pct"),
+        "candleBodyPct": features.get("body_pct"),
         "upperWickPct": features.get("upper_shadow_pct"),
         "lowerWickPct": features.get("lower_shadow_pct"),
-        "interpretation": pattern.get("headline") or narratives.get("summary"),
+        "interpretation": insights.get("oneLiner"),
     }
-
+    
     # ---------------------------------------------------------
-    # 🔟 Sparkline (schema agnostic)
+    # 7️⃣ Sparkline (schema-agnostic, primary)
     # ---------------------------------------------------------
     candles_block = stock.get("candles") or []
-    candles = (
-        candles_block.get("candles", [])
-        if isinstance(candles_block, dict)
-        else candles_block
-        if isinstance(candles_block, list)
-        else []
-    )
+
+    if isinstance(candles_block, dict):
+        candles = candles_block.get("candles", [])
+    elif isinstance(candles_block, list):
+        candles = candles_block
+    else:
+        candles = []
 
     if candles and len(candles) >= 2:
         try:
@@ -5298,62 +5260,61 @@ def stock_detail(symbol: str, source: str | None = None):
             pass
 
     # ---------------------------------------------------------
-    # 1️⃣1️⃣ Pattern History Preview (NEW – compact)
+    # 8️⃣ UI Enhancements (FULL, canonical)
     # ---------------------------------------------------------
-    content["patternHistory"] = {
-        "occurrences": history.get("occurrences"),
-        "recentSamples": (history.get("samples") or [])[:5],
-    }
+    ui_stock = dict(stock)
 
-    # ---------------------------------------------------------
-    # 1️⃣2️⃣ Explanations (multi-section narrative)
-    # ---------------------------------------------------------
-    content["explanations"] = {
-        "signal": {
-            "primary": narratives.get("summary"),
-            "secondary": narratives.get("tradeIdea"),
-        },
-        "probability": narratives.get("probability"),
-        "pattern": (
-            " ".join(narratives.get("sections", {}).get("pattern", []))
-            if narratives.get("sections")
-            else None
-        ),
-        "technical": (
-            " ".join(
-                narratives.get("sections", {}).get("trend", []) +
-                narratives.get("sections", {}).get("momentum", []) +
-                narratives.get("sections", {}).get("volatility", []) +
-                narratives.get("sections", {}).get("volume", [])
-            )
-            if narratives.get("sections")
-            else None
-        ),
-    }
+    # attach NEW canonical blocks for UI use
+    ui_stock["probabilities"] = content.get("probabilities")
+    ui_stock["indicator_states"] = stock.get("indicator_states") or {}
+    ui_stock["narratives"] = stock.get("narratives") or {}
+    ui_stock["decision_quality"] = (stock.get("decision") or {}).get("quality") or {}
 
-    # ---------------------------------------------------------
-    # 1️⃣3️⃣ News
-    # ---------------------------------------------------------
     try:
-        from backend.news_repo import fetch_symbol_news
-        content["news"] = fetch_symbol_news(
-            symbol=sym,
-            company_name=stock.get("company_name"),
-            limit=6,
-        ) or []
+        from backend.ui_stock_builder import build_ui_enhancements
+        content["ui"] = build_ui_enhancements(ui_stock) or {}
     except Exception:
-        content["news"] = []
+        content["ui"] = {}
 
     # ---------------------------------------------------------
-    # ✅ Final Response
+    # 🔟 Final Response (Clean, Narrative-First)
     # ---------------------------------------------------------
     content.update({
         "smartPattern": smart_pattern,
         "outlook": outlook,
-        "probabilities": probabilities,
-        "decision": decision_block,
         "technicalSnapshot": technical_snapshot,
         "priceAction": price_action,
+        # ✅ NEW — optional, additive
+        "explanations": {
+            # signal explanation (2 lines)
+            "signal": {
+                "primary": narratives.get("summary"),
+                "secondary": narratives.get("tradeIdea"),
+            },
+
+            # probability & decision explanation
+            "probability": narratives.get("probability"),
+
+            # pattern explanation (2–3 sentences)
+            "pattern": (
+                " ".join(narratives.get("sections", {}).get("pattern", []))
+                if narratives.get("sections")
+                else None
+            ),
+
+            # technical snapshot paragraph (3–4 sentences)
+            "technical": (
+                " ".join(
+                    narratives.get("sections", {}).get("trend", []) +
+                    narratives.get("sections", {}).get("momentum", []) +
+                    narratives.get("sections", {}).get("volatility", []) +
+                    narratives.get("sections", {}).get("volume", [])
+                )
+                if narratives.get("sections")
+                else None
+            ),
+        },
+
         "computed_at": stock.get("computed_at"),
     })
 

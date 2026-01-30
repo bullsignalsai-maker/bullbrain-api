@@ -182,25 +182,26 @@ def build_signal_strength(stockdetail: Dict[str, Any]) -> Dict[str, str]:
     return {"signal": signal, "label": label}
 
 
-def build_risk_meter(technical: Dict[str, Any]) -> Dict[str, str]:
-    if not technical:
+def build_risk_meter(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
+    quality = stockdetail.get("decision_quality") or {}
+    regime = quality.get("regime")
+    liquidity = quality.get("liquidity")
+
+    if not regime and not liquidity:
         return {}
 
-    vol = technical.get("volatility") or {}
-    volatility_value = vol if isinstance(vol, (int, float)) else vol.get("volatility_20d")
-    atr = technical.get("atr") or technical.get("atr14") or 0
-
-    if volatility_value is None:
-        return {}
-
-    if volatility_value > 3 or atr > 20:
+    if regime == "HIGH_VOL" or liquidity in ("THIN", "POOR"):
         level = "High"
-    elif volatility_value > 1.5:
+    elif regime == "NORMAL":
         level = "Medium"
     else:
         level = "Low"
 
-    return {"level": level}
+    return {
+        "level": level,
+        "regime": regime,
+        "liquidity": liquidity,
+    }
 
 
 # =================================================
@@ -296,6 +297,10 @@ def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     ui: Dict[str, Any] = {}
 
+    # 🔒 UI contract version
+    ui["ui_version"] = "v2"
+
+
     # ---- Sparkline (schema-safe) ----
     existing = stockdetail.get("sparkline")
 
@@ -317,10 +322,6 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         ui["signalStrength"] = build_signal_strength(stockdetail)
         ui["hybridScore"] = round(stockdetail["bullbrain"].get("confidence", 0), 1)
 
-    technical = stockdetail.get("technical")
-    if technical:
-        ui["risk"] = build_risk_meter(technical)
-
     ui["freshness"] = build_freshness(stockdetail)
 
     insights = stockdetail.get("insights") or {}
@@ -339,27 +340,64 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if trade:
         ui["tradeIdea"] = trade
 
-    if stockdetail.get("features_meta") and technical:
-        ui["explanations"] = build_technical_explanations(stockdetail)
+    narratives = stockdetail.get("narratives") or {}
+    sections = narratives.get("sections") or {}
+
+    if sections:
+        ui["explanations"] = {
+            "version": "tech_explain_v2",
+            "groups": {
+                "technical_outlook": {
+                    "short": narratives.get("summary"),
+                    "medium": narratives.get("tradeIdea"),
+                    "long": (
+                        sections.get("trend", []) +
+                        sections.get("momentum", []) +
+                        sections.get("volatility", []) +
+                        sections.get("volume", [])
+                    ),
+                },
+                "risks_opportunities": {
+                    "risks": sections.get("risk", []) or [],
+                    "opportunities": sections.get("opportunity", []) or [],
+                },
+                "final_recommendation": {
+                    "signal": (stockdetail.get("decision") or {}).get("finalSignal"),
+                    "confidence": (stockdetail.get("bullbrain") or {}).get("confidence"),
+                    "text": narratives.get("summary"),
+                },
+            },
+        }
+
+
+    ui["risk"] = build_risk_meter(stockdetail)
 
     # ---- Decision Intelligence (probability bar) ----
-    raw = (stockdetail.get("bullbrain") or {}).get("raw") or {}
     decision_ui = {}
 
-    if isinstance(raw.get("prob_up"), (int, float)) and isinstance(raw.get("prob_down"), (int, float)):
+    probs = stockdetail.get("probabilities") or {}
+    indicator_states = stockdetail.get("indicator_states") or {}
+
+    if isinstance(probs.get("up"), (int, float)) and isinstance(probs.get("down"), (int, float)):
         decision_ui["probability"] = {
-            "up": round(raw["prob_up"], 4),
-            "down": round(raw["prob_down"], 4),
+            "up": round(probs["up"], 4),
+            "down": round(probs["down"], 4),
         }
         ui["hybridProbUp"] = decision_ui["probability"]["up"]
 
-        diff = abs(raw["prob_up"] - raw["prob_down"])
+        diff = abs(probs["up"] - probs["down"])
         decision_ui["bias"] = {
-            "label": "Neutral" if diff < 0.05 else "Bullish" if raw["prob_up"] > raw["prob_down"] else "Bearish",
+            "label": (
+                "Neutral"
+                if diff < 0.05
+                else "Bullish"
+                if probs["up"] > probs["down"]
+                else "Bearish"
+            ),
             "strength": round(diff * 100, 1),
+            "state": indicator_states.get("probability_composite"),
         }
 
     if decision_ui:
         ui["decision"] = decision_ui
 
-    return ui
