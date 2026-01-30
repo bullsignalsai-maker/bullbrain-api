@@ -9,10 +9,64 @@
 # - NO schema changes
 # -------------------------------------------------
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
-from backend.technical_explanations import build_technical_explanations
+
+# =================================================
+# Small helpers
+# =================================================
+def _is_nonempty_str(x: Any) -> bool:
+    return isinstance(x, str) and len(x.strip()) > 0
+
+
+def _first_nonempty(*vals: Any) -> Optional[str]:
+    for v in vals:
+        if _is_nonempty_str(v):
+            return v.strip()
+    return None
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in items:
+        if not _is_nonempty_str(x):
+            continue
+        k = x.strip()
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def _prune(obj: Any) -> Any:
+    """
+    Remove None, empty strings, empty lists/dicts recursively.
+    (Highlights should NOT be pruned; explanations can be.)
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        s = obj.strip()
+        return s if s else None
+    if isinstance(obj, list):
+        cleaned = []
+        for v in obj:
+            pv = _prune(v)
+            if pv is None:
+                continue
+            cleaned.append(pv)
+        return cleaned if cleaned else None
+    if isinstance(obj, dict):
+        cleaned = {}
+        for k, v in obj.items():
+            pv = _prune(v)
+            if pv is None:
+                continue
+            cleaned[k] = pv
+        return cleaned if cleaned else None
+    return obj
 
 
 # =================================================
@@ -109,15 +163,15 @@ def build_ui_badges(stockdetail: Dict[str, Any]) -> List[Dict[str, str]]:
 
     final_signal = decision.get("finalSignal") or bullbrain.get("signal")
     if final_signal:
-        badges.append({"type": "signal", "label": final_signal.replace("_", " ")})
+        badges.append({"type": "signal", "label": str(final_signal).replace("_", " ")})
 
     trend_label = (technical.get("trend") or {}).get("label")
     if trend_label:
-        badges.append({"type": "trend", "label": trend_label})
+        badges.append({"type": "trend", "label": str(trend_label)})
 
     pat = pattern.get("pattern") or pattern.get("patternLabel")
     if pat:
-        badges.append({"type": "pattern", "label": pat})
+        badges.append({"type": "pattern", "label": str(pat)})
 
     return badges
 
@@ -138,15 +192,15 @@ def build_confidence_tier(confidence: float | None) -> Dict[str, Any]:
     else:
         tier = "Low"
 
-    return {"value": round(confidence, 2), "tier": tier}
+    return {"value": round(float(confidence), 2), "tier": tier}
 
 
 def build_signal_strength(stockdetail: Dict[str, Any]) -> Dict[str, str]:
     bullbrain = stockdetail.get("bullbrain") or {}
     decision = stockdetail.get("decision") or {}
 
-    signal = decision.get("finalSignal") or bullbrain.get("signal", "HOLD")
-    confidence = bullbrain.get("confidence", 0)
+    signal = decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
+    confidence = bullbrain.get("confidence", 0) or 0
 
     if signal == "BUY":
         label = "Strong Buy" if confidence >= 70 else "Buy"
@@ -155,7 +209,7 @@ def build_signal_strength(stockdetail: Dict[str, Any]) -> Dict[str, str]:
     else:
         label = "Neutral"
 
-    return {"signal": signal, "label": label}
+    return {"signal": str(signal), "label": label}
 
 
 def build_risk_meter(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,11 +227,7 @@ def build_risk_meter(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     else:
         level = "Low"
 
-    return {
-        "level": level,
-        "regime": regime,
-        "liquidity": liquidity,
-    }
+    return {"level": level, "regime": regime, "liquidity": liquidity}
 
 
 # =================================================
@@ -205,7 +255,7 @@ def build_freshness(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =================================================
-# Risks & Opportunities
+# Risks & Opportunities (UI block)
 # =================================================
 def build_risks_opportunities(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     features = stockdetail.get("features_meta") or {}
@@ -214,13 +264,13 @@ def build_risks_opportunities(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
 
     risks, opportunities = [], []
 
-    if features.get("price_vs_sma20_pct", 0) < -3:
+    if isinstance(features.get("price_vs_sma20_pct"), (int, float)) and features.get("price_vs_sma20_pct") < -3:
         risks.append("Price remains below short-term averages, making rallies fragile.")
 
-    if features.get("volume_zscore_20", 0) < -1:
+    if isinstance(features.get("volume_zscore_20"), (int, float)) and features.get("volume_zscore_20") < -1:
         risks.append("Below-normal volume reduces signal reliability.")
 
-    if insights.get("momentumSummary"):
+    if _is_nonempty_str(insights.get("momentumSummary")):
         risks.append(insights["momentumSummary"])
 
     rsi = features.get("rsi14")
@@ -231,22 +281,26 @@ def build_risks_opportunities(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(days5.get("best"), (int, float)) and days5["best"] > 3:
         opportunities.append("Historical pattern samples show upside spikes in some cases.")
 
-    if insights.get("volatilitySummary"):
+    if _is_nonempty_str(insights.get("volatilitySummary")):
         opportunities.append(insights["volatilitySummary"])
+
+    # ✅ guarantee at least 1 item each when possible (prevents empty arrays in UI)
+    risks = _dedupe_keep_order(risks)[:4]
+    opportunities = _dedupe_keep_order(opportunities)[:4]
 
     if not risks and not opportunities:
         return {}
 
     return {
-        "short": insights.get("summaryLine"),
-        "medium": insights.get("combinedTechnicalSummary"),
-        "risks": risks[:4],
-        "opportunities": opportunities[:4],
+        "short": _first_nonempty(insights.get("summaryLine"), insights.get("oneLiner")),
+        "medium": _first_nonempty(insights.get("combinedTechnicalSummary")),
+        "risks": risks,
+        "opportunities": opportunities,
     }
 
 
 # =================================================
-# Trade Idea
+# Trade Idea (UI block)
 # =================================================
 def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     decision = stockdetail.get("decision") or {}
@@ -255,16 +309,139 @@ def build_trade_idea(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     features = stockdetail.get("features_meta") or {}
 
     stance = decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
-    summary = insights.get("whySignal") or "No clean directional edge is present."
+    summary = _first_nonempty(insights.get("whySignal")) or "No clean directional edge is present."
 
     atr = features.get("atr14")
     note = (
-        f"Typical daily movement is around ±{round(atr, 2)} points."
+        f"Typical daily movement is around ±{round(float(atr), 2)} points."
         if isinstance(atr, (int, float))
         else None
     )
 
-    return {"stance": stance.title(), "summary": summary, "note": note}
+    return {"stance": str(stance).title(), "summary": summary, "note": note}
+
+
+# =================================================
+# NEW: Highlights (StockDetailScreen hero)
+# =================================================
+def build_highlights(stockdetail: Dict[str, Any], ui: Dict[str, Any]) -> Dict[str, Any]:
+    bullbrain = stockdetail.get("bullbrain") or {}
+    decision = stockdetail.get("decision") or {}
+    narratives = stockdetail.get("narratives") or {}
+    insights = stockdetail.get("insights") or {}
+    technical = stockdetail.get("technical") or {}
+
+    signal = decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
+    confidence = bullbrain.get("confidence")
+
+    conf_tier = (ui.get("confidence") or {}).get("tier") or (
+        build_confidence_tier(confidence).get("tier") if isinstance(confidence, (int, float)) else "Low"
+    )
+
+    risk_level = (ui.get("risk") or {}).get("level") or "Medium"
+
+    headline = _first_nonempty(
+        narratives.get("summary"),
+        (ui.get("explanations") or {}).get("groups", {}).get("technical_outlook", {}).get("short"),
+        insights.get("combinedTechnicalSummary"),
+        insights.get("oneLiner"),
+    ) or "No strong directional edge is present right now."
+
+    subline = _first_nonempty(
+        narratives.get("tradeIdea"),
+        (ui.get("explanations") or {}).get("groups", {}).get("technical_outlook", {}).get("medium"),
+        insights.get("whySignal"),
+    ) or "Wait for clearer confirmation before taking aggressive positions."
+
+    # timeframe label
+    trend_label = (technical.get("trend") or {}).get("label")
+    momentum_label = (technical.get("momentum") or {}).get("label")
+    timeframe = None
+    if _is_nonempty_str(trend_label) and _is_nonempty_str(momentum_label):
+        timeframe = f"{trend_label} trend · {momentum_label} momentum"
+    elif _is_nonempty_str(trend_label):
+        timeframe = f"{trend_label} trend"
+    elif _is_nonempty_str(momentum_label):
+        timeframe = f"{momentum_label} momentum"
+    else:
+        timeframe = "Short-term view"
+
+    return {
+        "headline": headline,
+        "subline": subline,
+        "signal": signal,
+        "confidence": round(float(confidence), 2) if isinstance(confidence, (int, float)) else None,
+        "confidenceTier": conf_tier,
+        "riskLevel": risk_level,
+        "timeframe": timeframe,
+    }
+
+
+# =================================================
+# NEW: Explanations (sectioned narrative)
+# =================================================
+def build_explanations(stockdetail: Dict[str, Any], ui: Dict[str, Any]) -> Dict[str, Any]:
+    narratives = stockdetail.get("narratives") or {}
+    sections = narratives.get("sections") or {}
+
+    decision = stockdetail.get("decision") or {}
+    bullbrain = stockdetail.get("bullbrain") or {}
+
+    # technical long bullets
+    long_lines = []
+    long_lines += sections.get("trend", []) or []
+    long_lines += sections.get("momentum", []) or []
+    long_lines += sections.get("volatility", []) or []
+    long_lines += sections.get("volume", []) or []
+    long_lines = _dedupe_keep_order(long_lines)[:8]
+
+    # risks/opps bullets
+    rop = ui.get("risksOpportunities") or {}
+    risks = _dedupe_keep_order((sections.get("risk", []) or []) + (rop.get("risks", []) or []))[:6]
+    opps = _dedupe_keep_order((sections.get("opportunity", []) or []) + (rop.get("opportunities", []) or []))[:6]
+
+    # If still empty, add 1 safe fallback so UI never shows empty box
+    if not risks:
+        risks = ["Sideways conditions can increase whipsaw risk and reduce signal reliability."]
+    if not opps:
+        opps = ["A breakout with confirmation could improve reward-to-risk."]
+
+    final_signal = decision.get("finalSignal") or bullbrain.get("signal") or "HOLD"
+    conf = bullbrain.get("confidence")
+
+    final_text = _first_nonempty(
+        narratives.get("summary"),
+        (ui.get("executiveSummaryShort")),
+        (ui.get("explanations") or {}).get("groups", {}).get("technical_outlook", {}).get("short"),
+    ) or "Signals are mixed; consider patience and selective positioning."
+
+    out = {
+        "overview": {
+            "title": "Market Overview",
+            "text": _first_nonempty(narratives.get("summary"), ui.get("executiveSummaryShort")) or final_text,
+        },
+        "technical_outlook": {
+            "title": "Technical Outlook",
+            "short": _first_nonempty(narratives.get("summary")) or final_text,
+            "medium": _first_nonempty(narratives.get("tradeIdea")) or "Conditions are mixed; avoid chasing extended moves.",
+            "long": long_lines,
+        },
+        "risks_opportunities": {
+            "title": "Risks & Opportunities",
+            "risks": risks,
+            "opportunities": opps,
+        },
+        "final_recommendation": {
+            "title": "Final Recommendation",
+            "signal": final_signal,
+            "confidence": round(float(conf), 2) if isinstance(conf, (int, float)) else None,
+            "text": final_text,
+        },
+    }
+
+    # prune empty / None for explanations only (keeps UI clean)
+    pruned = _prune(out)
+    return pruned or {}
 
 
 # =================================================
@@ -276,8 +453,9 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     # 🔒 UI contract version
     ui["ui_version"] = "v2"
 
-    # ---- Sparkline ----
+    # ---- Sparkline (schema-safe) ----
     existing = stockdetail.get("sparkline")
+
     if isinstance(existing, dict) and existing.get("path"):
         ui["sparkline"] = existing
     elif isinstance(existing, list) and len(existing) >= 2:
@@ -288,23 +466,26 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(candles, list) and len(candles) >= 2:
             ui["sparkline"] = build_sparkline(candles)
 
-    # ---- Core helpers ----
+    # ---- Core UI helpers ----
     ui["badges"] = build_ui_badges(stockdetail)
 
     if stockdetail.get("bullbrain"):
-        ui["confidence"] = build_confidence_tier(stockdetail["bullbrain"].get("confidence"))
+        ui["confidence"] = build_confidence_tier((stockdetail["bullbrain"] or {}).get("confidence"))
         ui["signalStrength"] = build_signal_strength(stockdetail)
-        ui["hybridScore"] = round(stockdetail["bullbrain"].get("confidence", 0), 1)
+        ui["hybridScore"] = round(float((stockdetail["bullbrain"] or {}).get("confidence", 0) or 0), 1)
 
-    ui["risk"] = build_risk_meter(stockdetail)
     ui["freshness"] = build_freshness(stockdetail)
 
+    # Risk uses decision_quality (regime/liquidity)
+    ui["risk"] = build_risk_meter(stockdetail)
+
+    # executive summary
     insights = stockdetail.get("insights") or {}
-    summary = insights.get("combinedTechnicalSummary") or insights.get("summaryLine") or insights.get("oneLiner")
+    summary = _first_nonempty(insights.get("combinedTechnicalSummary"), insights.get("summaryLine"), insights.get("oneLiner"))
     if summary:
         ui["executiveSummaryShort"] = condense_executive_summary(summary)
 
-    if insights.get("whySignal"):
+    if _is_nonempty_str(insights.get("whySignal")):
         ui["signalOneLiner"] = insights["whySignal"]
 
     rop = build_risks_opportunities(stockdetail)
@@ -315,27 +496,27 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
     if trade:
         ui["tradeIdea"] = trade
 
-    # ---- Explanations ----
+    # ---- Narrative explanations groups (UI block) ----
     narratives = stockdetail.get("narratives") or {}
     sections = narratives.get("sections") or {}
-
     if sections:
+        # ensure final recommendation block exists
         ui["explanations"] = {
             "version": "tech_explain_v2",
             "groups": {
                 "technical_outlook": {
                     "short": narratives.get("summary"),
                     "medium": narratives.get("tradeIdea"),
-                    "long": (
-                        sections.get("trend", []) +
-                        sections.get("momentum", []) +
-                        sections.get("volatility", []) +
-                        sections.get("volume", [])
-                    ),
+                    "long": _dedupe_keep_order(
+                        (sections.get("trend", []) or []) +
+                        (sections.get("momentum", []) or []) +
+                        (sections.get("volatility", []) or []) +
+                        (sections.get("volume", []) or [])
+                    )[:8],
                 },
                 "risks_opportunities": {
-                    "risks": sections.get("risk", []) or [],
-                    "opportunities": sections.get("opportunity", []) or [],
+                    "risks": _dedupe_keep_order(sections.get("risk", []) or [])[:6],
+                    "opportunities": _dedupe_keep_order(sections.get("opportunity", []) or [])[:6],
                 },
                 "final_recommendation": {
                     "signal": (stockdetail.get("decision") or {}).get("finalSignal"),
@@ -345,29 +526,31 @@ def build_ui_enhancements(stockdetail: Dict[str, Any]) -> Dict[str, Any]:
             },
         }
 
-    # ---- Decision Intelligence ----
+    # ---- Decision Intelligence (probability bar) ----
+    decision_ui = {}
+
     probs = stockdetail.get("probabilities") or {}
     indicator_states = stockdetail.get("indicator_states") or {}
 
     if isinstance(probs.get("up"), (int, float)) and isinstance(probs.get("down"), (int, float)):
-        diff = abs(probs["up"] - probs["down"])
-        ui["hybridProbUp"] = round(probs["up"], 4)
-        ui["decision"] = {
-            "probability": {
-                "up": round(probs["up"], 4),
-                "down": round(probs["down"], 4),
-            },
-            "bias": {
-                "label": (
-                    "Neutral"
-                    if diff < 0.05
-                    else "Bullish"
-                    if probs["up"] > probs["down"]
-                    else "Bearish"
-                ),
-                "strength": round(diff * 100, 1),
-                "state": indicator_states.get("probability_composite"),
-            },
+        decision_ui["probability"] = {
+            "up": round(float(probs["up"]), 4),
+            "down": round(float(probs["down"]), 4),
         }
+        ui["hybridProbUp"] = decision_ui["probability"]["up"]
+
+        diff = abs(float(probs["up"]) - float(probs["down"]))
+        decision_ui["bias"] = {
+            "label": (
+                "Neutral" if diff < 0.05
+                else "Bullish" if probs["up"] > probs["down"]
+                else "Bearish"
+            ),
+            "strength": round(diff * 100, 1),
+            "state": indicator_states.get("probability_composite"),
+        }
+
+    if decision_ui:
+        ui["decision"] = decision_ui
 
     return ui

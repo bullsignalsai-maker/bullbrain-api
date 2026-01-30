@@ -5264,20 +5264,44 @@ def stock_detail(symbol: str, source: str | None = None):
     # ---------------------------------------------------------
     ui_stock = dict(stock)
 
-    # ✅ canonical blocks (must come from stock, not content)
+    # ✅ IMPORTANT: these must come from STOCK, not from content (content has none)
     ui_stock["probabilities"] = stock.get("probabilities") or {}
     ui_stock["indicator_states"] = stock.get("indicator_states") or {}
     ui_stock["narratives"] = stock.get("narratives") or {}
 
-    # ✅ risk meter expects decision_quality.regime/liquidity
-    dec = stock.get("decision") or {}
-    ui_stock["decision_quality"] = dec.get("quality") or dec or {}
+    # ✅ decision quality is stored under decision.quality in your schema
+    ui_stock["decision_quality"] = (stock.get("decision") or {}).get("quality") or {}
 
     try:
-        from backend.ui_stock_builder import build_ui_enhancements
-        content["ui"] = build_ui_enhancements(ui_stock) or {}
+        from backend.ui_stock_builder import (
+            build_ui_enhancements,
+            build_highlights,
+            build_explanations,
+        )
+
+        ui = build_ui_enhancements(ui_stock) or {}
+        content["ui"] = ui
+
+        # ✅ guarantee sparkline at top-level (optional, but makes frontend simpler)
+        if not content.get("sparkline") and isinstance(ui.get("sparkline"), dict):
+            content["sparkline"] = ui["sparkline"]
+
+        # ✅ NEW: StockDetailScreen hero summary + sections
+        content["highlights"] = build_highlights(ui_stock, ui)
+        content["explanations"] = build_explanations(ui_stock, ui)
+
     except Exception:
         content["ui"] = {}
+        content["highlights"] = {
+            "headline": "No strong directional edge is present right now.",
+            "subline": "Wait for clearer confirmation before taking aggressive positions.",
+            "signal": (stock.get("decision") or {}).get("finalSignal") or (stock.get("bullbrain") or {}).get("signal") or "HOLD",
+            "confidence": (stock.get("bullbrain") or {}).get("confidence"),
+            "confidenceTier": "Moderate",
+            "riskLevel": "Medium",
+            "timeframe": "Short-term view",
+        }
+        content["explanations"] = {}
 
     # ---------------------------------------------------------
     # 9️⃣ Company News (non-blocking)
