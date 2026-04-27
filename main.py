@@ -5356,6 +5356,14 @@ def stock_technical_detail(symbol: str):
     return {
         "header": header,
         **technical_payload,
+
+        # ✅ Add full feature metadata for deep UI sections
+        "featuresMeta": stock.get("features_meta") or {},
+
+        # ✅ Optional useful context
+        "indicatorStates": stock.get("indicator_states") or {},
+        "narratives": stock.get("narratives") or {},
+
         "meta": {
             "computed_at": stock.get("computed_at"),
             "schema": "technical_v1",
