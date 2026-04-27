@@ -5288,7 +5288,9 @@ def stock_pattern_detail(symbol: str):
 def stock_decision_detail(symbol: str):
     sym = symbol.upper()
 
-    # 1️⃣ Firestore read (single doc, no recompute)
+    # ---------------------------------------------------------
+    # 1️⃣ Firestore read — single source of truth
+    # ---------------------------------------------------------
     doc = (
         db.collection("bullsignals_ai")
           .document("stocks")
@@ -5298,30 +5300,49 @@ def stock_decision_detail(symbol: str):
     )
 
     if not doc.exists:
-        return {"status": "not_ready", "symbol": sym}
+        return {
+            "status": "not_ready",
+            "symbol": sym,
+        }
 
     stock = doc.to_dict() or {}
     stock["symbol"] = sym
 
-    # 2️⃣ Shared header (same across all screens)
+    # ---------------------------------------------------------
+    # 2️⃣ Shared header
+    # ---------------------------------------------------------
     from backend.header_builder import build_stock_header
     header = build_stock_header(stock)
 
-    # 3️⃣ Decision ladder (SINGLE SOURCE OF TRUTH)
+    # ---------------------------------------------------------
+    # 3️⃣ Decision ladder + gate metrics
+    # ---------------------------------------------------------
     from backend.decision_explainer import explain_decision_ladder
-    decision_payload = explain_decision_ladder(stock)
+    decision_payload = explain_decision_ladder(stock) or {}
 
+    # ---------------------------------------------------------
     # 4️⃣ Final response
+    # ---------------------------------------------------------
     return {
         "header": header,
+
+        # ✅ Main UI payload
         "modelDecision": decision_payload,
+
+        # ✅ Optional supporting context for frontend if needed later
+        "context": {
+            "decision": stock.get("decision") or {},
+            "probabilities": stock.get("probabilities") or {},
+            "indicatorStates": stock.get("indicator_states") or {},
+            "pattern": stock.get("pattern") or {},
+            "featuresMeta": stock.get("features_meta") or {},
+        },
+
         "meta": {
             "computed_at": stock.get("computed_at"),
-            "schema": "decision_v2",
+            "schema": "decision_v3",
         },
     }
-
-
 # ---------------------------------------------------------
 # Stock Technical Detail API — FULL TECH + FEATURES
 # ---------------------------------------------------------
