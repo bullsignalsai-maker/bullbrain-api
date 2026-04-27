@@ -11,36 +11,96 @@ from typing import Dict, Any, List
 # 🔧 Helpers (NORMALIZATION — CRITICAL)
 # ---------------------------------------------------------
 
-def _sentences(lines: List[str], min_count: int = 2) -> str:
-    lines = [l.strip() for l in lines if isinstance(l, str) and l.strip()]
-    if not lines:
-        return ""
-    if len(lines) >= min_count:
-        return " ".join(lines)
-    return " ".join(lines * min_count)
+def _sentences(lines: List[str], min_count: int = 3) -> str:
+    clean = []
 
+    seen = set()
+    for x in lines:
+        if not isinstance(x, str):
+            continue
+
+        s = x.strip()
+        if not s:
+            continue
+
+        key = s.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        clean.append(s)
+
+    return " ".join(clean)
 
 def _get_probabilities(stock: Dict[str, Any]):
     probs = stock.get("probabilities")
+
     if isinstance(probs, dict):
-        up, down = probs.get("up"), probs.get("down")
+        up = probs.get("up")
+        down = probs.get("down")
         if isinstance(up, (int, float)) and isinstance(down, (int, float)):
-            return up, down
+            return float(up), float(down)
 
     raw = (stock.get("bullbrain") or {}).get("raw") or {}
-    up, down = raw.get("prob_up"), raw.get("prob_down")
+
+    up = raw.get("prob_up")
+    down = raw.get("prob_down")
+
     if isinstance(up, (int, float)) and isinstance(down, (int, float)):
-        return up, down
+        return float(up), float(down)
 
     return None, None
 
 
 def _get_confidence(stock: Dict[str, Any]):
-    return (
-        (stock.get("decision") or {}).get("confidence")
-        or (stock.get("bullbrain") or {}).get("confidence")
-    )
+    decision = stock.get("decision") or {}
+    bullbrain = stock.get("bullbrain") or {}
 
+    val = decision.get("confidence")
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    val = bullbrain.get("confidence")
+    if isinstance(val, (int, float)):
+        return float(val)
+
+    return None
+def build_sparkline_from_prices(prices: List[float]) -> Dict[str, Any]:
+    prices = [p for p in prices if isinstance(p, (int, float))]
+
+    if len(prices) < 2:
+        return {}
+
+    min_p = min(prices)
+    max_p = max(prices)
+    span = max_p - min_p or 1
+
+    points = []
+
+    for i, price in enumerate(prices):
+        x = round(i * 100 / (len(prices) - 1), 1)
+        y = round((max_p - price) * 30 / span, 1)
+        points.append(f"{x},{y}")
+
+    return {
+        "path": "M " + " L ".join(points),
+        "min": round(min_p, 2),
+        "max": round(max_p, 2),
+        "direction": "up" if prices[-1] >= prices[0] else "down",
+    }
+
+
+def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(candles, list):
+        return {}
+
+    closes = []
+
+    for c in candles:
+        if isinstance(c, dict) and isinstance(c.get("close"), (int, float)):
+            closes.append(c["close"])
+
+    return build_sparkline_from_prices(closes)
 
 # ---------------------------------------------------------
 # 1️⃣ SIGNAL BLOCK (AUTHORITATIVE)
@@ -127,79 +187,306 @@ def build_probability_block(stock: Dict[str, Any]) -> Dict[str, Any]:
 def build_pattern_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     pattern = stock.get("pattern") or {}
     history = stock.get("patternHistory") or {}
+    indicators = stock.get("indicator_states") or {}
     narratives = stock.get("narratives") or {}
+    sections = narratives.get("sections") or {}
 
-    name = pattern.get("pattern") or pattern.get("patternLabel")
-    bias = pattern.get("bias")
+    name = (
+        pattern.get("pattern")
+        or pattern.get("patternLabel")
+        or stock.get("patternLabel")
+    )
+
+    bias = (
+        pattern.get("bias")
+        or pattern.get("patternBias")
+        or stock.get("patternBias")
+    )
+
+    days5 = ((history.get("forwardReturns") or {}).get("days5") or {})
+
     win_rate = pattern.get("winRate5d")
+    if not isinstance(win_rate, (int, float)):
+        win_rate = days5.get("winRate")
 
-    days5 = (history.get("forwardReturns") or {}).get("days5") or {}
-    best, worst = days5.get("best"), days5.get("worst")
+    best = days5.get("best")
+    worst = days5.get("worst")
+    avg = days5.get("avg")
+    count = days5.get("count")
+
+    pattern_state = indicators.get("pattern_winrate_5d")
+    edge_state = indicators.get("pattern_edge_5d")
+    sample_state = indicators.get("pattern_sample_count_5d")
 
     expl = []
 
     if name:
         expl.append(
-            f"The {name.replace('_', ' ').title()} pattern has recently emerged, reflecting short-term price structure."
+            f"The {str(name).replace('_', ' ').title()} pattern has recently emerged, showing the latest short-term price-action structure."
+        )
+    else:
+        expl.append(
+            "A short-term price pattern is present, but the pattern name is not available in the current snapshot."
+        )
+
+    if bias:
+        expl.append(
+            f"The stored pattern bias is {str(bias).lower()}, so this setup should be interpreted with that directional context."
         )
 
     if isinstance(win_rate, (int, float)):
         expl.append(
-            f"Historically, this pattern has been favorable roughly {win_rate*100:.0f}% of the time over five days."
+            f"Historically, this pattern has been favorable about {win_rate * 100:.0f}% of the time over the next five trading days."
+        )
+    elif pattern_state:
+        expl.append(
+            f"The pattern win-rate state is {str(pattern_state).replace('_', ' ').lower()}, based on the stored indicator evaluation."
+        )
+    else:
+        expl.append(
+            "A reliable five-day win rate is not available in the current pattern history, so confidence should remain limited."
+        )
+
+    if isinstance(avg, (int, float)):
+        expl.append(
+            f"The average five-day forward return for this pattern is about {avg:.2f}%, which gives context for the typical historical follow-through."
         )
 
     if isinstance(best, (int, float)) and isinstance(worst, (int, float)):
         expl.append(
-            f"Past outcomes show gains up to {best:.1f}% and drawdowns near {worst:.1f}%, highlighting variability."
+            f"Past outcomes ranged from approximately {worst:.1f}% on the downside to {best:.1f}% on the upside, showing that results can vary meaningfully."
         )
+
+    if isinstance(count, (int, float)):
+        expl.append(
+            f"The five-day sample count is {int(count)}, so the pattern is being evaluated against a measurable historical sample."
+        )
+    elif sample_state:
+        expl.append(
+            f"The sample quality state is {str(sample_state).replace('_', ' ').lower()}, which helps judge how much weight to give this pattern."
+        )
+
+    if edge_state:
+        expl.append(
+            f"The stored pattern edge is {str(edge_state).replace('_', ' ').lower()}, which summarizes whether the historical edge is positive, negative, or mixed."
+        )
+
+    raw_pattern_notes = sections.get("pattern")
+    if isinstance(raw_pattern_notes, list):
+        expl.extend([x for x in raw_pattern_notes if isinstance(x, str) and x.strip()])
+    elif isinstance(raw_pattern_notes, str) and raw_pattern_notes.strip():
+        expl.append(raw_pattern_notes.strip())
 
     if not expl:
         expl.append(
-            "Recent price behavior reflects a short-term pattern, though reliability is mixed."
+            "Recent price behavior reflects a short-term setup, but the available pattern data is limited."
         )
 
     return {
         "name": name,
         "bias": bias,
         "winRate5d": win_rate,
+        "patternState": pattern_state,
+        "edgeState": edge_state,
+        "sampleState": sample_state,
+        "stats": {
+            "avg5d": avg,
+            "best5d": best,
+            "worst5d": worst,
+            "count5d": count,
+        },
         "explanation": _sentences(expl, 3),
     }
-
-
 # ---------------------------------------------------------
 # 4️⃣ TECHNICAL SNAPSHOT (SUMMARY, NOT DUMP)
 # ---------------------------------------------------------
 
 def build_technical_snapshot_block(stock: Dict[str, Any]) -> Dict[str, Any]:
-    tech = stock.get("technical") or {}
-    expl = []
+    technical = stock.get("technical") or {}
+    features = stock.get("features_meta") or {}
+    indicators = stock.get("indicator_states") or {}
+    narratives = stock.get("narratives") or {}
+    sections = narratives.get("sections") or {}
 
-    trend = (tech.get("trend") or {}).get("label")
-    rsi = (tech.get("momentum") or {}).get("rsi14")
-    vol = (tech.get("volatility") or {}).get("regime")
+    trend = technical.get("trend") or {}
+    rsi = technical.get("rsi") or {}
+    macd = technical.get("macd") or {}
+    volatility = technical.get("volatility") or {}
+    volume = technical.get("volume") or {}
+    price_position = technical.get("pricePosition") or {}
 
-    if trend:
-        expl.append(f"Trend structure is currently classified as {trend.lower()}.")
+    # -----------------------------
+    # Trend explanation
+    # -----------------------------
+    trend_lines = []
 
-    if isinstance(rsi, (int, float)):
-        expl.append(
-            "Momentum is neutral."
-            if 40 <= rsi <= 60
-            else "Momentum is stretched and may limit follow-through."
+    trend_label = trend.get("label")
+    trend_comment = trend.get("comment")
+    trend_strength = features.get("trend_strength_20")
+    price_vs_sma20 = features.get("price_vs_sma20_pct")
+    price_pos_label = price_position.get("label")
+
+    if trend_label:
+        trend_lines.append(
+            f"Trend is labeled {trend_label}, meaning price is not showing a clean one-direction trend right now."
         )
 
-    if vol:
-        expl.append(f"Volatility regime is {vol.lower()}, influencing risk dynamics.")
-
-    if not expl:
-        expl.append(
-            "Technical conditions are mixed, without a dominant directional driver."
+    if price_pos_label and isinstance(price_vs_sma20, (int, float)):
+        trend_lines.append(
+            f"Price position is {price_pos_label}, with price about {price_vs_sma20:.1f}% versus the 20-day average."
         )
+
+    if isinstance(trend_strength, (int, float)):
+        trend_lines.append(
+            f"Trend strength is {trend_strength:.2f}, which helps measure whether the move has enough structure behind it."
+        )
+
+    if trend_comment:
+        trend_lines.append(trend_comment)
+
+    if isinstance(sections.get("trend"), list):
+        trend_lines.extend(sections.get("trend"))
+
+    # -----------------------------
+    # Momentum explanation
+    # -----------------------------
+    momentum_lines = []
+
+    rsi_label = rsi.get("label")
+    rsi_value = rsi.get("value")
+    rsi_comment = rsi.get("comment")
+
+    macd_label = macd.get("label")
+    macd_value = macd.get("value")
+    macd_signal = macd.get("signal")
+    macd_comment = macd.get("comment")
+
+    if rsi_label and isinstance(rsi_value, (int, float)):
+        momentum_lines.append(
+            f"RSI is {rsi_label} at {rsi_value:.1f}, showing the current momentum pressure."
+        )
+
+    if macd_label and isinstance(macd_value, (int, float)):
+        momentum_lines.append(
+            f"MACD is {macd_label}, with MACD value {macd_value:.2f} versus signal {macd_signal:.2f}."
+            if isinstance(macd_signal, (int, float))
+            else f"MACD is {macd_label}, with value {macd_value:.2f}."
+        )
+
+    if rsi_comment:
+        momentum_lines.append(rsi_comment)
+
+    if macd_comment:
+        momentum_lines.append(macd_comment)
+
+    if isinstance(sections.get("momentum"), list):
+        momentum_lines.extend(sections.get("momentum"))
+
+    # -----------------------------
+    # Volatility explanation
+    # -----------------------------
+    volatility_lines = []
+
+    vol_label = volatility.get("label")
+    vol_value = volatility.get("volatility_20d")
+    vol_comment = volatility.get("comment")
+    atr14 = features.get("atr14")
+    regime = (stock.get("decision") or {}).get("quality", {}).get("regime")
+
+    if vol_label and isinstance(vol_value, (int, float)):
+        volatility_lines.append(
+            f"Volatility is {vol_label}, with 20-day volatility around {vol_value:.2f}%."
+        )
+
+    if isinstance(atr14, (int, float)):
+        volatility_lines.append(
+            f"ATR(14) is {atr14:.2f}, showing the typical daily price movement in points."
+        )
+
+    if regime:
+        volatility_lines.append(
+            f"Decision regime is {regime}, which affects how reliable short-term signals may be."
+        )
+
+    if vol_comment:
+        volatility_lines.append(vol_comment)
+
+    if isinstance(sections.get("volatility"), list):
+        volatility_lines.extend(sections.get("volatility"))
+
+    # -----------------------------
+    # Volume explanation
+    # -----------------------------
+    volume_lines = []
+
+    volume_label = volume.get("label")
+    volume_vs_ma20 = volume.get("volume_vs_ma20_pct")
+    volume_comment = volume.get("comment")
+    volume_z = features.get("volume_zscore_20")
+
+    if volume_label and isinstance(volume_vs_ma20, (int, float)):
+        volume_lines.append(
+            f"Volume is {volume_label}, trading about {volume_vs_ma20:.1f}% versus the 20-day average."
+        )
+
+    if isinstance(volume_z, (int, float)):
+        volume_lines.append(
+            f"Volume Z-score is {volume_z:.1f}, showing whether participation is unusually high or low compared with recent history."
+        )
+
+    if volume_comment:
+        volume_lines.append(volume_comment)
+
+    if isinstance(sections.get("volume"), list):
+        volume_lines.extend(sections.get("volume"))
+
+    # -----------------------------
+    # Section summary
+    # -----------------------------
+    summary_lines = []
+
+    if trend_label:
+        summary_lines.append(f"Trend is {trend_label}, so directional follow-through is not fully confirmed.")
+
+    if rsi_label and macd_label:
+        summary_lines.append(f"Momentum is supported by {rsi_label} RSI and {macd_label} MACD readings.")
+
+    if vol_label:
+        summary_lines.append(f"Volatility is {vol_label}, which shapes expected price swings.")
+
+    if volume_label:
+        summary_lines.append(f"Volume is {volume_label}, showing participation is close to recent behavior.")
 
     return {
-        "summary": _sentences(expl, 2)
+        "summary": _sentences(summary_lines, 3),
+        "trend": {
+            "label": trend_label,
+            "value": trend_strength,
+            "priceVsSma20Pct": price_vs_sma20,
+            "explanation": _sentences(trend_lines, 3),
+        },
+        "momentum": {
+            "rsiLabel": rsi_label,
+            "rsi": rsi_value,
+            "macdLabel": macd_label,
+            "macd": macd_value,
+            "macdSignal": macd_signal,
+            "explanation": _sentences(momentum_lines, 3),
+        },
+        "volatility": {
+            "label": vol_label,
+            "volatility20d": vol_value,
+            "atr14": atr14,
+            "regime": regime,
+            "explanation": _sentences(volatility_lines, 3),
+        },
+        "volume": {
+            "label": volume_label,
+            "volumeVsMa20Pct": volume_vs_ma20,
+            "volumeZscore20": volume_z,
+            "explanation": _sentences(volume_lines, 3),
+        },
     }
-
 
 # ---------------------------------------------------------
 # 5️⃣ FEATURE INSIGHT (REPLACES FEATURE DUMP)
@@ -207,39 +494,58 @@ def build_technical_snapshot_block(stock: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_feature_insight_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     f = stock.get("features_meta") or {}
-    expl = []
+    indicators = stock.get("indicator_states") or {}
 
     rsi = f.get("rsi14")
-    ret10 = f.get("return_10d")
-    price = f.get("adj_close")
-    sma20 = f.get("sma20")
+    return_10d = f.get("return_10d")
+    return_5d = f.get("return_5d")
+    price_vs_sma20 = f.get("price_vs_sma20_pct")
+    volume_vs_ma20 = f.get("volume_vs_ma20_pct")
+    atr14 = f.get("atr14")
+
+    lines = []
 
     if isinstance(rsi, (int, float)):
-        expl.append(
-            "Momentum remains subdued."
-            if rsi < 50 else
-            "Momentum is balanced without extreme pressure."
+        lines.append(
+            f"RSI is {rsi:.1f}, and the stored state is {indicators.get('rsi14', 'UNKNOWN')}."
         )
 
-    if isinstance(ret10, (int, float)) and ret10 < 0:
-        expl.append("Recent returns reflect sustained selling pressure.")
-
-    if isinstance(price, (int, float)) and isinstance(sma20, (int, float)):
-        expl.append(
-            "Price is trading below its short-term average."
-            if price < sma20 else
-            "Price remains above its short-term average."
+    if isinstance(price_vs_sma20, (int, float)):
+        lines.append(
+            f"Price is {price_vs_sma20:.1f}% versus the 20-day average, with state {indicators.get('price_vs_sma20_pct', 'UNKNOWN')}."
         )
 
-    if not expl:
-        expl.append(
-            "Underlying feature signals do not currently show a strong directional bias."
+    if isinstance(return_10d, (int, float)) and isinstance(return_5d, (int, float)):
+        lines.append(
+            f"Recent returns show {return_5d:.1f}% over 5 days and {return_10d:.1f}% over 10 days."
+        )
+
+    if isinstance(volume_vs_ma20, (int, float)):
+        lines.append(
+            f"Volume is {volume_vs_ma20:.1f}% versus the 20-day average, with state {indicators.get('volume_vs_ma20_pct', 'UNKNOWN')}."
+        )
+
+    if isinstance(atr14, (int, float)):
+        lines.append(
+            f"ATR(14) is {atr14:.2f}, giving context for normal daily movement."
+        )
+
+    if not lines:
+        lines.append(
+            "Feature signals are mixed, and no single indicator is dominating the setup."
         )
 
     return {
-        "summary": _sentences(expl, 2)
+        "summary": _sentences(lines, 3),
+        "highlights": {
+            "rsi14": rsi,
+            "return_5d": return_5d,
+            "return_10d": return_10d,
+            "price_vs_sma20_pct": price_vs_sma20,
+            "volume_vs_ma20_pct": volume_vs_ma20,
+            "atr14": atr14,
+        },
     }
-
 
 # ---------------------------------------------------------
 # 6️⃣ TRADE IDEA
@@ -322,7 +628,9 @@ def build_stockdetail_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
         "pattern": build_pattern_block(stock),
         "technicalSnapshot": build_technical_snapshot_block(stock),
         "featureInsight": build_feature_insight_block(stock),
+        "outlook": build_outlook_block(stock),
         "tradeIdea": build_trade_idea_block(stock),
+        "risksOpportunities": build_risks_opportunities_block(stock),
         "finalRecommendation": build_final_recommendation_block(stock),
         "news": build_news_block(stock),
         "computed_at": stock.get("computed_at"),

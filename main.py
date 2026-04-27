@@ -5173,24 +5173,39 @@ def stock_detail(symbol: str, source: str | None = None):
 
     # ---------------------------------------------------------
     # 3️⃣ Sparkline (optional, UI friendly)
+    # Firestore has stock["sparkline"] as price array
     # ---------------------------------------------------------
     sparkline = None
-    candles_block = stock.get("candles")
 
-    if isinstance(candles_block, dict):
-        candles = candles_block.get("candles", [])
-    elif isinstance(candles_block, list):
-        candles = candles_block
-    else:
-        candles = []
+    try:
+        from backend.ui_stock_builder import (
+            build_sparkline,
+            build_sparkline_from_prices,
+        )
 
-    if candles and len(candles) >= 2:
-        try:
-            from backend.ui_stock_builder import build_sparkline
-            sparkline = build_sparkline(candles)
-        except Exception:
-            sparkline = None
+        existing_prices = stock.get("sparkline")
 
+        # Priority 1: Firestore sparkline array
+        if isinstance(existing_prices, list) and len(existing_prices) >= 2:
+            sparkline = build_sparkline_from_prices(existing_prices)
+
+        # Priority 2: candles if available later
+        if not sparkline:
+            candles_block = stock.get("candles")
+
+            if isinstance(candles_block, dict):
+                candles = candles_block.get("candles", [])
+            elif isinstance(candles_block, list):
+                candles = candles_block
+            else:
+                candles = []
+
+            if isinstance(candles, list) and len(candles) >= 2:
+                sparkline = build_sparkline(candles)
+
+    except Exception as e:
+        print("⚠️ stockdetail sparkline build failed:", str(e))
+        sparkline = None
     # ---------------------------------------------------------
     # 4️⃣ Company News (external I/O — endpoint responsibility)
     # ---------------------------------------------------------
