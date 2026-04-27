@@ -548,6 +548,120 @@ def build_feature_insight_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 # ---------------------------------------------------------
+# 6️⃣ OUTLOOK
+# ---------------------------------------------------------
+
+def build_outlook_block(stock: Dict[str, Any]) -> Dict[str, Any]:
+    narratives = stock.get("narratives") or {}
+    sections = narratives.get("sections") or {}
+    insights = stock.get("insights") or {}
+
+    trend_lines = sections.get("trend") if isinstance(sections.get("trend"), list) else []
+    momentum_lines = sections.get("momentum") if isinstance(sections.get("momentum"), list) else []
+    volatility_lines = sections.get("volatility") if isinstance(sections.get("volatility"), list) else []
+
+    short_lines = []
+    medium_lines = []
+    long_lines = []
+
+    if momentum_lines:
+        short_lines.extend(momentum_lines)
+    else:
+        short_lines.append("Short-term outlook is driven by current momentum and probability conditions.")
+
+    if trend_lines:
+        medium_lines.extend(trend_lines)
+    else:
+        medium_lines.append("Medium-term outlook depends on whether trend structure confirms or remains range-bound.")
+
+    if volatility_lines:
+        long_lines.extend(volatility_lines)
+    else:
+        long_lines.append("Longer-term outlook is shaped by volatility regime and the stability of current signals.")
+
+    return {
+        "shortTerm": {
+            "summary": insights.get("trendSummary") or short_lines[0],
+            "explanation": _sentences(short_lines, 3),
+        },
+        "mediumTerm": {
+            "summary": narratives.get("summary") or medium_lines[0],
+            "explanation": _sentences(medium_lines, 3),
+        },
+        "longTerm": {
+            "summary": insights.get("combinedTechnicalSummary") or long_lines[0],
+            "explanation": _sentences(long_lines, 3),
+        },
+    }
+
+
+# ---------------------------------------------------------
+# 7️⃣ RISKS & OPPORTUNITIES
+# ---------------------------------------------------------
+
+def build_risks_opportunities_block(stock: Dict[str, Any]) -> Dict[str, Any]:
+    narratives = stock.get("narratives") or {}
+    sections = narratives.get("sections") or {}
+    features = stock.get("features_meta") or {}
+
+    risks = []
+    opportunities = []
+
+    raw_risks = sections.get("risks") or sections.get("risk") or []
+    raw_opps = sections.get("opportunities") or sections.get("opportunity") or []
+
+    if isinstance(raw_risks, list):
+        risks.extend([x for x in raw_risks if isinstance(x, str) and x.strip()])
+    elif isinstance(raw_risks, str) and raw_risks.strip():
+        risks.append(raw_risks.strip())
+
+    if isinstance(raw_opps, list):
+        opportunities.extend([x for x in raw_opps if isinstance(x, str) and x.strip()])
+    elif isinstance(raw_opps, str) and raw_opps.strip():
+        opportunities.append(raw_opps.strip())
+
+    rsi = features.get("rsi14")
+    volume_vs_ma20 = features.get("volume_vs_ma20_pct")
+
+    up, down = _get_probabilities(stock)
+
+    if not risks:
+        if isinstance(up, float) and isinstance(down, float) and down > up:
+            risks.append(
+                f"Downside probability is higher than upside probability, with downside near {down * 100:.0f}% versus upside near {up * 100:.0f}%."
+            )
+
+        if isinstance(rsi, (int, float)) and rsi > 70:
+            risks.append(
+                f"RSI is elevated at {rsi:.1f}, which may increase pullback or consolidation risk."
+            )
+
+        if not risks:
+            risks.append(
+                "No dominant risk factor is explicitly flagged, but confirmation is still needed before assuming directional follow-through."
+            )
+
+    if not opportunities:
+        if isinstance(up, float) and isinstance(down, float) and up > down:
+            opportunities.append(
+                f"Upside probability is higher than downside probability, with upside near {up * 100:.0f}% versus downside near {down * 100:.0f}%."
+            )
+
+        if isinstance(volume_vs_ma20, (int, float)) and volume_vs_ma20 > 20:
+            opportunities.append(
+                f"Volume is {volume_vs_ma20:.1f}% above the 20-day average, showing stronger-than-normal participation."
+            )
+
+        if not opportunities:
+            opportunities.append(
+                "No strong opportunity is dominant yet, but a clearer setup may emerge if momentum, trend, and volume begin to align."
+            )
+
+    return {
+        "risks": [_sentences([r], 1) for r in risks],
+        "opportunities": [_sentences([o], 1) for o in opportunities],
+    }
+# ---------------------------------------------------------
 # 6️⃣ TRADE IDEA
 # ---------------------------------------------------------
 
