@@ -1,12 +1,86 @@
 # backend/astra_engine.py
 
 import json
+import re
 from typing import Dict, Any
 
 from backend.astra_intent_router import detect_astra_intent
 from backend.astra_context_builder import build_astra_context
 
+def resolve_followup_symbols(req, available_symbols: list[str]) -> tuple[str, list[str]]:
+    """
+    Resolves follow-up language like:
+    - Compare it with TSLA
+    - What about NVDA?
+    - Compare that with MSFT
 
+    Returns:
+      resolved_question, extra_symbols
+    """
+    question = (req.question or "").strip()
+    if not question:
+        return question, []
+
+    q_upper = question.upper()
+    chat_history = getattr(req, "chat_history", []) or []
+
+    # 1) Symbols explicitly mentioned in current question
+    current_symbols = []
+    for sym in available_symbols:
+        if re.search(rf"\b{re.escape(sym.upper())}\b", q_upper):
+            current_symbols.append(sym.upper())
+
+    # 2) Resolve last discussed symbol from stock_detail context first
+    last_symbol = None
+    if getattr(req, "contextType", None) == "stock_detail" and getattr(req, "symbol", None):
+        last_symbol = req.symbol.upper()
+
+    # 3) If not stock_detail, inspect recent chat history
+    if not last_symbol:
+        for msg in reversed(chat_history[-8:]):
+            text = (msg.get("text") or "").upper()
+            for sym in available_symbols:
+                if re.search(rf"\b{re.escape(sym.upper())}\b", text):
+                    last_symbol = sym.upper()
+                    break
+            if last_symbol:
+                break
+
+    # 4) If user uses pronouns and mentioned another symbol, include both
+    pronoun_followup = any(
+        phrase in q_upper
+        for phrase in [
+            " IT ",
+            " THAT ",
+            " THIS ",
+            " THIS STOCK",
+            "WITH IT",
+            "COMPARE IT",
+            "COMPARE THAT",
+            "WHAT ABOUT",
+        ]
+    )
+
+    extra_symbols = []
+
+    if pronoun_followup and last_symbol:
+        extra_symbols.append(last_symbol)
+
+    for sym in current_symbols:
+        if sym not in extra_symbols:
+            extra_symbols.append(sym)
+
+    # 5) Rewrite question for LLM clarity
+    resolved_question = question
+    if last_symbol:
+        resolved_question = re.sub(
+            r"\bit\b|\bthat\b|\bthis stock\b|\bthis\b",
+            last_symbol,
+            resolved_question,
+            flags=re.IGNORECASE,
+        )
+
+    return resolved_question, extra_symbols
 def build_fast_astra_answer(context: Dict[str, Any]) -> str:
     intent = context.get("intent", {}).get("intent")
     portfolio = context.get("portfolio") or {}
@@ -28,7 +102,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
             f"The position needing the most attention is {worst.get('symbol', 'N/A')}, "
             f"with an unrealized gain/loss of ${worst.get('gain', 'N/A')}. "
             "Astra is using allocation, price action, AI signal confidence, pattern history, and technical indicators to judge risk. "
-            "This is AI-driven insight for education, not personal financial advice."
+          
         )
 
     if intent in ["stock_explain", "decision_explain", "technical_explain", "pattern_explain"]:
@@ -45,7 +119,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
             f"The current pattern is {pat.get('name')} with a 5-day win rate of {pat.get('winRate5d')}. "
             f"From your portfolio view, this position is {port.get('allocation_pct')}% of holdings with "
             f"{port.get('gain_pct')}% gain/loss. "
-            "This is AI-driven insight for education, not personal financial advice."
+           
         )
 
     if intent == "compare_symbols":
@@ -66,8 +140,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
         return (
             f"Comparing {', '.join(names)}: "
             + " ".join(lines)
-            + " Use this comparison to understand concentration, signal quality, and relative risk. "
-            "This is AI-driven insight for education, not personal financial advice."
+           
         )
 
     top = portfolio.get("top_holding") or {}
@@ -80,7 +153,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
         f"Largest holding is {top.get('symbol')} at {top.get('allocation_pct')}%. "
         f"Best contributor is {best.get('symbol')} and weakest contributor is {worst.get('symbol')}. "
         "Astra is using portfolio allocation, AI signals, probabilities, patterns, and technical indicators. "
-        "This is AI-driven insight for education, not personal financial advice."
+        
     )
 
 def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
@@ -176,11 +249,31 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     else:
         available_symbols = [p.symbol.upper() for p in (req.positions or [])]
 
+    # ✅ Add any symbols mentioned in the question, even if not in portfolio
+    question_upper = (req.question or "").upper()
+    mentioned_symbols = re.findall(r"\b[A-Z]{1,5}\b", question_upper)
+
+    for sym in mentioned_symbols:
+        if sym not in available_symbols and sym not in ["WHY", "WHAT", "WITH", "THIS", "THAT", "HOLD", "BUY", "SELL"]:
+            available_symbols.append(sym)
+
+    # ✅ Resolve follow-up pronouns like "it", "that", "this stock"
+    resolved_question, resolved_symbols = resolve_followup_symbols(req, available_symbols)
+
+    for sym in resolved_symbols:
+        if sym not in available_symbols:
+            available_symbols.append(sym)
+
     intent_payload = detect_astra_intent(
-        question=req.question,
+        question=resolved_question,
         question_id=req.question_id,
         available_symbols=available_symbols,
     )
+
+    if resolved_symbols:
+        intent_payload["symbols"] = resolved_symbols
+
+    intent_payload["question"] = resolved_question
     context = build_astra_context(req, intent_payload)
 
     # ✅ Add short session memory from frontend
