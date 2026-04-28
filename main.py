@@ -4062,6 +4062,8 @@ class AstraChatRequest(BaseModel):
     today_gain: float = 0.0
 
     positions: List[AstraPosition] = []
+    # ✅ NEW — short session memory from frontend
+    chat_history: List[Dict[str, str]] = []
 
 
 # ---------------------------------------------------------------

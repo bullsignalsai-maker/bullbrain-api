@@ -131,6 +131,17 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
     intent = (context.get("intent") or {}).get("intent")
     question = (context.get("intent") or {}).get("question") or ""
 
+    chat_history = context.get("chat_history") or []
+
+    history_text = ""
+    if chat_history:
+        history_text = "Recent conversation:\n"
+        for msg in chat_history[-6:]:
+            role = msg.get("role", "user")
+            text = msg.get("text", "")
+            if text:
+                history_text += f"{role}: {text}\n"
+
     system_prompt = (
         "You are Astra, the AI intelligence engine inside BullSignalsAI. "
         "Answer ONLY the user's question. Do not provide a full portfolio report unless asked. "
@@ -147,6 +158,7 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
         f"User question: {question}\n"
         f"Detected intent: {intent}\n\n"
         "Use this JSON context only:\n"
+        f"{history_text}\n"
         f"{json.dumps(context, indent=2)}\n\n"
         "Answer rules:\n"
         "- Start with the direct answer.\n"
@@ -169,10 +181,13 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
         question_id=req.question_id,
         available_symbols=available_symbols,
     )
-
     context = build_astra_context(req, intent_payload)
 
+    # ✅ Add short session memory from frontend
+    context["chat_history"] = getattr(req, "chat_history", []) or []
+
     fallback_answer = build_fast_astra_answer(context)
+    
 
     system_prompt, user_prompt = build_astra_prompt(context)
 
