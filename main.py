@@ -4970,6 +4970,71 @@ def build_insight_from_narratives(d: dict) -> dict:
         "secondary": secondary,
     }
 
+def build_home_mag7_insight(d: dict) -> str:
+    insights = d.get("insights") or {}
+    bull = d.get("bullbrain") or {}
+    raw = bull.get("raw") or {}
+    pattern = d.get("pattern") or {}
+    technical = d.get("technical") or {}
+
+    signal = bull.get("signal") or "HOLD"
+    confidence = bull.get("confidence")
+    prob_up = raw.get("prob_up")
+    prob_down = raw.get("prob_down")
+
+    trend = insights.get("trendSummary")
+    momentum = insights.get("momentumSummary")
+    volume = insights.get("volumeSummary")
+    volatility = insights.get("volatilitySummary")
+    one_liner = insights.get("oneLiner") or insights.get("summaryLine")
+
+    pattern_name = pattern.get("pattern") or pattern.get("patternLabel")
+    pattern_headline = pattern.get("headline")
+
+    parts = []
+
+    if one_liner:
+        parts.append(one_liner)
+
+    if signal and confidence is not None:
+        parts.append(f"AI signal is {signal} with {round(confidence, 1)}% confidence.")
+
+    if prob_up is not None and prob_down is not None:
+        parts.append(
+            f"Model probability shows {round(prob_up * 100)}% upside vs {round(prob_down * 100)}% downside."
+        )
+
+    if trend:
+        parts.append(trend)
+
+    if momentum:
+        parts.append(momentum)
+
+    if volume:
+        parts.append(volume)
+
+    if pattern_name:
+        if pattern_headline:
+            parts.append(f"{pattern_name}: {pattern_headline}")
+        else:
+            parts.append(f"Current pattern: {pattern_name}.")
+
+    # remove duplicates while preserving order
+    clean = []
+    seen = set()
+    for p in parts:
+        if not isinstance(p, str):
+            continue
+        s = p.strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key not in seen:
+            seen.add(key)
+            clean.append(s)
+
+    return " ".join(clean[:3]) or "Signal is based on trend, momentum, pattern behavior, and model probability."
+
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
@@ -5017,7 +5082,7 @@ def homescreen_mag7():
                 "prob_down": raw.get("prob_down"),
             },
 
-            "insight": build_insight_from_narratives(d),
+            "insight": build_home_mag7_insight(d),
 
 
             "sparkline": d.get("sparkline", []),
