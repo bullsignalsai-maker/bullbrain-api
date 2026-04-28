@@ -7,6 +7,83 @@ from typing import Dict, Any
 from backend.astra_intent_router import detect_astra_intent
 from backend.astra_context_builder import build_astra_context
 
+def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
+    intent = (context.get("intent") or {}).get("intent")
+    symbols = context.get("symbols") or []
+    portfolio = context.get("portfolio") or {}
+
+    cards = []
+
+    if intent in ["stock_explain", "decision_explain", "technical_explain", "pattern_explain"]:
+        if symbols:
+            s = symbols[0]
+            sig = s.get("aiSignal") or {}
+            pat = s.get("pattern") or {}
+            tech = s.get("technical") or {}
+
+            cards.append({
+                "type": "signal",
+                "title": "AI Signal",
+                "value": sig.get("signal") or "N/A",
+                "subtitle": f"{sig.get('confidence')}% confidence" if sig.get("confidence") is not None else "Confidence unavailable",
+            })
+
+            cards.append({
+                "type": "probability",
+                "title": "Probability",
+                "value": f"{round((sig.get('prob_up') or 0) * 100)}% Up",
+                "subtitle": f"{round((sig.get('prob_down') or 0) * 100)}% downside probability",
+            })
+
+            cards.append({
+                "type": "pattern",
+                "title": "Pattern",
+                "value": pat.get("name") or "N/A",
+                "subtitle": f"5D win rate {round((pat.get('winRate5d') or 0) * 100)}%" if pat.get("winRate5d") is not None else "Win rate unavailable",
+            })
+
+    elif intent == "compare_symbols":
+        for s in symbols[:3]:
+            sig = s.get("aiSignal") or {}
+            pat = s.get("pattern") or {}
+
+            cards.append({
+                "type": "compare",
+                "title": s.get("symbol"),
+                "value": sig.get("signal") or "N/A",
+                "subtitle": f"{sig.get('confidence')}% conf • {pat.get('name') or 'No pattern'}",
+            })
+
+    else:
+        top = portfolio.get("top_holding") or {}
+        best = portfolio.get("best_position") or {}
+        worst = portfolio.get("worst_position") or {}
+
+        if top:
+            cards.append({
+                "type": "portfolio",
+                "title": "Largest Holding",
+                "value": top.get("symbol") or "N/A",
+                "subtitle": f"{top.get('allocation_pct')}% allocation",
+            })
+
+        if best:
+            cards.append({
+                "type": "portfolio",
+                "title": "Best Contributor",
+                "value": best.get("symbol") or "N/A",
+                "subtitle": f"${best.get('gain')} gain/loss",
+            })
+
+        if worst:
+            cards.append({
+                "type": "risk",
+                "title": "Needs Attention",
+                "value": worst.get("symbol") or "N/A",
+                "subtitle": f"${worst.get('gain')} gain/loss",
+            })
+
+    return cards[:4]
 def resolve_followup_symbols(req, available_symbols: list[str]) -> tuple[str, list[str]]:
     """
     Resolves follow-up language like:
@@ -291,6 +368,7 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
         "answer": llm_answer or fallback_answer,
         "used_llm": llm_answer is not None,
         "intent": intent_payload,
+        "cards": build_astra_cards(context),
         "contextSummary": {
             "symbols_used": [s.get("symbol") for s in context.get("symbols", [])],
             "portfolio_value": context.get("portfolio", {}).get("total_value"),
