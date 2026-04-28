@@ -4971,55 +4971,103 @@ def build_insight_from_narratives(d: dict) -> dict:
     }
 
 def build_home_mag7_insight(d: dict) -> str:
-    insights = d.get("insights") or {}
+    q = d.get("quote") or {}
     bull = d.get("bullbrain") or {}
     raw = bull.get("raw") or {}
     pattern = d.get("pattern") or {}
+    history = d.get("patternHistory") or {}
+    insights = d.get("insights") or {}
+    features = d.get("features_meta") or {}
     technical = d.get("technical") or {}
 
+    sym = d.get("symbol") or ""
+
+    change_pct = q.get("changePct")
     signal = bull.get("signal") or "HOLD"
     confidence = bull.get("confidence")
     prob_up = raw.get("prob_up")
     prob_down = raw.get("prob_down")
 
-    trend = insights.get("trendSummary")
-    momentum = insights.get("momentumSummary")
-    volume = insights.get("volumeSummary")
-    volatility = insights.get("volatilitySummary")
-    one_liner = insights.get("oneLiner") or insights.get("summaryLine")
+    rsi = features.get("rsi14")
+    price_vs_sma20 = features.get("price_vs_sma20_pct")
+    volume_vs_ma20 = features.get("volume_vs_ma20_pct")
+    return_5d = features.get("return_5d")
+    atr = features.get("atr14")
 
     pattern_name = pattern.get("pattern") or pattern.get("patternLabel")
+    pattern_bias = pattern.get("bias") or pattern.get("patternBias")
     pattern_headline = pattern.get("headline")
+
+    days5 = ((history.get("forwardReturns") or {}).get("days5") or {})
+    win_rate = days5.get("winRate")
+    samples = days5.get("count")
+    avg_return = days5.get("avg")
 
     parts = []
 
-    if one_liner:
-        parts.append(one_liner)
-
-    if signal and confidence is not None:
-        parts.append(f"AI signal is {signal} with {round(confidence, 1)}% confidence.")
-
-    if prob_up is not None and prob_down is not None:
-        parts.append(
-            f"Model probability shows {round(prob_up * 100)}% upside vs {round(prob_down * 100)}% downside."
-        )
-
-    if trend:
-        parts.append(trend)
-
-    if momentum:
-        parts.append(momentum)
-
-    if volume:
-        parts.append(volume)
-
-    if pattern_name:
-        if pattern_headline:
-            parts.append(f"{pattern_name}: {pattern_headline}")
+    # 1️⃣ Start with what is most unique today: price/technical condition
+    if isinstance(change_pct, (int, float)):
+        if change_pct >= 3:
+            parts.append(f"{sym} is showing strong upside pressure today, up {change_pct:.2f}%.")
+        elif change_pct >= 1:
+            parts.append(f"{sym} is trading higher today, gaining {change_pct:.2f}%.")
+        elif change_pct <= -3:
+            parts.append(f"{sym} is under heavy selling pressure today, down {abs(change_pct):.2f}%.")
+        elif change_pct <= -1:
+            parts.append(f"{sym} is weaker today, slipping {abs(change_pct):.2f}%.")
         else:
-            parts.append(f"Current pattern: {pattern_name}.")
+            parts.append(f"{sym} is mostly flat today, with price action still searching for direction.")
 
-    # remove duplicates while preserving order
+    # 2️⃣ Add technical condition based on real indicators
+    if isinstance(rsi, (int, float)):
+        if rsi >= 70:
+            parts.append(f"RSI is elevated near {rsi:.0f}, suggesting momentum is stretched.")
+        elif rsi <= 30:
+            parts.append(f"RSI is oversold near {rsi:.0f}, showing selling pressure may be extended.")
+        elif rsi >= 55:
+            parts.append(f"RSI near {rsi:.0f} shows buyers still have some momentum.")
+        elif rsi <= 45:
+            parts.append(f"RSI near {rsi:.0f} shows momentum remains soft.")
+        else:
+            parts.append(f"RSI near {rsi:.0f} points to balanced momentum.")
+
+    if isinstance(price_vs_sma20, (int, float)):
+        if price_vs_sma20 > 3:
+            parts.append(f"Price is {price_vs_sma20:.1f}% above the 20-day average, showing short-term strength.")
+        elif price_vs_sma20 < -3:
+            parts.append(f"Price is {abs(price_vs_sma20):.1f}% below the 20-day average, keeping trend pressure negative.")
+
+    if isinstance(volume_vs_ma20, (int, float)):
+        if volume_vs_ma20 > 20:
+            parts.append(f"Volume is {volume_vs_ma20:.0f}% above average, confirming stronger participation.")
+        elif volume_vs_ma20 < -20:
+            parts.append(f"Volume is {abs(volume_vs_ma20):.0f}% below average, so conviction is weaker.")
+
+    # 3️⃣ Add AI probability, but do not make every insight start with it
+    if isinstance(prob_up, (int, float)) and isinstance(prob_down, (int, float)):
+        if abs(prob_up - prob_down) < 0.08:
+            parts.append(f"AI probability is close, with {prob_up*100:.0f}% upside vs {prob_down*100:.0f}% downside.")
+        elif prob_down > prob_up:
+            parts.append(f"AI still leans cautious: {prob_down*100:.0f}% downside vs {prob_up*100:.0f}% upside.")
+        else:
+            parts.append(f"AI leans constructive: {prob_up*100:.0f}% upside vs {prob_down*100:.0f}% downside.")
+
+    # 4️⃣ Add pattern context only if useful
+    if pattern_name:
+        if isinstance(win_rate, (int, float)) and samples:
+            parts.append(
+                f"{pattern_name} has a {win_rate*100:.0f}% 5-day win rate across {samples} samples."
+            )
+        elif pattern_headline:
+            parts.append(f"{pattern_name}: {pattern_headline}")
+
+    # 5️⃣ Prefer existing unique insight if still available
+    if insights.get("oneLiner"):
+        parts.append(insights["oneLiner"])
+    elif insights.get("summaryLine"):
+        parts.append(insights["summaryLine"])
+
+    # Deduplicate
     clean = []
     seen = set()
     for p in parts:
@@ -5033,8 +5081,7 @@ def build_home_mag7_insight(d: dict) -> str:
             seen.add(key)
             clean.append(s)
 
-    return " ".join(clean[:3]) or "Signal is based on trend, momentum, pattern behavior, and model probability."
-
+    return " ".join(clean[:3]) or "Signal is based on price action, AI probability, technical indicators, and current pattern behavior."
 # ---------------------------------------------------------
 # /homescreen-mag7 — READ-ONLY (from stocks collection)
 # ---------------------------------------------------------
