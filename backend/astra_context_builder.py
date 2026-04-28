@@ -84,14 +84,32 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
         # Stock Detail mode: no portfolio required
+    # Stock Detail mode: no portfolio required
     if getattr(req, "contextType", None) == "stock_detail":
-        sym = (getattr(req, "symbol", "") or "").upper()
+        primary_sym = (getattr(req, "symbol", "") or "").upper()
+
+        requested_symbols = intent_payload.get("symbols") or []
+
+        # Always include current Stock Detail symbol first
+        symbols_to_load = []
+        if primary_sym:
+            symbols_to_load.append(primary_sym)
+
+        # Add resolved / mentioned symbols like TSLA, NVDA, MSFT
+        for s in requested_symbols:
+            s = (s or "").upper()
+            if s and s not in symbols_to_load:
+                symbols_to_load.append(s)
+
+        # Safety fallback
+        if not symbols_to_load and primary_sym:
+            symbols_to_load = [primary_sym]
 
         return {
             "intent": {
                 **intent_payload,
                 "intent": intent_payload.get("intent") or "stock_explain",
-                "symbols": [sym],
+                "symbols": symbols_to_load,
             },
             "contextType": "stock_detail",
             "portfolio": {
@@ -105,9 +123,9 @@ def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
             },
             "symbols": [
                 build_symbol_context(sym, None)
+                for sym in symbols_to_load
             ],
         }
-
     position_map = {
         p.symbol.upper(): {
             "shares": p.shares,
