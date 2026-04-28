@@ -286,7 +286,7 @@ if context_type == "stock_detail":
 
     fresh = [q for q in stock_pool if not stock_already_asked(q)]
 
-    return fresh[:3]
+    return fresh[:5]
 
     asked_text = " ".join(
         (m.get("text") or "").lower()
