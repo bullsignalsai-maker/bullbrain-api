@@ -242,22 +242,10 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
     context_type = context.get("contextType") or "portfolio"
 
     first_symbol = symbols[0].get("symbol") if symbols else None
-    second_symbol = symbols[1].get("symbol") if len(symbols) > 1 else None
     top = (portfolio.get("top_holding") or {}).get("symbol")
     worst = (portfolio.get("worst_position") or {}).get("symbol")
 
     sym = first_symbol or top or "this stock"
-    # ✅ Stock Detail mode should NEVER return portfolio-style follow-ups
-if context_type == "stock_detail":
-    stock_pool = [
-        f"Why is {sym} rated this way?",
-        f"What would improve {sym} signal?",
-        f"What is the biggest risk for {sym}?",
-        f"Explain {sym} technicals",
-        f"Explain {sym} pattern risk",
-        f"What should I monitor next for {sym}?",
-        f"Compare {sym} with TSLA" if sym != "TSLA" else "Compare TSLA with NVDA",
-    ]
 
     asked_text = " ".join(
         (m.get("text") or "").lower()
@@ -266,8 +254,9 @@ if context_type == "stock_detail":
     )
     asked_text = f"{asked_text} {question}"
 
-    def stock_already_asked(candidate: str) -> bool:
+    def already_asked(candidate: str) -> bool:
         c = candidate.lower()
+
         if "rated" in c and ("rated" in asked_text or "why" in asked_text):
             return True
         if "improve" in c and ("improve" in asked_text or "change" in asked_text):
@@ -278,46 +267,44 @@ if context_type == "stock_detail":
             return True
         if "pattern" in c and "pattern" in asked_text:
             return True
-        if "monitor" in c and "monitor" in asked_text:
+        if "monitor" in c and any(w in asked_text for w in ["monitor", "watch"]):
             return True
         if "compare" in c and "compare" in asked_text:
             return True
-        return False
+        if "overweight" in c and "overweight" in asked_text:
+            return True
+        if "attention" in c and any(w in asked_text for w in ["attention", "weakest", "worst"]):
+            return True
 
-    fresh = [q for q in stock_pool if not stock_already_asked(q)]
-
-    return fresh[:5]
-
-    asked_text = " ".join(
-        (m.get("text") or "").lower()
-        for m in chat_history
-        if m.get("role") == "user"
-    )
-
-    asked_text = f"{asked_text} {question}"
-
-    def already_asked(candidate: str) -> bool:
-        c = candidate.lower()
-
-        checks = [
-            ("rated", ["rated", "why"]),
-            ("improve", ["improve", "better", "change"]),
-            ("pattern", ["pattern"]),
-            ("technical", ["technical", "rsi", "macd", "trend"]),
-            ("risk", ["risk"]),
-            ("compare", ["compare", " vs ", " versus "]),
-            ("overweight", ["overweight", "underweight"]),
-            ("attention", ["attention", "weakest", "worst"]),
-            ("monitor", ["monitor", "watch"]),
-        ]
-
-        for key, words in checks:
-            if key in c and any(w in asked_text for w in words):
-                return True
-
-        # exact-ish fallback
         return c in asked_text
 
+    # ✅ Stock Detail mode: only stock-specific follow-ups
+    if context_type == "stock_detail":
+        stock_pool = [
+            f"Why is {sym} rated this way?",
+            f"What would improve {sym} signal?",
+            f"What is the biggest risk for {sym}?",
+            f"Explain {sym} technicals",
+            f"Explain {sym} pattern risk",
+            f"What should I monitor next for {sym}?",
+            f"Compare {sym} with TSLA" if sym != "TSLA" else "Compare TSLA with NVDA",
+        ]
+
+        fresh = [q for q in stock_pool if not already_asked(q)]
+
+        if len(fresh) < 2:
+            fallback = [
+                f"What could change the signal for {sym}?",
+                f"What is the next confirmation for {sym}?",
+                f"Is {sym} risk increasing?",
+            ]
+            for q in fallback:
+                if q not in fresh and not already_asked(q):
+                    fresh.append(q)
+
+        return fresh[:3]
+
+    # ✅ Portfolio mode: portfolio-style follow-ups
     if intent == "compare_symbols":
         pool = [
             "Which one has stronger signal?",
@@ -325,32 +312,6 @@ if context_type == "stock_detail":
             "Which one has better pattern quality?",
             "Which one has stronger technicals?",
             "Which one looks more stable?",
-        ]
-
-    elif intent in ["stock_explain", "decision_explain"]:
-        pool = [
-            f"Why is {sym} rated this way?",
-            f"What would improve {sym}?",
-            f"What is the biggest risk for {sym}?",
-            f"Explain {sym} pattern risk",
-            f"Explain {sym} technicals",
-            f"What should I monitor next for {sym}?",
-        ]
-
-    elif intent == "pattern_explain":
-        pool = [
-            f"How reliable is this pattern for {sym}?",
-            f"What could invalidate this pattern?",
-            f"Compare {sym} pattern with another stock",
-            f"What is the downside risk for {sym}?",
-        ]
-
-    elif intent == "technical_explain":
-        pool = [
-            f"Is {sym} momentum strong or weak?",
-            f"What does RSI say for {sym}?",
-            f"What does volume confirm for {sym}?",
-            f"What would improve {sym} technicals?",
         ]
 
     elif intent == "portfolio_risk":
@@ -380,20 +341,18 @@ if context_type == "stock_detail":
 
     fresh = [q for q in pool if not already_asked(q)]
 
-    # Fallback if all were filtered
     if len(fresh) < 2:
         fallback = [
-            f"Compare {sym} with TSLA" if sym != "TSLA" else "Compare TSLA with NVDA",
-            f"What would change the signal for {sym}?",
-            f"What is the next thing to watch for {sym}?",
             "Which stock looks stronger?",
+            "Which holding has the highest risk?",
+            "What should I monitor next?",
         ]
-
         for q in fallback:
             if q not in fresh and not already_asked(q):
                 fresh.append(q)
 
-    return fresh[:3]
+    return fresh[:5]
+
 def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
     intent = (context.get("intent") or {}).get("intent")
     question = (context.get("intent") or {}).get("question") or ""
