@@ -235,48 +235,124 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
 
 def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
     intent = (context.get("intent") or {}).get("intent")
+    question = ((context.get("intent") or {}).get("question") or "").lower()
     symbols = context.get("symbols") or []
     portfolio = context.get("portfolio") or {}
+    chat_history = context.get("chat_history") or []
 
     first_symbol = symbols[0].get("symbol") if symbols else None
+    second_symbol = symbols[1].get("symbol") if len(symbols) > 1 else None
     top = (portfolio.get("top_holding") or {}).get("symbol")
     worst = (portfolio.get("worst_position") or {}).get("symbol")
 
-    if intent in ["stock_explain", "decision_explain"]:
-        sym = first_symbol or top or "this stock"
-        return [
-            f"Why is {sym} rated this way?",
-            f"What would improve {sym}?",
-            f"Explain {sym} pattern risk",
+    sym = first_symbol or top or "this stock"
+
+    asked_text = " ".join(
+        (m.get("text") or "").lower()
+        for m in chat_history
+        if m.get("role") == "user"
+    )
+
+    asked_text = f"{asked_text} {question}"
+
+    def already_asked(candidate: str) -> bool:
+        c = candidate.lower()
+
+        checks = [
+            ("rated", ["rated", "why"]),
+            ("improve", ["improve", "better", "change"]),
+            ("pattern", ["pattern"]),
+            ("technical", ["technical", "rsi", "macd", "trend"]),
+            ("risk", ["risk"]),
+            ("compare", ["compare", " vs ", " versus "]),
+            ("overweight", ["overweight", "underweight"]),
+            ("attention", ["attention", "weakest", "worst"]),
+            ("monitor", ["monitor", "watch"]),
         ]
 
-    if intent == "portfolio_risk":
-        return [
+        for key, words in checks:
+            if key in c and any(w in asked_text for w in words):
+                return True
+
+        # exact-ish fallback
+        return c in asked_text
+
+    if intent == "compare_symbols":
+        pool = [
+            "Which one has stronger signal?",
+            "Which one has higher risk?",
+            "Which one has better pattern quality?",
+            "Which one has stronger technicals?",
+            "Which one looks more stable?",
+        ]
+
+    elif intent in ["stock_explain", "decision_explain"]:
+        pool = [
+            f"Why is {sym} rated this way?",
+            f"What would improve {sym}?",
+            f"What is the biggest risk for {sym}?",
+            f"Explain {sym} pattern risk",
+            f"Explain {sym} technicals",
+            f"What should I monitor next for {sym}?",
+        ]
+
+    elif intent == "pattern_explain":
+        pool = [
+            f"How reliable is this pattern for {sym}?",
+            f"What could invalidate this pattern?",
+            f"Compare {sym} pattern with another stock",
+            f"What is the downside risk for {sym}?",
+        ]
+
+    elif intent == "technical_explain":
+        pool = [
+            f"Is {sym} momentum strong or weak?",
+            f"What does RSI say for {sym}?",
+            f"What does volume confirm for {sym}?",
+            f"What would improve {sym} technicals?",
+        ]
+
+    elif intent == "portfolio_risk":
+        pool = [
             "Which holding is most risky?",
             "How can I reduce concentration?",
             "Which stock needs attention first?",
+            "Which holding is overweight?",
         ]
 
-    if intent == "compare_symbols":
-        return [
-            "Which one has stronger signal?",
-            "Which one has higher risk?",
-            "Which one affects my portfolio more?",
-        ]
-
-    if intent == "portfolio_suggestions":
-        return [
+    elif intent == "portfolio_suggestions":
+        pool = [
             "What should I monitor next?",
             "Which holding is overweight?",
             "Which position looks weakest?",
+            "Which holding has the best signal?",
         ]
 
-    return [
-        "What is my biggest risk?",
-        f"Explain {top or 'my largest holding'}",
-        f"Why is {worst or 'my weakest position'} underperforming?",
-    ]
+    else:
+        pool = [
+            "What is my biggest risk?",
+            f"Explain {top or sym}",
+            f"Why is {worst or sym} underperforming?",
+            "Which stock needs attention first?",
+            "What should I monitor next?",
+        ]
 
+    fresh = [q for q in pool if not already_asked(q)]
+
+    # Fallback if all were filtered
+    if len(fresh) < 2:
+        fallback = [
+            f"Compare {sym} with TSLA" if sym != "TSLA" else "Compare TSLA with NVDA",
+            f"What would change the signal for {sym}?",
+            f"What is the next thing to watch for {sym}?",
+            "Which stock looks stronger?",
+        ]
+
+        for q in fallback:
+            if q not in fresh and not already_asked(q):
+                fresh.append(q)
+
+    return fresh[:3]
 def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
     intent = (context.get("intent") or {}).get("intent")
     question = (context.get("intent") or {}).get("question") or ""
