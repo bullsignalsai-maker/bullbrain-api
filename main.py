@@ -4053,6 +4053,10 @@ class AstraChatRequest(BaseModel):
     question: Optional[str] = ""
     question_id: Optional[str] = None
 
+    contextType: Optional[str] = "portfolio"
+    symbol: Optional[str] = None
+    companyName: Optional[str] = None
+
     total_value: float = 0.0
     total_gain: float = 0.0
     today_gain: float = 0.0
@@ -4144,16 +4148,23 @@ def astra_symbol_sentiment(symbol: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------
 @app.post("/astra-chat")
 def astra_chat(req: AstraChatRequest):
-    if not req.positions or req.total_value <= 0:
+    if req.contextType != "stock_detail":
+        if not req.positions or req.total_value <= 0:
+            return {
+                "answer": (
+                    "I need at least one holding with a non-zero portfolio value "
+                    "to analyze. Please add positions to your portfolio and try again."
+                ),
+                "used_llm": False,
+                "analysis": {},
+            }
+
+    if req.contextType == "stock_detail" and not req.symbol:
         return {
-            "answer": (
-                "I need at least one holding with a non-zero portfolio value "
-                "to analyze. Please add positions to your portfolio and try again."
-            ),
+            "answer": "I need a stock symbol to explain this stock.",
             "used_llm": False,
             "analysis": {},
         }
-
     try:
         from backend.astra_engine import run_astra
 

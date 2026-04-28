@@ -83,6 +83,30 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
 
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
+        # Stock Detail mode: no portfolio required
+    if getattr(req, "contextType", None) == "stock_detail":
+        sym = (getattr(req, "symbol", "") or "").upper()
+
+        return {
+            "intent": {
+                **intent_payload,
+                "intent": intent_payload.get("intent") or "stock_explain",
+                "symbols": [sym],
+            },
+            "contextType": "stock_detail",
+            "portfolio": {
+                "total_value": None,
+                "total_gain": None,
+                "today_gain": None,
+                "position_count": 0,
+                "top_holding": None,
+                "best_position": None,
+                "worst_position": None,
+            },
+            "symbols": [
+                build_symbol_context(sym, None)
+            ],
+        }
 
     position_map = {
         p.symbol.upper(): {

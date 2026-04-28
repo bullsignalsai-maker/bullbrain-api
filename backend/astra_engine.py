@@ -159,7 +159,10 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
     return system_prompt, user_prompt
 
 def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
-    available_symbols = [p.symbol.upper() for p in (req.positions or [])]
+    if getattr(req, "contextType", None) == "stock_detail" and getattr(req, "symbol", None):
+        available_symbols = [req.symbol.upper()]
+    else:
+        available_symbols = [p.symbol.upper() for p in (req.positions or [])]
 
     intent_payload = detect_astra_intent(
         question=req.question,
