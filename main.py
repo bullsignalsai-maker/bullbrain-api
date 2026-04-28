@@ -5530,7 +5530,7 @@ def get_watchlist(user_id: str):
     snapshot = get_watchlist_snapshot(user_id)
 
     # ✅ REQUIRED: invalidate old logic snapshots
-    SNAPSHOT_VERSION = "v3"
+    SNAPSHOT_VERSION = "v4"
 
     if (
         snapshot
