@@ -85,25 +85,35 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
 
 
 def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
+    intent = (context.get("intent") or {}).get("intent")
+    question = (context.get("intent") or {}).get("question") or ""
+
     system_prompt = (
         "You are Astra, the AI intelligence engine inside BullSignalsAI. "
+        "Answer ONLY the user's question. Do not provide a full portfolio report unless asked. "
         "Use only the provided JSON data. Do not invent numbers. "
-        "Explain clearly in simple language. "
-        "Do not give financial advice. Use educational wording. "
-        "Be specific to the user's portfolio and symbols. "
-        "Avoid generic templates. Keep answers concise."
+        "Be concise, direct, and practical. "
+        "Use simple language for retail investors. "
+        "Do not use markdown headings, bullet lists, asterisks, or long explanations. "
+        "Do not give financial advice. Use educational wording only. "
+        "Maximum answer length: 4 short sentences. "
+        "If the question asks for one thing, answer that one thing first."
     )
 
     user_prompt = (
-        "Answer the user's question using this Astra context only.\n\n"
+        f"User question: {question}\n"
+        f"Detected intent: {intent}\n\n"
+        "Use this JSON context only:\n"
         f"{json.dumps(context, indent=2)}\n\n"
-        "Rules: mention real tickers, values, signal, probability, pattern, allocation, and risk when available. "
-        "If data is missing, say it is unavailable. "
-        "End with a short educational disclaimer."
+        "Answer rules:\n"
+        "- Start with the direct answer.\n"
+        "- Mention only the most relevant tickers and numbers.\n"
+        "- Do not summarize every holding.\n"
+        "- Do not repeat the same disclaimer every time; use one short closing sentence only.\n"
+        "- Keep the answer within 2 to 4 short sentences.\n"
     )
 
     return system_prompt, user_prompt
-
 
 def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     available_symbols = [p.symbol.upper() for p in (req.positions or [])]

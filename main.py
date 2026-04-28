@@ -2463,8 +2463,8 @@ def astra_llm_answer(system_prompt: str, user_prompt: str) -> Optional[str]:
                     "content": user_prompt,
                 },
             ],
-            "temperature": 0.4,
-            "max_tokens": 600,
+            "temperature": 0.25,
+            "max_tokens": 220,
         }
 
         headers = {
