@@ -83,6 +83,49 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
         "This is AI-driven insight for education, not personal financial advice."
     )
 
+def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
+    intent = (context.get("intent") or {}).get("intent")
+    symbols = context.get("symbols") or []
+    portfolio = context.get("portfolio") or {}
+
+    first_symbol = symbols[0].get("symbol") if symbols else None
+    top = (portfolio.get("top_holding") or {}).get("symbol")
+    worst = (portfolio.get("worst_position") or {}).get("symbol")
+
+    if intent in ["stock_explain", "decision_explain"]:
+        sym = first_symbol or top or "this stock"
+        return [
+            f"Why is {sym} rated this way?",
+            f"What would improve {sym}?",
+            f"Explain {sym} pattern risk",
+        ]
+
+    if intent == "portfolio_risk":
+        return [
+            "Which holding is most risky?",
+            "How can I reduce concentration?",
+            "Which stock needs attention first?",
+        ]
+
+    if intent == "compare_symbols":
+        return [
+            "Which one has stronger signal?",
+            "Which one has higher risk?",
+            "Which one affects my portfolio more?",
+        ]
+
+    if intent == "portfolio_suggestions":
+        return [
+            "What should I monitor next?",
+            "Which holding is overweight?",
+            "Which position looks weakest?",
+        ]
+
+    return [
+        "What is my biggest risk?",
+        f"Explain {top or 'my largest holding'}",
+        f"Why is {worst or 'my weakest position'} underperforming?",
+    ]
 
 def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
     intent = (context.get("intent") or {}).get("intent")
@@ -141,5 +184,6 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
             "portfolio_value": context.get("portfolio", {}).get("total_value"),
             "position_count": context.get("portfolio", {}).get("position_count"),
         },
+        "suggestedFollowups": build_suggested_followups(context),
         "analysis": context,
     }
