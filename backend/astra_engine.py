@@ -239,6 +239,7 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
     symbols = context.get("symbols") or []
     portfolio = context.get("portfolio") or {}
     chat_history = context.get("chat_history") or []
+    context_type = context.get("contextType") or "portfolio"
 
     first_symbol = symbols[0].get("symbol") if symbols else None
     second_symbol = symbols[1].get("symbol") if len(symbols) > 1 else None
@@ -246,6 +247,46 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
     worst = (portfolio.get("worst_position") or {}).get("symbol")
 
     sym = first_symbol or top or "this stock"
+    # ✅ Stock Detail mode should NEVER return portfolio-style follow-ups
+if context_type == "stock_detail":
+    stock_pool = [
+        f"Why is {sym} rated this way?",
+        f"What would improve {sym} signal?",
+        f"What is the biggest risk for {sym}?",
+        f"Explain {sym} technicals",
+        f"Explain {sym} pattern risk",
+        f"What should I monitor next for {sym}?",
+        f"Compare {sym} with TSLA" if sym != "TSLA" else "Compare TSLA with NVDA",
+    ]
+
+    asked_text = " ".join(
+        (m.get("text") or "").lower()
+        for m in chat_history
+        if m.get("role") == "user"
+    )
+    asked_text = f"{asked_text} {question}"
+
+    def stock_already_asked(candidate: str) -> bool:
+        c = candidate.lower()
+        if "rated" in c and ("rated" in asked_text or "why" in asked_text):
+            return True
+        if "improve" in c and ("improve" in asked_text or "change" in asked_text):
+            return True
+        if "risk" in c and "risk" in asked_text:
+            return True
+        if "technical" in c and any(w in asked_text for w in ["technical", "rsi", "macd", "trend"]):
+            return True
+        if "pattern" in c and "pattern" in asked_text:
+            return True
+        if "monitor" in c and "monitor" in asked_text:
+            return True
+        if "compare" in c and "compare" in asked_text:
+            return True
+        return False
+
+    fresh = [q for q in stock_pool if not stock_already_asked(q)]
+
+    return fresh[:3]
 
     asked_text = " ".join(
         (m.get("text") or "").lower()
