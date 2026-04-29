@@ -3,7 +3,7 @@
 from typing import Dict, Any, List
 from backend.stock_repo import get_stock
 from backend.news.market_news_repo import get_market_news
-from backend.market_highlights import build_market_highlights
+from backend.news.market_highlights import build_market_highlights
 
 from firebase_admin import firestore
 db = firestore.client()
