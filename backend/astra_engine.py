@@ -13,6 +13,46 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
     portfolio = context.get("portfolio") or {}
 
     cards = []
+    if context.get("contextType") == "market" or intent == "market_pulse":
+        market = context.get("market") or {}
+        overview = market.get("marketOverview") or {}
+
+        fg = overview.get("fearGreed") or {}
+        us = market.get("usMarket") or []
+        crypto = market.get("crypto") or []
+        commodities = market.get("commodities") or []
+
+        cards.append({
+            "type": "market",
+            "title": "Market Mood",
+            "value": overview.get("marketMood") or "N/A",
+            "subtitle": overview.get("marketStatus") or "Market status unavailable",
+        })
+
+        cards.append({
+            "type": "risk",
+            "title": "Fear & Greed",
+            "value": str(fg.get("value", "N/A")),
+            "subtitle": fg.get("label") or "Sentiment unavailable",
+        })
+
+        if us:
+            cards.append({
+                "type": "market",
+                "title": "US Market",
+                "value": "SPY / QQQ",
+                "subtitle": "Based on broad-market ETF movement",
+            })
+
+        if crypto or commodities:
+            cards.append({
+                "type": "market",
+                "title": "Cross-Asset Pulse",
+                "value": "Crypto + ETFs",
+                "subtitle": "Checks risk appetite across assets",
+            })
+
+        return cards[:4]        
 
     if intent in ["stock_explain", "decision_explain", "technical_explain", "pattern_explain"]:
         if symbols:
@@ -278,6 +318,30 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
 
         return c in asked_text
 
+        # ✅ Market mode: only market-pulse follow-ups
+    if context_type == "market":
+        market_pool = [
+            "Explain today’s market pulse",
+            "What is market risk now?",
+            "What are SPY and QQQ showing?",
+            "Are crypto and commodities confirming risk?",
+            "Summarize market news",
+            "Explain top gainers and losers",
+        ]
+
+        fresh = [q for q in market_pool if not already_asked(q)]
+
+        if len(fresh) < 2:
+            fallback = [
+                "Is this market risk-on or risk-off?",
+                "What should I watch next in the market?",
+                "What is driving the current market mood?",
+            ]
+            for q in fallback:
+                if q not in fresh and not already_asked(q):
+                    fresh.append(q)
+
+        return fresh[:3]
     # ✅ Stock Detail mode: only stock-specific follow-ups
     if context_type == "stock_detail":
         stock_pool = [
@@ -374,6 +438,7 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
         "Use only the provided JSON data. Do not invent numbers. "
         "If the context contains multiple symbols, compare them directly and do not say another symbol's data is unavailable."
         "Be concise, direct, and practical. "
+        "If contextType is market, explain only the provided Market Pulse data: SPY, QQQ, crypto, commodities ETFs, Fear & Greed, internal movers, and market news. Do not claim this represents the entire official market. "
         "Use simple language for retail investors. "
         "Do not use markdown headings, bullet lists, asterisks, or long explanations. "
         "Do not give financial advice. Use educational wording only. "

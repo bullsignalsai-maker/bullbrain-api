@@ -3,10 +3,118 @@
 from typing import Dict, Any, List
 from backend.stock_repo import get_stock
 
-
+from firebase_admin import firestore
+db = firestore.client()
 def _safe_round(v, digits=2):
     return round(v, digits) if isinstance(v, (int, float)) else v
 
+def build_market_context_from_firestore() -> Dict[str, Any]:
+    """
+    Market Pulse context for Astra.
+    Uses same backend sources as MarketScreen:
+    - homescreen_snapshot / homescreen-context
+    - market movers source
+    - market news source
+    """
+
+    # 1) Homescreen snapshot: market overview + carousel
+    snap_doc = (
+        db.collection("bullsignals_ai")
+          .document("homescreen_snapshot")
+          .get()
+    )
+
+    snap = snap_doc.to_dict() if snap_doc.exists else {}
+    market = snap.get("market_overview") or {}
+    carousel = snap.get("carousel") or []
+
+    def find_card(card_id: str) -> Dict[str, Any]:
+        for c in carousel:
+            if c.get("id") == card_id:
+                return c or {}
+        return {}
+
+    us_market = find_card("us_market")
+    crypto = find_card("crypto")
+    commodities = find_card("commodities")
+    sentiment = find_card("sentiment")
+    sectors = find_card("sectors")
+
+    # 2) Market movers
+    movers = {"gainers": [], "losers": []}
+    try:
+        movers_doc = (
+            db.collection("bullsignals_ai")
+              .document("market_movers")
+              .get()
+        )
+        movers_data = movers_doc.to_dict() if movers_doc.exists else {}
+
+        raw_movers = movers_data.get("movers") or []
+        gainers = []
+        losers = []
+
+        for m in raw_movers:
+            item = {
+                "symbol": m.get("symbol"),
+                "company": m.get("company") or m.get("symbol"),
+                "direction": m.get("direction"),
+                "quote": m.get("quote") or {},
+                "trend": m.get("trend") or {},
+                "pattern": m.get("pattern") or {},
+                "oneLiner": m.get("oneLiner"),
+            }
+
+            if m.get("direction") == "up":
+                gainers.append(item)
+            elif m.get("direction") == "down":
+                losers.append(item)
+
+        movers = {
+            "gainers": gainers[:10],
+            "losers": losers[:10],
+            "updated_at": movers_data.get("updated_at"),
+            "note": "Market movers are based on AlphaWise internal tracked universe, not official full-market movers.",
+        }
+    except Exception as e:
+        movers = {
+            "gainers": [],
+            "losers": [],
+            "error": str(e),
+            "note": "Market movers were unavailable.",
+        }
+
+    # 3) Market news
+    news = []
+    try:
+        news_doc = (
+            db.collection("bullsignals_ai")
+              .document("market_news")
+              .get()
+        )
+        news_data = news_doc.to_dict() if news_doc.exists else {}
+        news = news_data.get("data") or news_data.get("news") or []
+    except Exception:
+        news = []
+
+    return {
+        "scope": "Market Pulse uses SPY, QQQ, crypto, commodities ETFs, Fear & Greed, internal movers, and market news.",
+        "marketOverview": {
+            "marketStatus": market.get("marketStatus"),
+            "marketMood": market.get("marketMood"),
+            "risk_level": market.get("risk_level"),
+            "fearGreed": market.get("fearGreed"),
+            "updated_at": market.get("updated_at") or snap.get("updated_at"),
+        },
+        "usMarket": us_market.get("items") or [],
+        "crypto": crypto.get("items") or [],
+        "commodities": commodities.get("items") or [],
+        "sentiment": sentiment.get("items") or [],
+        "sectors": sectors.get("items") or [],
+        "internalMovers": movers,
+        "marketNews": news[:12],
+        "updated_at": snap.get("updated_at"),
+    }
 
 def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None = None) -> Dict[str, Any]:
     stock = get_stock(symbol) or {}
@@ -83,7 +191,26 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
 
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
-        # Stock Detail mode: no portfolio required
+        # Market Pulse mode: no portfolio required
+    if getattr(req, "contextType", None) == "market":
+        return {
+            "intent": {
+                **intent_payload,
+                "intent": intent_payload.get("intent") or "market_pulse",
+            },
+            "contextType": "market",
+            "portfolio": {
+                "total_value": None,
+                "total_gain": None,
+                "today_gain": None,
+                "position_count": 0,
+                "top_holding": None,
+                "best_position": None,
+                "worst_position": None,
+            },
+            "symbols": [],
+            "market": build_market_context_from_firestore(),
+        }    
     # Stock Detail mode: no portfolio required
     if getattr(req, "contextType", None) == "stock_detail":
         primary_sym = (getattr(req, "symbol", "") or "").upper()

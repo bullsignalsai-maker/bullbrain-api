@@ -56,6 +56,32 @@ def detect_astra_intent(
         intent = "technical_explain"
     elif extract_symbols(q, available_symbols):
         intent = "stock_explain"
+    elif any(
+        w in q_lower
+        for w in [
+            "market",
+            "market pulse",
+            "spy",
+            "qqq",
+            "nasdaq",
+            "crypto",
+            "bitcoin",
+            "btc",
+            "eth",
+            "commodities",
+            "gold",
+            "oil",
+            "silver",
+            "fear",
+            "greed",
+            "risk",
+            "news",
+            "movers",
+            "gainers",
+            "losers",
+        ]
+    ):
+        intent = "market_pulse"    
     else:
         intent = "portfolio_overview"
 
