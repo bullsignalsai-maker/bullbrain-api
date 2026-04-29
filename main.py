@@ -4034,6 +4034,10 @@ def portfolio_ai_insight(
 
 import re  # make sure this is at top of main.py
 
+class PushRegisterRequest(BaseModel):
+    user_id: str
+    token: str
+    platform: str = "unknown"
 # ---------------------------------------------------------------
 # Astra Chat Request Models
 # ---------------------------------------------------------------
@@ -4066,6 +4070,101 @@ class AstraChatRequest(BaseModel):
     chat_history: List[Dict[str, str]] = []
 
 
+# ---------------------------------------------------------
+# Push Notification Registration
+# ---------------------------------------------------------
+
+@app.post("/push/register")
+def register_push_token(req: PushRegisterRequest):
+    try:
+        db = firestore.client()
+
+        doc_ref = (
+            db.collection("bullsignals_ai")
+              .document("users")
+              .collection("push_tokens")
+              .document(req.user_id)
+        )
+
+        doc_ref.set({
+            "user_id": req.user_id,
+            "expo_push_token": req.token,
+            "platform": req.platform,
+            "updated_at": datetime.utcnow().isoformat(),
+        }, merge=True)
+
+        return {
+            "success": True,
+            "message": "Push token registered successfully"
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# ---------------------------------------------------------
+# Push Notification Test
+# ---------------------------------------------------------
+
+@app.post("/push/test")
+def send_test_push(user_id: str):
+    try:
+        db = firestore.client()
+
+        doc = (
+            db.collection("bullsignals_ai")
+              .document("users")
+              .collection("push_tokens")
+              .document(user_id)
+              .get()
+        )
+
+        if not doc.exists:
+            return {
+                "success": False,
+                "message": "No push token found for user"
+            }
+
+        token = doc.to_dict().get("expo_push_token")
+
+        if not token:
+            return {
+                "success": False,
+                "message": "Push token missing"
+            }
+
+        payload = {
+            "to": token,
+            "sound": "default",
+            "title": "AlphaWise Alert",
+            "body": "Welcome to AlphaWise push notifications 🚀",
+            "data": {
+                "type": "test_notification"
+            }
+        }
+
+        r = requests.post(
+            "https://exp.host/--/api/v2/push/send",
+            json=payload,
+            headers={
+                "Content-Type": "application/json"
+            },
+            timeout=15
+        )
+
+        return {
+            "success": True,
+            "expo_response": r.json()
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+        
 # ---------------------------------------------------------------
 # Helper: lightweight market sentiment for a symbol
 # ---------------------------------------------------------------
