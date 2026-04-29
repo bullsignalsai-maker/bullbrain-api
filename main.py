@@ -4080,17 +4080,14 @@ def register_push_token(req: PushRegisterRequest):
         db = firestore.client()
 
         doc_ref = (
-            db.collection("bullsignals_ai")
-              .document("users")
-              .collection("push_tokens")
-              .document(req.user_id)
+            db.collection("users")
+            .document(req.user_id)
         )
 
         doc_ref.set({
-            "user_id": req.user_id,
-            "expo_push_token": req.token,
-            "platform": req.platform,
-            "updated_at": datetime.utcnow().isoformat(),
+            "expoPushToken": req.token,
+            "pushPlatform": req.platform,
+            "pushUpdatedAt": datetime.datetime.utcnow().isoformat() + "Z",
         }, merge=True)
 
         return {
@@ -4114,20 +4111,20 @@ def send_test_push(user_id: str):
         db = firestore.client()
 
         doc = (
-            db.collection("bullsignals_ai")
-              .document("users")
-              .collection("push_tokens")
-              .document(user_id)
-              .get()
+            db.collection("users")
+            .document(user_id)
+            .get()
         )
 
         if not doc.exists:
             return {
                 "success": False,
-                "message": "No push token found for user"
+                "message": "No user document found"
             }
 
-        token = doc.to_dict().get("expo_push_token")
+        data = doc.to_dict() or {}
+
+        token = data.get("expoPushToken") or data.get("expo_push_token")
 
         if not token:
             return {
