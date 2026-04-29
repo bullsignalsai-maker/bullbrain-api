@@ -1010,8 +1010,8 @@ def main():
     persist_internal_market_movers()
 
     try:
-        alert_result = run_watchlist_signal_alerts()
-        log(f"🔔 watchlist signal alerts checked | {alert_result}")
+        alert_result = run_watchlist_push_alerts()
+        log(f"🔔 watchlist push alerts checked | {alert_result}")
     except Exception as e:
         log_exc("watchlist signal alerts failed", e)
 

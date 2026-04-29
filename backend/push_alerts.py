@@ -75,7 +75,7 @@ def _confidence_text(confidence):
         return "N/A"
 
 
-def run_watchlist_signal_alerts(max_users: int = 200) -> Dict[str, Any]:
+def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
     """
     Checks all users with Expo push tokens and compares their watchlist signal state.
 
@@ -131,6 +131,16 @@ def run_watchlist_signal_alerts(max_users: int = 200) -> Dict[str, Any]:
                 or bull.get("confidence")
                 or None
             )
+            quote = item.get("quote") or {}
+            change_pct = quote.get("changePct")
+
+            if change_pct is None:
+                change_pct = item.get("changePct")
+
+            try:
+                change_pct_num = float(change_pct)
+            except Exception:
+                change_pct_num = None
 
             pattern = item.get("pattern") or {}
             pattern_name = pattern.get("name") if isinstance(pattern, dict) else None
@@ -217,7 +227,66 @@ def run_watchlist_signal_alerts(max_users: int = 200) -> Dict[str, Any]:
                     },
                     merge=True,
                 )
+            # ---------------------------------------------------------
+            # Big Move Alert
+            # Max once per symbol per day per direction
+            # ---------------------------------------------------------
+            if change_pct_num is not None and abs(change_pct_num) >= 3.0:
+                today = datetime.datetime.utcnow().date().isoformat()
+                move_direction = "up" if change_pct_num > 0 else "down"
 
+                last_big_move_date = previous.get("lastBigMoveDate")
+                last_big_move_direction = previous.get("lastBigMoveDirection")
+
+                already_alerted_today = (
+                    last_big_move_date == today
+                    and last_big_move_direction == move_direction
+                )
+
+                if not already_alerted_today:
+                    move_word = "jumped" if move_direction == "up" else "dropped"
+                    move_arrow = "▲" if move_direction == "up" else "▼"
+
+                    title = "AlphaWise Watchlist Alert"
+                    body = (
+                        f"{symbol} {move_word} {move_arrow} "
+                        f"{abs(change_pct_num):.2f}% today. Check signal and risk context."
+                    )
+
+                    result = _send_expo_push(
+                        token=token,
+                        title=title,
+                        body=body,
+                        data={
+                            "type": "watchlist_big_move",
+                            "symbol": symbol,
+                            "changePct": change_pct_num,
+                            "direction": move_direction,
+                        },
+                    )
+
+                    if result.get("success"):
+                        sent += 1
+                        state_ref.set(
+                            {
+                                "symbol": symbol,
+                                "lastBigMoveDate": today,
+                                "lastBigMoveDirection": move_direction,
+                                "lastBigMovePct": change_pct_num,
+                                "lastBigMoveAlertedAt": _now_iso(),
+                                "lastCheckedAt": _now_iso(),
+                            },
+                            merge=True,
+                        )
+                    else:
+                        errors.append(
+                            {
+                                "user_id": user_id,
+                                "symbol": symbol,
+                                "stage": "big_move_push",
+                                "error": result,
+                            }
+                        )
     return {
         "checked_users": checked_users,
         "checked_symbols": checked_symbols,
@@ -225,5 +294,5 @@ def run_watchlist_signal_alerts(max_users: int = 200) -> Dict[str, Any]:
         "baselined": baselined,
         "skipped_users_without_token": skipped,
         "errors": errors[:10],
-        "finished_at": _now_iso(),
+        "finished_at": _now_iso(),  
     }
