@@ -47,7 +47,7 @@ from symbols_clean import COMPANY_NAMES
 from backend.candle_store import get_candles
 from backend.explain.indicator_states import compute_indicator_states
 from backend.explain.narrative_engine import build_full_narrative_bundle
-
+from backend.push_alerts import run_watchlist_signal_alerts
 
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
@@ -1008,6 +1008,12 @@ def main():
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
     persist_internal_market_movers()
+
+    try:
+        alert_result = run_watchlist_signal_alerts()
+        log(f"🔔 watchlist signal alerts checked | {alert_result}")
+    except Exception as e:
+        log_exc("watchlist signal alerts failed", e)
 
     log("🏁 cron done")
 
