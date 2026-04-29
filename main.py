@@ -4108,7 +4108,7 @@ def register_push_token(req: PushRegisterRequest):
 # Push Notification Test
 # ---------------------------------------------------------
 
-@app.post("/push/test")
+@app.get("/push/test")
 def send_test_push(user_id: str):
     try:
         db = firestore.client()
@@ -4164,7 +4164,7 @@ def send_test_push(user_id: str):
             "success": False,
             "error": str(e)
         }
-        
+
 # ---------------------------------------------------------------
 # Helper: lightweight market sentiment for a symbol
 # ---------------------------------------------------------------
