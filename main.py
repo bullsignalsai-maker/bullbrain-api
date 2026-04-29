@@ -3425,7 +3425,7 @@ def clean_news_items(items: list[dict]) -> list[dict]:
     cleaned.sort(key=lambda x: x.get("pubDate") or "", reverse=True)
     return cleaned
 
-@app.get("/market-news")
+@app.get("/market-news-legacy")
 def market_news():
     import feedparser
     import re
@@ -5384,7 +5384,7 @@ def get_market_movers():
 # -----------------------------
 
 @app.get("/market-news")
-def market_news():
+def market_news_legacy():
     """
     Market tab news & highlights.
     Cached, fast, App-Store safe.

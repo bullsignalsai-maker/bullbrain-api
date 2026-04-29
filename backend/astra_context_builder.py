@@ -2,6 +2,8 @@
 
 from typing import Dict, Any, List
 from backend.stock_repo import get_stock
+from backend.news.market_news_repo import get_market_news
+from backend.market_highlights import build_market_highlights
 
 from firebase_admin import firestore
 db = firestore.client()
@@ -84,18 +86,21 @@ def build_market_context_from_firestore() -> Dict[str, Any]:
             "note": "Market movers were unavailable.",
         }
 
-    # 3) Market news
+    # 3) Market news — use same source as /market-news endpoint
     news = []
+    news_summary = {"headline": None, "highlights": []}
+
     try:
-        news_doc = (
-            db.collection("bullsignals_ai")
-              .document("market_news")
-              .get()
-        )
-        news_data = news_doc.to_dict() if news_doc.exists else {}
-        news = news_data.get("data") or news_data.get("news") or []
-    except Exception:
+        news_data = get_market_news() or {}
+        news = news_data.get("items", []) or []
+        news_summary = build_market_highlights(news)
+    except Exception as e:
         news = []
+        news_summary = {
+            "headline": None,
+            "highlights": [],
+            "error": str(e),
+        }
 
     return {
         "scope": "Market Pulse uses SPY, QQQ, crypto, commodities ETFs, Fear & Greed, internal movers, and market news.",
@@ -113,6 +118,7 @@ def build_market_context_from_firestore() -> Dict[str, Any]:
         "sectors": sectors.get("items") or [],
         "internalMovers": movers,
         "marketNews": news[:12],
+        "marketNewsSummary": news_summary,
         "updated_at": snap.get("updated_at"),
     }
 
