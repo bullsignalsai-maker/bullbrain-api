@@ -47,7 +47,10 @@ from symbols_clean import COMPANY_NAMES
 from backend.candle_store import get_candles
 from backend.explain.indicator_states import compute_indicator_states
 from backend.explain.narrative_engine import build_full_narrative_bundle
-from backend.push_alerts import run_watchlist_push_alerts
+from backend.push_alerts import (
+    run_watchlist_push_alerts,
+    run_portfolio_push_alerts,
+)
 
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
@@ -1015,6 +1018,12 @@ def main():
     except Exception as e:
         log_exc("watchlist signal alerts failed", e)
 
+    try:
+        portfolio_alert_result = run_portfolio_push_alerts()
+        log(f"💼 portfolio push alerts checked | {portfolio_alert_result}")
+    except Exception as e:
+        log_exc("portfolio push alerts failed", e)
+        
     log("🏁 cron done")
 
 # =========================================================
