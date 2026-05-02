@@ -414,6 +414,8 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
             if total_value <= 0:
                 continue
+            total_today_gain = sum(p["today_gain"] for p in positions)
+            portfolio_day_pct = (total_today_gain / total_value) * 100.0
 
             for p in positions:
                 p["allocation_pct"] = (p["curr_value"] / total_value) * 100.0
@@ -429,7 +431,61 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                   .collection("alert_state")
                   .document("_portfolio")
             )
+            # ---------------------------------------------------------
+            # 3) Portfolio Daily Performance Alert
+            # Max once per day per direction
+            # ---------------------------------------------------------
+            if abs(portfolio_day_pct) >= 2.0:
+                direction = "up" if portfolio_day_pct > 0 else "down"
 
+                already_sent_day_alert = (
+                    state.get("lastPortfolioDayAlertDate") == today
+                    and state.get("lastPortfolioDayDirection") == direction
+                )
+
+                if not already_sent_day_alert:
+                    title = "AlphaWise Portfolio Update"
+
+                    if direction == "up":
+                        body = (
+                            f"Your portfolio is up ▲ {abs(portfolio_day_pct):.2f}% today "
+                            f"({'+$' if total_today_gain >= 0 else '-$'}{abs(total_today_gain):,.2f})."
+                        )
+                    else:
+                        body = (
+                            f"Your portfolio is down ▼ {abs(portfolio_day_pct):.2f}% today "
+                            f"({'-$' if total_today_gain < 0 else '+$'}{abs(total_today_gain):,.2f}). "
+                            f"Review your largest movers."
+                        )
+
+                    result = _send_expo_push(
+                        token=token,
+                        title=title,
+                        body=body,
+                        data={
+                            "type": "portfolio_daily_performance",
+                            "portfolioDayPct": portfolio_day_pct,
+                            "todayGain": total_today_gain,
+                            "direction": direction,
+                        },
+                    )
+
+                    if result.get("success"):
+                        sent += 1
+                        state_ref.set({
+                            "lastPortfolioDayAlertDate": today,
+                            "lastPortfolioDayDirection": direction,
+                            "lastPortfolioDayPct": portfolio_day_pct,
+                            "lastPortfolioDayGain": total_today_gain,
+                            "lastPortfolioDayAlertedAt": _now_iso(),
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
+                    else:
+                        errors.append({
+                            "user_id": user_id,
+                            "stage": "portfolio_daily_performance_push",
+                            "error": result,
+                        })
             state_doc = state_ref.get()
             state = state_doc.to_dict() if state_doc.exists else {}
 
@@ -562,6 +618,8 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             state_ref.set({
                 "lastCheckedAt": _now_iso(),
                 "totalValue": total_value,
+                "totalTodayGain": total_today_gain,
+                "portfolioDayPct": portfolio_day_pct,
                 "largestHolding": largest_symbol,
                 "largestAllocationPct": largest_alloc,
                 "positionCount": len(positions),
