@@ -419,6 +419,94 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
             for p in positions:
                 p["allocation_pct"] = (p["curr_value"] / total_value) * 100.0
+                # ---------------------------------------------------------
+                # 4) Allocation Shift Alert
+                # Detects significant allocation movement per holding
+                # Max once per symbol per day
+                # ---------------------------------------------------------
+                for p in positions:
+                    symbol = p["symbol"]
+                    current_alloc = p["allocation_pct"]
+
+                    alloc_state_ref = (
+                        db.collection("users")
+                        .document(user_id)
+                        .collection("alert_state")
+                        .document(f"allocation_{symbol}")
+                    )
+
+                    alloc_state_doc = alloc_state_ref.get()
+                    alloc_state = alloc_state_doc.to_dict() if alloc_state_doc.exists else {}
+
+                    previous_alloc = alloc_state.get("lastAllocationPct")
+
+                    # First run baseline only
+                    if previous_alloc is None:
+                        alloc_state_ref.set({
+                            "symbol": symbol,
+                            "lastAllocationPct": current_alloc,
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
+                        continue
+
+                    try:
+                        previous_alloc = float(previous_alloc)
+                    except Exception:
+                        previous_alloc = current_alloc
+
+                    alloc_change = current_alloc - previous_alloc
+
+                    already_sent_alloc_alert = (
+                        alloc_state.get("lastAllocationAlertDate") == today
+                    )
+
+                    # Alert when allocation changes by 7 percentage points or more
+                    if abs(alloc_change) >= 7.0 and not already_sent_alloc_alert:
+                        direction = "increased" if alloc_change > 0 else "decreased"
+
+                        title = "AlphaWise Allocation Alert"
+                        body = (
+                            f"{symbol} allocation {direction} from "
+                            f"{previous_alloc:.0f}% to {current_alloc:.0f}% of your portfolio."
+                        )
+
+                        result = _send_expo_push(
+                            token=token,
+                            title=title,
+                            body=body,
+                            data={
+                                "type": "portfolio_allocation_shift",
+                                "symbol": symbol,
+                                "previousAllocationPct": previous_alloc,
+                                "currentAllocationPct": current_alloc,
+                                "changePctPoints": alloc_change,
+                            },
+                        )
+
+                        if result.get("success"):
+                            sent += 1
+                            alloc_state_ref.set({
+                                "symbol": symbol,
+                                "lastAllocationPct": current_alloc,
+                                "previousAllocationPct": previous_alloc,
+                                "lastAllocationChangePctPoints": alloc_change,
+                                "lastAllocationAlertDate": today,
+                                "lastAllocationAlertedAt": _now_iso(),
+                                "lastCheckedAt": _now_iso(),
+                            }, merge=True)
+                        else:
+                            errors.append({
+                                "user_id": user_id,
+                                "symbol": symbol,
+                                "stage": "portfolio_allocation_shift_push",
+                                "error": result,
+                            })
+                    else:
+                        alloc_state_ref.set({
+                            "symbol": symbol,
+                            "lastAllocationPct": current_alloc,
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
 
             positions.sort(key=lambda x: x["allocation_pct"], reverse=True)
 
