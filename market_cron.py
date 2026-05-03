@@ -50,6 +50,7 @@ from backend.explain.narrative_engine import build_full_narrative_bundle
 from backend.push_alerts import (
     run_watchlist_push_alerts,
     run_portfolio_push_alerts,
+    run_crypto_market_alerts,
 )
 
 # ✅ Reuse your central quote provider (Finnhub)
@@ -1023,7 +1024,11 @@ def main():
         log(f"💼 portfolio push alerts checked | {portfolio_alert_result}")
     except Exception as e:
         log_exc("portfolio push alerts failed", e)
-        
+    try:
+        crypto_alert_result = run_crypto_market_alerts()
+        log(f"🪙 crypto market alerts checked | {crypto_alert_result}")
+    except Exception as e:
+        log_exc("crypto market alerts failed", e)
     log("🏁 cron done")
 
 # =========================================================

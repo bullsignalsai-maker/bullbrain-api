@@ -1,15 +1,16 @@
 # backend/push_alerts.py
 
 import datetime
+import os
 import requests
 from typing import Dict, Any
-
 from firebase_admin import firestore
 
 from backend.watchlist_snapshot import build_watchlist_snapshot
 
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+API_BASE_URL = os.getenv("API_BASE_URL", "https://bullbrain-api.onrender.com")
 
 
 def _now_iso() -> str:
@@ -301,19 +302,15 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
     """
     Portfolio-level push alerts.
 
-    v1 supports:
-    - Concentration risk alert
-    - Big position gain/loss alert
-
-    Future-ready for:
-    - Portfolio day performance
-    - Allocation shift
-    - AI rebalancing
-    - Concentration risk + loss combo
+    Supports:
+    1) Concentration risk alert
+    2) Big position gain/loss alert
+    3) Portfolio daily performance alert
+    4) Allocation shift alert
+    5) AI rebalancing alert
     """
 
     db = firestore.client()
-
     users = list(db.collection("users").limit(max_users).stream())
 
     checked_users = 0
@@ -345,11 +342,16 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             )
 
             positions = []
+
             for doc in positions_snap:
                 p = doc.to_dict() or {}
                 symbol = (p.get("symbol") or doc.id or "").upper()
-                shares = float(p.get("shares") or 0)
-                avg_cost = float(p.get("avgCost") or p.get("avg_cost") or 0)
+
+                try:
+                    shares = float(p.get("shares") or 0)
+                    avg_cost = float(p.get("avgCost") or p.get("avg_cost") or 0)
+                except Exception:
+                    continue
 
                 if not symbol or shares <= 0:
                     continue
@@ -368,22 +370,18 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 stock = stock_doc.to_dict() or {}
                 quote = stock.get("quote") or {}
 
-                price = quote.get("price")
-                prev_close = quote.get("prevClose")
-                change_pct = quote.get("changePct")
-
                 try:
-                    price = float(price)
+                    price = float(quote.get("price") or avg_cost)
                 except Exception:
                     price = avg_cost
 
                 try:
-                    prev_close = float(prev_close)
+                    prev_close = float(quote.get("prevClose") or avg_cost)
                 except Exception:
                     prev_close = avg_cost
 
                 try:
-                    change_pct = float(change_pct)
+                    change_pct = float(quote.get("changePct") or 0)
                 except Exception:
                     change_pct = 0.0
 
@@ -414,103 +412,19 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
             if total_value <= 0:
                 continue
+
             total_today_gain = sum(p["today_gain"] for p in positions)
             portfolio_day_pct = (total_today_gain / total_value) * 100.0
 
             for p in positions:
                 p["allocation_pct"] = (p["curr_value"] / total_value) * 100.0
-                # ---------------------------------------------------------
-                # 4) Allocation Shift Alert
-                # Detects significant allocation movement per holding
-                # Max once per symbol per day
-                # ---------------------------------------------------------
-                for p in positions:
-                    symbol = p["symbol"]
-                    current_alloc = p["allocation_pct"]
-
-                    alloc_state_ref = (
-                        db.collection("users")
-                        .document(user_id)
-                        .collection("alert_state")
-                        .document(f"allocation_{symbol}")
-                    )
-
-                    alloc_state_doc = alloc_state_ref.get()
-                    alloc_state = alloc_state_doc.to_dict() if alloc_state_doc.exists else {}
-
-                    previous_alloc = alloc_state.get("lastAllocationPct")
-
-                    # First run baseline only
-                    if previous_alloc is None:
-                        alloc_state_ref.set({
-                            "symbol": symbol,
-                            "lastAllocationPct": current_alloc,
-                            "lastCheckedAt": _now_iso(),
-                        }, merge=True)
-                        continue
-
-                    try:
-                        previous_alloc = float(previous_alloc)
-                    except Exception:
-                        previous_alloc = current_alloc
-
-                    alloc_change = current_alloc - previous_alloc
-
-                    already_sent_alloc_alert = (
-                        alloc_state.get("lastAllocationAlertDate") == today
-                    )
-
-                    # Alert when allocation changes by 7 percentage points or more
-                    if abs(alloc_change) >= 7.0 and not already_sent_alloc_alert:
-                        direction = "increased" if alloc_change > 0 else "decreased"
-
-                        title = "AlphaWise Allocation Alert"
-                        body = (
-                            f"{symbol} allocation {direction} from "
-                            f"{previous_alloc:.0f}% to {current_alloc:.0f}% of your portfolio."
-                        )
-
-                        result = _send_expo_push(
-                            token=token,
-                            title=title,
-                            body=body,
-                            data={
-                                "type": "portfolio_allocation_shift",
-                                "symbol": symbol,
-                                "previousAllocationPct": previous_alloc,
-                                "currentAllocationPct": current_alloc,
-                                "changePctPoints": alloc_change,
-                            },
-                        )
-
-                        if result.get("success"):
-                            sent += 1
-                            alloc_state_ref.set({
-                                "symbol": symbol,
-                                "lastAllocationPct": current_alloc,
-                                "previousAllocationPct": previous_alloc,
-                                "lastAllocationChangePctPoints": alloc_change,
-                                "lastAllocationAlertDate": today,
-                                "lastAllocationAlertedAt": _now_iso(),
-                                "lastCheckedAt": _now_iso(),
-                            }, merge=True)
-                        else:
-                            errors.append({
-                                "user_id": user_id,
-                                "symbol": symbol,
-                                "stage": "portfolio_allocation_shift_push",
-                                "error": result,
-                            })
-                    else:
-                        alloc_state_ref.set({
-                            "symbol": symbol,
-                            "lastAllocationPct": current_alloc,
-                            "lastCheckedAt": _now_iso(),
-                        }, merge=True)
 
             positions.sort(key=lambda x: x["allocation_pct"], reverse=True)
 
             largest = positions[0]
+            largest_symbol = largest["symbol"]
+            largest_alloc = largest["allocation_pct"]
+
             checked_positions += len(positions)
 
             state_ref = (
@@ -519,61 +433,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                   .collection("alert_state")
                   .document("_portfolio")
             )
-            # ---------------------------------------------------------
-            # 3) Portfolio Daily Performance Alert
-            # Max once per day per direction
-            # ---------------------------------------------------------
-            if abs(portfolio_day_pct) >= 2.0:
-                direction = "up" if portfolio_day_pct > 0 else "down"
 
-                already_sent_day_alert = (
-                    state.get("lastPortfolioDayAlertDate") == today
-                    and state.get("lastPortfolioDayDirection") == direction
-                )
-
-                if not already_sent_day_alert:
-                    title = "AlphaWise Portfolio Update"
-
-                    if direction == "up":
-                        body = (
-                            f"Your portfolio is up ▲ {abs(portfolio_day_pct):.2f}% today "
-                            f"({'+$' if total_today_gain >= 0 else '-$'}{abs(total_today_gain):,.2f})."
-                        )
-                    else:
-                        body = (
-                            f"Your portfolio is down ▼ {abs(portfolio_day_pct):.2f}% today "
-                            f"({'-$' if total_today_gain < 0 else '+$'}{abs(total_today_gain):,.2f}). "
-                            f"Review your largest movers."
-                        )
-
-                    result = _send_expo_push(
-                        token=token,
-                        title=title,
-                        body=body,
-                        data={
-                            "type": "portfolio_daily_performance",
-                            "portfolioDayPct": portfolio_day_pct,
-                            "todayGain": total_today_gain,
-                            "direction": direction,
-                        },
-                    )
-
-                    if result.get("success"):
-                        sent += 1
-                        state_ref.set({
-                            "lastPortfolioDayAlertDate": today,
-                            "lastPortfolioDayDirection": direction,
-                            "lastPortfolioDayPct": portfolio_day_pct,
-                            "lastPortfolioDayGain": total_today_gain,
-                            "lastPortfolioDayAlertedAt": _now_iso(),
-                            "lastCheckedAt": _now_iso(),
-                        }, merge=True)
-                    else:
-                        errors.append({
-                            "user_id": user_id,
-                            "stage": "portfolio_daily_performance_push",
-                            "error": result,
-                        })
             state_doc = state_ref.get()
             state = state_doc.to_dict() if state_doc.exists else {}
 
@@ -581,30 +441,21 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             # 1) Concentration Risk Alert
             # Max once per day
             # ---------------------------------------------------------
-            largest_symbol = largest["symbol"]
-            largest_alloc = largest["allocation_pct"]
-
-            last_risk_date = state.get("lastConcentrationRiskDate")
-            last_risk_symbol = state.get("lastConcentrationRiskSymbol")
-
             if largest_alloc >= 40.0:
                 already_sent_risk = (
-                    last_risk_date == today
-                    and last_risk_symbol == largest_symbol
+                    state.get("lastConcentrationRiskDate") == today
+                    and state.get("lastConcentrationRiskSymbol") == largest_symbol
                 )
 
                 if not already_sent_risk:
-                    title = "AlphaWise Portfolio Alert"
-                    body = (
-                        f"{largest_symbol} now makes up "
-                        f"{largest_alloc:.0f}% of your portfolio. "
-                        f"Concentration risk is elevated."
-                    )
-
                     result = _send_expo_push(
                         token=token,
-                        title=title,
-                        body=body,
+                        title="AlphaWise Portfolio Alert",
+                        body=(
+                            f"{largest_symbol} now makes up "
+                            f"{largest_alloc:.0f}% of your portfolio. "
+                            f"Concentration risk is elevated."
+                        ),
                         data={
                             "type": "portfolio_concentration_risk",
                             "symbol": largest_symbol,
@@ -627,7 +478,64 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                             "stage": "portfolio_concentration_push",
                             "error": result,
                         })
+            # ---------------------------------------------------------
+            # 6) Concentration Risk + Loss Combo Alert
+            # Largest holding is heavily concentrated AND down today
+            # Max once per day per symbol
+            # ---------------------------------------------------------
+            try:
+                largest_change_pct = float(largest.get("change_pct") or 0)
 
+                already_sent_combo = (
+                    state.get("lastRiskLossComboDate") == today
+                    and state.get("lastRiskLossComboSymbol") == largest_symbol
+                )
+
+                if (
+                    largest_alloc >= 40.0
+                    and largest_change_pct <= -2.0
+                    and not already_sent_combo
+                ):
+                    result = _send_expo_push(
+                        token=token,
+                        title="AlphaWise Risk Alert",
+                        body=(
+                            f"{largest_symbol} is {largest_alloc:.0f}% of your portfolio "
+                            f"and down ▼ {abs(largest_change_pct):.2f}% today. "
+                            f"Risk is elevated."
+                        ),
+                        data={
+                            "type": "portfolio_risk_loss_combo",
+                            "symbol": largest_symbol,
+                            "allocationPct": largest_alloc,
+                            "changePct": largest_change_pct,
+                        },
+                    )
+
+                    if result.get("success"):
+                        sent += 1
+                        state_ref.set({
+                            "lastRiskLossComboDate": today,
+                            "lastRiskLossComboSymbol": largest_symbol,
+                            "lastRiskLossComboAllocationPct": largest_alloc,
+                            "lastRiskLossComboChangePct": largest_change_pct,
+                            "lastRiskLossComboAlertedAt": _now_iso(),
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
+                    else:
+                        errors.append({
+                            "user_id": user_id,
+                            "symbol": largest_symbol,
+                            "stage": "portfolio_risk_loss_combo_push",
+                            "error": result,
+                        })
+
+            except Exception as e:
+                errors.append({
+                    "user_id": user_id,
+                    "stage": "portfolio_risk_loss_combo",
+                    "error": str(e),
+                })
             # ---------------------------------------------------------
             # 2) Big Gain/Loss Alert per holding
             # Max once per symbol per day per direction
@@ -663,17 +571,14 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 arrow = "▲" if direction == "up" else "▼"
                 today_gain = p["today_gain"]
 
-                title = "AlphaWise Portfolio Alert"
-                body = (
-                    f"{symbol} is {word} {arrow} {abs(move_pct):.2f}% today. "
-                    f"Your position impact is "
-                    f"{'+' if today_gain >= 0 else '-'}${abs(today_gain):,.2f}."
-                )
-
                 result = _send_expo_push(
                     token=token,
-                    title=title,
-                    body=body,
+                    title="AlphaWise Portfolio Alert",
+                    body=(
+                        f"{symbol} is {word} {arrow} {abs(move_pct):.2f}% today. "
+                        f"Your position impact is "
+                        f"{'+' if today_gain >= 0 else '-'}${abs(today_gain):,.2f}."
+                    ),
                     data={
                         "type": "portfolio_position_big_move",
                         "symbol": symbol,
@@ -702,6 +607,204 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                         "error": result,
                     })
 
+            # ---------------------------------------------------------
+            # 3) Portfolio Daily Performance Alert
+            # Max once per day per direction
+            # ---------------------------------------------------------
+            if abs(portfolio_day_pct) >= 2.0:
+                direction = "up" if portfolio_day_pct > 0 else "down"
+
+                already_sent_day_alert = (
+                    state.get("lastPortfolioDayAlertDate") == today
+                    and state.get("lastPortfolioDayDirection") == direction
+                )
+
+                if not already_sent_day_alert:
+                    body = (
+                        f"Your portfolio is {'up ▲' if direction == 'up' else 'down ▼'} "
+                        f"{abs(portfolio_day_pct):.2f}% today "
+                        f"({'+' if total_today_gain >= 0 else '-'}${abs(total_today_gain):,.2f})."
+                    )
+
+                    result = _send_expo_push(
+                        token=token,
+                        title="AlphaWise Portfolio Update",
+                        body=body,
+                        data={
+                            "type": "portfolio_daily_performance",
+                            "portfolioDayPct": portfolio_day_pct,
+                            "todayGain": total_today_gain,
+                            "direction": direction,
+                        },
+                    )
+
+                    if result.get("success"):
+                        sent += 1
+                        state_ref.set({
+                            "lastPortfolioDayAlertDate": today,
+                            "lastPortfolioDayDirection": direction,
+                            "lastPortfolioDayPct": portfolio_day_pct,
+                            "lastPortfolioDayGain": total_today_gain,
+                            "lastPortfolioDayAlertedAt": _now_iso(),
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
+                    else:
+                        errors.append({
+                            "user_id": user_id,
+                            "stage": "portfolio_daily_performance_push",
+                            "error": result,
+                        })
+
+            # ---------------------------------------------------------
+            # 4) Allocation Shift Alert
+            # Max once per symbol per day
+            # ---------------------------------------------------------
+            for p in positions:
+                symbol = p["symbol"]
+                current_alloc = p["allocation_pct"]
+
+                alloc_state_ref = (
+                    db.collection("users")
+                      .document(user_id)
+                      .collection("alert_state")
+                      .document(f"allocation_{symbol}")
+                )
+
+                alloc_state_doc = alloc_state_ref.get()
+                alloc_state = alloc_state_doc.to_dict() if alloc_state_doc.exists else {}
+
+                previous_alloc = alloc_state.get("lastAllocationPct")
+
+                if previous_alloc is None:
+                    alloc_state_ref.set({
+                        "symbol": symbol,
+                        "lastAllocationPct": current_alloc,
+                        "lastCheckedAt": _now_iso(),
+                    }, merge=True)
+                    continue
+
+                try:
+                    previous_alloc = float(previous_alloc)
+                except Exception:
+                    previous_alloc = current_alloc
+
+                alloc_change = current_alloc - previous_alloc
+
+                already_sent_alloc_alert = (
+                    alloc_state.get("lastAllocationAlertDate") == today
+                )
+
+                if abs(alloc_change) >= 7.0 and not already_sent_alloc_alert:
+                    direction_word = "increased" if alloc_change > 0 else "decreased"
+
+                    result = _send_expo_push(
+                        token=token,
+                        title="AlphaWise Allocation Alert",
+                        body=(
+                            f"{symbol} allocation {direction_word} from "
+                            f"{previous_alloc:.0f}% to {current_alloc:.0f}% of your portfolio."
+                        ),
+                        data={
+                            "type": "portfolio_allocation_shift",
+                            "symbol": symbol,
+                            "previousAllocationPct": previous_alloc,
+                            "currentAllocationPct": current_alloc,
+                            "changePctPoints": alloc_change,
+                        },
+                    )
+
+                    if result.get("success"):
+                        sent += 1
+                        alloc_state_ref.set({
+                            "symbol": symbol,
+                            "lastAllocationPct": current_alloc,
+                            "previousAllocationPct": previous_alloc,
+                            "lastAllocationChangePctPoints": alloc_change,
+                            "lastAllocationAlertDate": today,
+                            "lastAllocationAlertedAt": _now_iso(),
+                            "lastCheckedAt": _now_iso(),
+                        }, merge=True)
+                    else:
+                        errors.append({
+                            "user_id": user_id,
+                            "symbol": symbol,
+                            "stage": "portfolio_allocation_shift_push",
+                            "error": result,
+                        })
+                else:
+                    alloc_state_ref.set({
+                        "symbol": symbol,
+                        "lastAllocationPct": current_alloc,
+                        "lastCheckedAt": _now_iso(),
+                    }, merge=True)
+
+            # ---------------------------------------------------------
+            # 5) AI Rebalancing Alert
+            # Max once per day
+            # ---------------------------------------------------------
+            try:
+                last_ai_alert_date = state.get("lastAIRebalanceAlertDate")
+
+                if last_ai_alert_date != today:
+                    ai_url = (
+                        f"{API_BASE_URL}/portfolio-ai-insight/{largest_symbol}"
+                        f"?allocation_pct={largest_alloc}"
+                        f"&portfolio_total_value={total_value}"
+                    )
+
+                    ai_res = requests.get(ai_url, timeout=8)
+
+                    if ai_res.ok:
+                        ai_json = ai_res.json() or {}
+
+                        risk = (ai_json.get("risk") or "").lower()
+                        rebalancing = (ai_json.get("rebalancing") or "").lower()
+
+                        should_alert = (
+                            "high" in risk
+                            or "rebalance" in rebalancing
+                            or "reduce" in rebalancing
+                            or "concentration" in rebalancing
+                        )
+
+                        if should_alert:
+                            result = _send_expo_push(
+                                token=token,
+                                title="AlphaWise AI Insight",
+                                body=(
+                                    "Your portfolio shows elevated risk. "
+                                    "AI suggests reviewing your allocation."
+                                ),
+                                data={
+                                    "type": "portfolio_ai_rebalance",
+                                    "symbol": largest_symbol,
+                                    "risk": risk,
+                                },
+                            )
+
+                            if result.get("success"):
+                                sent += 1
+                                state_ref.set({
+                                    "lastAIRebalanceAlertDate": today,
+                                    "lastAIRebalanceSymbol": largest_symbol,
+                                    "lastAIRebalanceRisk": risk,
+                                    "lastAIRebalanceAlertedAt": _now_iso(),
+                                    "lastCheckedAt": _now_iso(),
+                                }, merge=True)
+                            else:
+                                errors.append({
+                                    "user_id": user_id,
+                                    "stage": "portfolio_ai_rebalance_push",
+                                    "error": result,
+                                })
+
+            except Exception as e:
+                errors.append({
+                    "user_id": user_id,
+                    "stage": "portfolio_ai_rebalance",
+                    "error": str(e),
+                })
+
             # Always update portfolio checked state
             state_ref.set({
                 "lastCheckedAt": _now_iso(),
@@ -728,3 +831,237 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
         "errors": errors[:10],
         "finished_at": _now_iso(),
     }
+
+def run_crypto_market_alerts(max_users: int = 200) -> Dict[str, Any]:
+    """
+    Crypto market movement alerts.
+
+    Tracks major crypto movers from homescreen_snapshot carousel:
+    BTC, ETH, SOL, XRP, DOGE
+
+    Alert rules:
+    - BTC / ETH: +/- 3%
+    - SOL / XRP / DOGE: +/- 5%
+
+    Anti-spam:
+    - Max once per crypto per direction per day.
+    """
+
+    db = firestore.client()
+
+    users = list(db.collection("users").limit(max_users).stream())
+
+    checked_users = 0
+    checked_crypto = 0
+    sent = 0
+    skipped = 0
+    errors = []
+
+    today = datetime.datetime.utcnow().date().isoformat()
+
+    try:
+        snap = (
+            db.collection("bullsignals_ai")
+              .document("homescreen_snapshot")
+              .get()
+        )
+
+        if not snap.exists:
+            return {
+                "checked_users": 0,
+                "checked_crypto": 0,
+                "sent": 0,
+                "skipped_users_without_token": 0,
+                "errors": [{"stage": "crypto_snapshot", "error": "homescreen_snapshot not found"}],
+                "finished_at": _now_iso(),
+            }
+
+        data = snap.to_dict() or {}
+        carousel = data.get("carousel") or []
+
+        crypto_card = None
+        for card in carousel:
+            if isinstance(card, dict) and card.get("id") == "crypto":
+                crypto_card = card
+                break
+
+        if not crypto_card:
+            return {
+                "checked_users": 0,
+                "checked_crypto": 0,
+                "sent": 0,
+                "skipped_users_without_token": 0,
+                "errors": [{"stage": "crypto_card", "error": "crypto card not found"}],
+                "finished_at": _now_iso(),
+            }
+
+        crypto_items = crypto_card.get("items") or []
+
+    except Exception as e:
+        return {
+            "checked_users": 0,
+            "checked_crypto": 0,
+            "sent": 0,
+            "skipped_users_without_token": 0,
+            "errors": [{"stage": "crypto_load", "error": str(e)}],
+            "finished_at": _now_iso(),
+        }
+
+    def parse_crypto_symbol(label: str) -> str:
+        label = (label or "").upper()
+
+        if "BTC" in label or "BITCOIN" in label:
+            return "BTC"
+        if "ETH" in label or "ETHEREUM" in label:
+            return "ETH"
+        if "SOL" in label or "SOLANA" in label:
+            return "SOL"
+        if "XRP" in label:
+            return "XRP"
+        if "DOGE" in label or "DOGECOIN" in label:
+            return "DOGE"
+
+        return label.strip()
+
+    def parse_pct(value) -> float | None:
+        if value is None:
+            return None
+
+        try:
+            if isinstance(value, (int, float)):
+                return float(value)
+
+            s = str(value).replace("%", "").replace("+", "").strip()
+            return float(s)
+        except Exception:
+            return None
+
+    crypto_alerts = []
+
+    for item in crypto_items:
+        if not isinstance(item, dict):
+            continue
+
+        label = item.get("label") or item.get("symbol") or ""
+        symbol = parse_crypto_symbol(label)
+
+        if symbol not in {"BTC", "ETH", "SOL", "XRP", "DOGE"}:
+            continue
+
+        pct = (
+            item.get("changePct")
+            or item.get("change_pct")
+            or item.get("pct")
+            or item.get("value")
+        )
+
+        change_pct = parse_pct(pct)
+
+        if change_pct is None:
+            continue
+
+        threshold = 3.0 if symbol in {"BTC", "ETH"} else 5.0
+
+        if abs(change_pct) < threshold:
+            continue
+
+        direction = "up" if change_pct > 0 else "down"
+
+        crypto_alerts.append({
+            "symbol": symbol,
+            "change_pct": change_pct,
+            "direction": direction,
+            "threshold": threshold,
+        })
+
+    if not crypto_alerts:
+        return {
+            "checked_users": 0,
+            "checked_crypto": len(crypto_items),
+            "sent": 0,
+            "skipped_users_without_token": 0,
+            "errors": [],
+            "finished_at": _now_iso(),
+        }
+
+    for user_doc in users:
+        user_id = user_doc.id
+        user_data = user_doc.to_dict() or {}
+
+        token = user_data.get("expoPushToken") or user_data.get("expo_push_token")
+
+        if not token:
+            skipped += 1
+            continue
+
+        checked_users += 1
+
+        for alert in crypto_alerts:
+            symbol = alert["symbol"]
+            change_pct = alert["change_pct"]
+            direction = alert["direction"]
+
+            checked_crypto += 1
+
+            state_ref = (
+                db.collection("users")
+                  .document(user_id)
+                  .collection("alert_state")
+                  .document(f"crypto_{symbol}")
+            )
+
+            state_doc = state_ref.get()
+            state = state_doc.to_dict() if state_doc.exists else {}
+
+            already_sent = (
+                state.get("lastCryptoAlertDate") == today
+                and state.get("lastCryptoAlertDirection") == direction
+            )
+
+            if already_sent:
+                continue
+
+            word = "rising" if direction == "up" else "dropping"
+            arrow = "▲" if direction == "up" else "▼"
+
+            result = _send_expo_push(
+                token=token,
+                title="AlphaWise Crypto Alert",
+                body=(
+                    f"{symbol} is {word} {arrow} {abs(change_pct):.2f}% today. "
+                    f"Crypto market movement is active."
+                ),
+                data={
+                    "type": "crypto_market_move",
+                    "symbol": symbol,
+                    "changePct": change_pct,
+                    "direction": direction,
+                },
+            )
+
+            if result.get("success"):
+                sent += 1
+                state_ref.set({
+                    "symbol": symbol,
+                    "lastCryptoAlertDate": today,
+                    "lastCryptoAlertDirection": direction,
+                    "lastCryptoAlertPct": change_pct,
+                    "lastCryptoAlertedAt": _now_iso(),
+                    "lastCheckedAt": _now_iso(),
+                }, merge=True)
+            else:
+                errors.append({
+                    "user_id": user_id,
+                    "symbol": symbol,
+                    "stage": "crypto_market_push",
+                    "error": result,
+                })
+
+    return {
+        "checked_users": checked_users,
+        "checked_crypto": checked_crypto,
+        "sent": sent,
+        "skipped_users_without_token": skipped,
+        "errors": errors[:10],
+        "finished_at": _now_iso(),
+    }    
