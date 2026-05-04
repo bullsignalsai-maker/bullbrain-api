@@ -93,16 +93,19 @@ def _get_notification_prefs(db, user_id: str) -> Dict[str, bool]:
         data = snap.to_dict() if snap.exists else {}
 
         return {
+            "enabled": data.get("enabled", True),
             "watchlist": data.get("watchlist", True),
             "portfolio": data.get("portfolio", True),
             "crypto": data.get("crypto", True),
         }
     except Exception:
         return {
+            "enabled": True,
             "watchlist": True,
             "portfolio": True,
             "crypto": True,
         }
+    
 def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
     """
     Checks all users with Expo push tokens and compares their watchlist signal state.
@@ -135,10 +138,13 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
         checked_users += 1
         prefs = _get_notification_prefs(db, user_id)
 
-        if not prefs.get("watchlist", True):
+        if not prefs.get("enabled", True):
             skipped += 1
             continue
 
+        if not prefs.get("watchlist", True):
+            skipped += 1
+            continue
         try:
             snapshot = build_watchlist_snapshot(user_id) or {}
             items = snapshot.get("items", []) or []
@@ -365,6 +371,10 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
         checked_users += 1
         prefs = _get_notification_prefs(db, user_id)
+
+        if not prefs.get("enabled", True):
+            skipped += 1
+            continue
 
         if not prefs.get("portfolio", True):
             skipped += 1
@@ -1034,10 +1044,13 @@ def run_crypto_market_alerts(max_users: int = 200) -> Dict[str, Any]:
         checked_users += 1
         prefs = _get_notification_prefs(db, user_id)
 
-        if not prefs.get("crypto", True):
+        if not prefs.get("enabled", True):
             skipped += 1
             continue
 
+        if not prefs.get("crypto", True):
+            skipped += 1
+            continue
         for alert in crypto_alerts:
             symbol = alert["symbol"]
             change_pct = alert["change_pct"]
