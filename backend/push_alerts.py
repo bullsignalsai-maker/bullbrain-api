@@ -76,6 +76,33 @@ def _confidence_text(confidence):
         return "N/A"
 
 
+def _get_notification_prefs(db, user_id: str) -> Dict[str, bool]:
+    """
+    Reads user notification preferences.
+    Defaults to ON if preferences doc does not exist.
+    """
+    try:
+        snap = (
+            db.collection("users")
+              .document(user_id)
+              .collection("preferences")
+              .document("notifications")
+              .get()
+        )
+
+        data = snap.to_dict() if snap.exists else {}
+
+        return {
+            "watchlist": data.get("watchlist", True),
+            "portfolio": data.get("portfolio", True),
+            "crypto": data.get("crypto", True),
+        }
+    except Exception:
+        return {
+            "watchlist": True,
+            "portfolio": True,
+            "crypto": True,
+        }
 def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
     """
     Checks all users with Expo push tokens and compares their watchlist signal state.
@@ -106,6 +133,11 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             continue
 
         checked_users += 1
+        prefs = _get_notification_prefs(db, user_id)
+
+        if not prefs.get("watchlist", True):
+            skipped += 1
+            continue
 
         try:
             snapshot = build_watchlist_snapshot(user_id) or {}
@@ -332,6 +364,11 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             continue
 
         checked_users += 1
+        prefs = _get_notification_prefs(db, user_id)
+
+        if not prefs.get("portfolio", True):
+            skipped += 1
+            continue
 
         try:
             positions_snap = (
@@ -995,6 +1032,11 @@ def run_crypto_market_alerts(max_users: int = 200) -> Dict[str, Any]:
             continue
 
         checked_users += 1
+        prefs = _get_notification_prefs(db, user_id)
+
+        if not prefs.get("crypto", True):
+            skipped += 1
+            continue
 
         for alert in crypto_alerts:
             symbol = alert["symbol"]
