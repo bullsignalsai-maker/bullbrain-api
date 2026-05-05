@@ -49,6 +49,7 @@ from backend.explain.indicator_states import compute_indicator_states
 from backend.explain.narrative_engine import build_full_narrative_bundle
 from backend.push_alerts import (
     run_watchlist_push_alerts,
+    run_watchlist_price_alerts,
     run_portfolio_push_alerts,
     run_crypto_market_alerts,
 )
@@ -1018,7 +1019,11 @@ def main():
         log(f"🔔 watchlist push alerts checked | {alert_result}")
     except Exception as e:
         log_exc("watchlist signal alerts failed", e)
-
+    try:
+        price_alert_result = run_watchlist_price_alerts()
+        log(f"🎯 watchlist price alerts checked | {price_alert_result}")
+    except Exception as e:
+        log_exc("watchlist price alerts failed", e)
     try:
         portfolio_alert_result = run_portfolio_push_alerts()
         log(f"💼 portfolio push alerts checked | {portfolio_alert_result}")

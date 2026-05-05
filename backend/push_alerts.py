@@ -213,7 +213,7 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 continue
 
             if _is_meaningful_signal_change(old_signal, new_signal):
-                title = "AlphaWise Signal Alert"
+                title = "Alphaclara Signal Alert"
                 body = f"{symbol} changed from {old_signal} → {new_signal}. Confidence: {_confidence_text(confidence)}."
 
                 result = _send_expo_push(
@@ -286,7 +286,7 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                     move_word = "jumped" if move_direction == "up" else "dropped"
                     move_arrow = "▲" if move_direction == "up" else "▼"
 
-                    title = "AlphaWise Watchlist Alert"
+                    title = "Alphaclara Watchlist Alert"
                     body = (
                         f"{symbol} {move_word} {move_arrow} "
                         f"{abs(change_pct_num):.2f}% today. Check signal and risk context."
@@ -497,7 +497,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 if not already_sent_risk:
                     result = _send_expo_push(
                         token=token,
-                        title="AlphaWise Portfolio Alert",
+                        title="Alphaclara Portfolio Alert",
                         body=(
                             f"{largest_symbol} now makes up "
                             f"{largest_alloc:.0f}% of your portfolio. "
@@ -545,7 +545,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 ):
                     result = _send_expo_push(
                         token=token,
-                        title="AlphaWise Risk Alert",
+                        title="Alphaclara Risk Alert",
                         body=(
                             f"{largest_symbol} is {largest_alloc:.0f}% of your portfolio "
                             f"and down ▼ {abs(largest_change_pct):.2f}% today. "
@@ -620,7 +620,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
                 result = _send_expo_push(
                     token=token,
-                    title="AlphaWise Portfolio Alert",
+                    title="Alphaclara Portfolio Alert",
                     body=(
                         f"{symbol} is {word} {arrow} {abs(move_pct):.2f}% today. "
                         f"Your position impact is "
@@ -675,7 +675,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
                     result = _send_expo_push(
                         token=token,
-                        title="AlphaWise Portfolio Update",
+                        title="Alphaclara Portfolio Update",
                         body=body,
                         data={
                             "type": "portfolio_daily_performance",
@@ -746,7 +746,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
                     result = _send_expo_push(
                         token=token,
-                        title="AlphaWise Allocation Alert",
+                        title="Alphaclara Allocation Alert",
                         body=(
                             f"{symbol} allocation {direction_word} from "
                             f"{previous_alloc:.0f}% to {current_alloc:.0f}% of your portfolio."
@@ -817,7 +817,7 @@ def run_portfolio_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                         if should_alert:
                             result = _send_expo_push(
                                 token=token,
-                                title="AlphaWise AI Insight",
+                                title="Alphaclara AI Insight",
                                 body=(
                                     "Your portfolio shows elevated risk. "
                                     "AI suggests reviewing your allocation."
@@ -1081,7 +1081,7 @@ def run_crypto_market_alerts(max_users: int = 200) -> Dict[str, Any]:
 
             result = _send_expo_push(
                 token=token,
-                title="AlphaWise Crypto Alert",
+                title="Alphaclara Crypto Alert",
                 body=(
                     f"{symbol} is {word} {arrow} {abs(change_pct):.2f}% today. "
                     f"Crypto market movement is active."
@@ -1120,3 +1120,214 @@ def run_crypto_market_alerts(max_users: int = 200) -> Dict[str, Any]:
         "errors": errors[:10],
         "finished_at": _now_iso(),
     }    
+
+def run_watchlist_price_alerts(max_users: int = 200) -> Dict[str, Any]:
+    """
+    User-created watchlist price alerts.
+
+    Firestore:
+    users/{userId}/watchlist/{symbol}/alerts/price_alert
+
+    Supports:
+    - abovePrice
+    - belowPrice
+
+    Anti-spam:
+    - Max once per symbol per alert direction per day.
+    """
+
+    db = firestore.client()
+    users = list(db.collection("users").limit(max_users).stream())
+
+    checked_users = 0
+    checked_alerts = 0
+    sent = 0
+    skipped = 0
+    errors = []
+
+    today = datetime.datetime.utcnow().date().isoformat()
+
+    for user_doc in users:
+        user_id = user_doc.id
+        user_data = user_doc.to_dict() or {}
+
+        token = user_data.get("expoPushToken") or user_data.get("expo_push_token")
+
+        if not token:
+            skipped += 1
+            continue
+
+        prefs = _get_notification_prefs(db, user_id)
+
+        if not prefs.get("enabled", True):
+            skipped += 1
+            continue
+
+        if not prefs.get("watchlist", True):
+            skipped += 1
+            continue
+
+        checked_users += 1
+
+        try:
+            watchlist_docs = (
+                db.collection("users")
+                  .document(user_id)
+                  .collection("watchlist")
+                  .stream()
+            )
+
+            for watch_doc in watchlist_docs:
+                symbol = (watch_doc.id or "").upper()
+
+                alert_ref = (
+                    db.collection("users")
+                      .document(user_id)
+                      .collection("watchlist")
+                      .document(symbol)
+                      .collection("alerts")
+                      .document("price_alert")
+                )
+
+                alert_doc = alert_ref.get()
+
+                if not alert_doc.exists:
+                    continue
+
+                alert_data = alert_doc.to_dict() or {}
+
+                if not alert_data.get("enabled", True):
+                    continue
+
+                above_price = alert_data.get("abovePrice")
+                below_price = alert_data.get("belowPrice")
+
+                if above_price is None and below_price is None:
+                    continue
+
+                stock_doc = (
+                    db.collection("bullsignals_ai")
+                      .document("stocks")
+                      .collection("symbols")
+                      .document(symbol)
+                      .get()
+                )
+
+                if not stock_doc.exists:
+                    continue
+
+                stock = stock_doc.to_dict() or {}
+                quote = stock.get("quote") or {}
+
+                try:
+                    current_price = float(quote.get("price"))
+                except Exception:
+                    continue
+
+                checked_alerts += 1
+
+                # Above price alert
+                if above_price is not None:
+                    try:
+                        above = float(above_price)
+                    except Exception:
+                        above = None
+
+                    if above and current_price >= above:
+                        already_sent = (
+                            alert_data.get("lastAboveAlertDate") == today
+                        )
+
+                        if not already_sent:
+                            result = _send_expo_push(
+                                token=token,
+                                title="Alphaclara Price Alert",
+                                body=(
+                                    f"{symbol} reached ${current_price:.2f}, "
+                                    f"above your alert price of ${above:.2f}."
+                                ),
+                                data={
+                                    "type": "watchlist_price_alert",
+                                    "symbol": symbol,
+                                    "direction": "above",
+                                    "price": current_price,
+                                    "targetPrice": above,
+                                },
+                            )
+
+                            if result.get("success"):
+                                sent += 1
+                                alert_ref.set({
+                                    "lastAboveAlertDate": today,
+                                    "lastAboveAlertedAt": _now_iso(),
+                                    "lastAbovePrice": current_price,
+                                    "updatedAt": _now_iso(),
+                                }, merge=True)
+                            else:
+                                errors.append({
+                                    "user_id": user_id,
+                                    "symbol": symbol,
+                                    "stage": "price_alert_above_push",
+                                    "error": result,
+                                })
+
+                # Below price alert
+                if below_price is not None:
+                    try:
+                        below = float(below_price)
+                    except Exception:
+                        below = None
+
+                    if below and current_price <= below:
+                        already_sent = (
+                            alert_data.get("lastBelowAlertDate") == today
+                        )
+
+                        if not already_sent:
+                            result = _send_expo_push(
+                                token=token,
+                                title="Alphaclara Price Alert",
+                                body=(
+                                    f"{symbol} reached ${current_price:.2f}, "
+                                    f"below your alert price of ${below:.2f}."
+                                ),
+                                data={
+                                    "type": "watchlist_price_alert",
+                                    "symbol": symbol,
+                                    "direction": "below",
+                                    "price": current_price,
+                                    "targetPrice": below,
+                                },
+                            )
+
+                            if result.get("success"):
+                                sent += 1
+                                alert_ref.set({
+                                    "lastBelowAlertDate": today,
+                                    "lastBelowAlertedAt": _now_iso(),
+                                    "lastBelowPrice": current_price,
+                                    "updatedAt": _now_iso(),
+                                }, merge=True)
+                            else:
+                                errors.append({
+                                    "user_id": user_id,
+                                    "symbol": symbol,
+                                    "stage": "price_alert_below_push",
+                                    "error": result,
+                                })
+
+        except Exception as e:
+            errors.append({
+                "user_id": user_id,
+                "stage": "watchlist_price_alerts",
+                "error": str(e),
+            })
+
+    return {
+        "checked_users": checked_users,
+        "checked_alerts": checked_alerts,
+        "sent": sent,
+        "skipped_users_without_token": skipped,
+        "errors": errors[:10],
+        "finished_at": _now_iso(),
+    }
