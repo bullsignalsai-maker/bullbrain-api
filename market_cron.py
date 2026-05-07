@@ -484,7 +484,7 @@ def _build_sparkline(candles: List[Dict[str, Any]], points: int = 30) -> List[fl
     """
     closes: List[float] = []
 
-    for c in candles:
+    for c in candles[-252:]:
         if isinstance(c, dict) and c.get("close") is not None:
             try:
                 closes.append(float(c["close"]))
@@ -508,7 +508,7 @@ def _build_chart_summary(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
     Lightweight 1Y chart summary for StockDetail.
     FullChart still uses /candles/{symbol}.
     """
-    valid = [c for c in candles if isinstance(c, dict)]
+    valid = [c for c in candles if isinstance(c, dict)][-252:]
 
     closes = []
     highs = []
