@@ -208,33 +208,77 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
 
 def get_canonical_quote(symbol: str, fallback_price: float | None = None) -> Dict[str, Any]:
     """
-    Always return a FULL normalized quote.
-    Never degrades an existing good quote.
+    Return the best available normalized quote.
+
+    Safe behavior:
+    - Fresh cached quote -> use it
+    - Stale/missing quote -> try live Finnhub
+    - Live success -> save to quote repo and return it
+    - Live fail -> return stale/fallback safely, marked needs_refresh
     """
+    symbol = symbol.upper().strip()
     cached = get_quote_safe(symbol)
 
-    if isinstance(cached, dict) and cached.get("price") is not None:
+    # ✅ Use cached quote only when fresh
+    if (
+        isinstance(cached, dict)
+        and cached.get("price") is not None
+        and is_quote_fresh(cached)
+    ):
         return dict(cached)
 
-    # absolute last resort fallback
+    # ✅ Cached is stale/missing, so try live quote
     live = fetch_equity_quote(symbol) or {}
+
+    live_has_value = (
+        isinstance(live.get("price"), (int, float))
+        or isinstance(live.get("changePct"), (int, float))
+    )
+
+    if live_has_value:
+        live_payload = {
+            "symbol": symbol,
+            "price": live.get("price"),
+            "change": live.get("change"),
+            "changePct": live.get("changePct"),
+            "open": live.get("open"),
+            "high": live.get("high"),
+            "low": live.get("low"),
+            "prevClose": live.get("prevClose"),
+            "timestamp": live.get("timestamp"),
+            "source": live.get("source", "finnhub"),
+            "needs_refresh": False,
+            "schema_version": "v2",
+        }
+
+        # ✅ update central quote repo also
+        save_quote(symbol, live_payload)
+
+        return {
+            **live_payload,
+            "updated_at": utc_now_iso(),
+        }
+
+    # ⚠️ Live failed: keep stale values if available, but clearly mark stale
+    if isinstance(cached, dict):
+        return {
+            **cached,
+            "symbol": symbol,
+            "needs_refresh": True,
+            "source": cached.get("source", "stale_fallback"),
+            "schema_version": "v2",
+        }
 
     return {
         "symbol": symbol,
-        "price": live.get("price") or fallback_price,
-        "change": live.get("change"),
-        "changePct": live.get("changePct"),
-        "open": live.get("open"),
-        "high": live.get("high"),
-        "low": live.get("low"),
-        "prevClose": live.get("prevClose"),
-        "timestamp": live.get("timestamp"),
-        "source": live.get("source", "fallback"),
+        "price": fallback_price,
+        "change": None,
+        "changePct": None,
+        "source": "fallback",
         "needs_refresh": True,
         "schema_version": "v2",
         "updated_at": utc_now_iso(),
     }
-
 def _get_best_quote(symbol: str) -> Dict[str, Any]:
     """
     Prefer cached quote if fresh.

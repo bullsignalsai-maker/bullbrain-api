@@ -808,9 +808,22 @@ def main() -> None:
                 if s.exists:
                     d = s.to_dict() or {}
                     # expect: { "symbols": ["OPEN","NBIS",...], "updated_at": ... }
-                    syms = d.get("symbols", [])
-                    if isinstance(syms, list):
-                        active = {str(x).upper() for x in syms if x}
+                    syms = d.get("symbols", {})
+
+                    if isinstance(syms, dict):
+                        active = {
+                            str(sym).upper().strip()
+                            for sym in syms.keys()
+                            if sym
+                        }
+                    elif isinstance(syms, list):
+                        active = {
+                            str(sym).upper().strip()
+                            for sym in syms
+                            if sym
+                        }
+                    else:
+                        active = set()
             except Exception as e:
                 log(f"⚠️ Failed to read active_symbols: {e}")
                 active = set()
