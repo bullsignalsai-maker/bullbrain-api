@@ -5062,10 +5062,11 @@ def stock_detail(symbol: str, source: str | None = None):
         )
 
         existing_prices = stock.get("sparkline")
+        chart_meta = stock.get("chart") or {}
 
         # Priority 1: Firestore sparkline array
         if isinstance(existing_prices, list) and len(existing_prices) >= 2:
-            sparkline = build_sparkline_from_prices(existing_prices)
+            sparkline = build_sparkline_from_prices(existing_prices, meta=chart_meta)
 
         # Priority 2: candles if available later
         if not sparkline:
@@ -5079,7 +5080,7 @@ def stock_detail(symbol: str, source: str | None = None):
                 candles = []
 
             if isinstance(candles, list) and len(candles) >= 2:
-                sparkline = build_sparkline(candles)
+                sparkline = build_sparkline(candles, meta=chart_meta)
 
     except Exception as e:
         print("⚠️ stockdetail sparkline build failed:", str(e))

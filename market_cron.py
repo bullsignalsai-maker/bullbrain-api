@@ -479,18 +479,74 @@ def _build_candle_summary(candles: List[Dict[str, Any]], cap: int = 120) -> Dict
 
 def _build_sparkline(candles: List[Dict[str, Any]], points: int = 30) -> List[float]:
     """
-    Small sparkline array for UI (last N closes).
+    1Y sparkline array for UI.
+    Uses full available candle close history and downsamples to fixed points.
     """
     closes: List[float] = []
-    for c in candles[-max(points * 2, points):]:
+
+    for c in candles:
         if isinstance(c, dict) and c.get("close") is not None:
             try:
                 closes.append(float(c["close"]))
             except Exception:
                 pass
-    return closes[-points:]
 
+    if len(closes) <= points:
+        return closes
 
+    sampled: List[float] = []
+    last_idx = len(closes) - 1
+
+    for i in range(points):
+        idx = round(i * last_idx / (points - 1))
+        sampled.append(closes[idx])
+
+    return sampled
+
+def _build_chart_summary(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Lightweight 1Y chart summary for StockDetail.
+    FullChart still uses /candles/{symbol}.
+    """
+    valid = [c for c in candles if isinstance(c, dict)]
+
+    closes = []
+    highs = []
+    lows = []
+
+    for c in valid:
+        try:
+            if c.get("close") is not None:
+                closes.append(float(c["close"]))
+            if c.get("high") is not None:
+                highs.append(float(c["high"]))
+            if c.get("low") is not None:
+                lows.append(float(c["low"]))
+        except Exception:
+            pass
+
+    first_close = closes[0] if closes else None
+    last_close = closes[-1] if closes else None
+
+    return_pct = None
+    if first_close not in (None, 0) and last_close is not None:
+        return_pct = ((last_close - first_close) / first_close) * 100
+
+    return {
+        "range": "1Y",
+        "basis": "close",
+        "source": "candle_store",
+        "points": 30,
+        "closeLow": round(min(closes), 2) if closes else None,
+        "closeHigh": round(max(closes), 2) if closes else None,
+        "intradayLow": round(min(lows), 2) if lows else None,
+        "intradayHigh": round(max(highs), 2) if highs else None,
+        "firstClose": round(first_close, 2) if first_close is not None else None,
+        "lastClose": round(last_close, 2) if last_close is not None else None,
+        "returnPct": round(return_pct, 2) if return_pct is not None else None,
+        "candleCount": len(valid),
+        "updated_at": utc_now_iso(),
+    }
 # =========================================================
 # PER-SYMBOL COMPUTE
 # =========================================================
@@ -632,6 +688,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     # UI-safe persistence fields
     candle_summary = _build_candle_summary(candles_list, cap=120)
     sparkline = _build_sparkline(candles_list, points=30)
+    chart_summary = _build_chart_summary(candles_list)
 
     # ---------------------------------------------------------
     # 3) Features (MUST use candles_arrays)
@@ -748,6 +805,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "patternHistory": core.get("patternHistory"),
 
         "sparkline": sparkline,
+        "chart": chart_summary,
 
         "indicator_states": indicator_state_bundle["states"],
 

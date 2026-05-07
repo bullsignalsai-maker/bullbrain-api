@@ -65,7 +65,10 @@ def _get_confidence(stock: Dict[str, Any]):
         return float(val)
 
     return None
-def build_sparkline_from_prices(prices: List[float]) -> Dict[str, Any]:
+def build_sparkline_from_prices(
+    prices: List[float],
+    meta: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     prices = [p for p in prices if isinstance(p, (int, float))]
 
     if len(prices) < 2:
@@ -82,15 +85,35 @@ def build_sparkline_from_prices(prices: List[float]) -> Dict[str, Any]:
         y = round((max_p - price) * 30 / span, 1)
         points.append(f"{x},{y}")
 
-    return {
-        "path": "M " + " L ".join(points),
-        "min": round(min_p, 2),
-        "max": round(max_p, 2),
-        "direction": "up" if prices[-1] >= prices[0] else "down",
+    out = {
+    "path": "M " + " L ".join(points),
+    "min": round(min_p, 2),
+    "max": round(max_p, 2),
+    "direction": "up" if prices[-1] >= prices[0] else "down",
     }
 
+    if isinstance(meta, dict):
+        out["range"] = meta.get("range", "1Y")
+        out["basis"] = meta.get("basis", "close")
+        out["source"] = meta.get("source", "candle_store")
+        out["rangeStats"] = {
+            "closeLow": meta.get("closeLow"),
+            "closeHigh": meta.get("closeHigh"),
+            "intradayLow": meta.get("intradayLow"),
+            "intradayHigh": meta.get("intradayHigh"),
+            "firstClose": meta.get("firstClose"),
+            "lastClose": meta.get("lastClose"),
+            "returnPct": meta.get("returnPct"),
+            "candleCount": meta.get("candleCount"),
+        }
 
-def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return out
+
+
+def build_sparkline(
+    candles: List[Dict[str, Any]],
+    meta: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     if not isinstance(candles, list):
         return {}
 
@@ -100,7 +123,7 @@ def build_sparkline(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
         if isinstance(c, dict) and isinstance(c.get("close"), (int, float)):
             closes.append(c["close"])
 
-    return build_sparkline_from_prices(closes)
+    return build_sparkline_from_prices(closes, meta=meta)
 
 # ---------------------------------------------------------
 # 1️⃣ SIGNAL BLOCK (AUTHORITATIVE)
