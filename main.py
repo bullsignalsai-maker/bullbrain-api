@@ -4302,8 +4302,11 @@ def homescreen_mag7():
                 "prob_down": raw.get("prob_down"),
             },
 
-            "insight": build_home_mag7_insight(d),
-
+            "insight": (
+                (d.get("marketAwareness") or {}).get("summary")
+                or build_home_mag7_insight(d)
+            ),
+            "marketAwareness": d.get("marketAwareness") or {},
 
             "sparkline": d.get("sparkline", []),
 
@@ -4704,7 +4707,7 @@ def get_watchlist(user_id: str):
     snapshot = get_watchlist_snapshot(user_id)
 
     # ✅ REQUIRED: invalidate old logic snapshots
-    SNAPSHOT_VERSION = "v4"
+    SNAPSHOT_VERSION = "v5"
 
     if (
         snapshot

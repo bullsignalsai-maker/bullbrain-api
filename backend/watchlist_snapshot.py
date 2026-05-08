@@ -92,6 +92,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         stock_quote = stock.get("quote") or {}
         price = stock_quote.get("price")
         change_pct = stock_quote.get("changePct")
+        market_awareness = stock.get("marketAwareness") or {}
 
         # -------------------------------------------------
         # PRICE CHANGE (derived, safe)
@@ -108,7 +109,11 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # WATCHLIST SUMMARY (FIXED PRIORITY)
         # -------------------------------------------------
 
-        watchlist_summary = resolve_watchlist_summary(stock)
+        watchlist_summary = (
+            market_awareness.get("summary")
+            or market_awareness.get("oneLiner")
+            or resolve_watchlist_summary(stock)
+        )
 
         # -------------------------------------------------
         # OPTIONAL PATTERN OVERRIDE (ONLY IF MEANINGFUL)
@@ -159,8 +164,12 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "winRate": days5.get("winRate"),
             },
 
+            # ── MARKET AWARENESS ──
+            "marketAwareness": market_awareness,
+
             # ── WATCHLIST SUMMARY ──
             "watchlistSummary": watchlist_summary,
+            "insight": watchlist_summary,
 
             "updated_at": stock.get("computed_at"),
         })
@@ -174,7 +183,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v4",  # bumped due to summary logic improvement
+        "version": "v5",  # bumped due to summary logic improvement
     }
 
     db.collection(COL_SNAPSHOTS) \

@@ -62,7 +62,7 @@ from backend.quote_repo import get_quote_safe, is_quote_fresh, save_quote
 # ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
 # If they already exist elsewhere, keep these imports here (no breaking).
 from backend.technicals import build_technical_snapshot
-
+from backend.market_awareness import build_market_awareness
 try:
     from zoneinfo import ZoneInfo  # py3.9+
 except Exception:
@@ -1096,34 +1096,41 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} build_technical_snapshot failed", e)
         technical = None
 
-
+    # ---------------------------------------------------------
+    # 7) Market Awareness / Why It's Moving
+    # ---------------------------------------------------------
+    try:
+        market_awareness = build_market_awareness(
+            symbol=symbol,
+            company_name=COMPANY_NAMES.get(symbol, symbol),
+            quote=quote,
+            technical=technical,
+            pattern=core.get("pattern"),
+            bullbrain=core.get("bullbrain"),
+            decision=core.get("decision"),
+        )
+    except Exception as e:
+        log_exc(f"{symbol} build_market_awareness failed", e)
+        market_awareness = None
     # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)
     # ---------------------------------------------------------
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
-
         "quote": quote,
-
         "features_meta": feat_dict,
         "technical": technical,
         "bullbrain": core["bullbrain"],
-
         "decision": core["decision"],
-
         "pattern": core.get("pattern"),
         "patternBias": core.get("patternBias"),
         "patternHistory": core.get("patternHistory"),
-
         "sparkline": sparkline,
         "chart": chart_summary,
-
         "indicator_states": indicator_state_bundle["states"],
-
         "narratives": narratives,   
-
-
+        "marketAwareness": market_awareness,
         "computed_at": utc_now_iso(),
         "schema_version": "v2",
     }
