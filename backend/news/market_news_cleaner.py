@@ -140,6 +140,22 @@ def clean_summary(summary: str, title: str) -> str:
         return title
     return s[:240]
 
+def extract_ticker(title: str) -> str | None:
+    m = re.search(r"\(([A-Z]{1,5})\)", title)
+    if not m:
+        return None
+
+    t = m.group(1)
+
+    if (
+        t.isalpha()
+        and 2 <= len(t) <= 5
+        and t not in NOISY_TICKERS
+    ):
+        return t
+
+    return None
+
 def clean_market_news(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     cleaned = []
