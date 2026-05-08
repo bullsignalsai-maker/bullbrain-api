@@ -4,16 +4,29 @@ import datetime
 from typing import List, Dict, Any
 
 FEEDS = [
+    # Broad market / top stories
     "https://seekingalpha.com/api/sa/combined/global_news.rss",
     "https://feeds.marketwatch.com/marketwatch/topstories/",
     "https://finance.yahoo.com/rss/topstories",
-    "https://finance.yahoo.com/topic/earnings/rss",
-    "https://finance.yahoo.com/rss/tech",
     "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+
+    # Earnings / company-specific
+    "https://finance.yahoo.com/topic/earnings/rss",
+    "https://www.zacks.com/rss/news.xml",
+
+    # Sector-specific
+    "https://finance.yahoo.com/rss/tech",
+    "https://finance.yahoo.com/rss/pharma",
+
+    # Investing.com market news
+    "https://www.investing.com/rss/news.rss",
+
+    # CNBC business / markets
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "https://www.cnbc.com/id/10000664/device/rss/rss.html",
 ]
 
-
-def fetch_market_news_raw(limit_per_feed: int = 25) -> List[Dict[str, Any]]:
+def fetch_market_news_raw(limit_per_feed: int = 50) -> List[Dict[str, Any]]:
     """
     Fetch raw market-wide news.
     NO filtering, NO cleaning, NO Firestore.

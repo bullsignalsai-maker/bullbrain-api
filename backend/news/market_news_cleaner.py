@@ -17,7 +17,7 @@ BLOCK_KEYWORDS = {
     "student loan", "credit card", "credit score", "budget", "debt",
 
     # Health / lifestyle / non-market
-    "health", "dementia", "cancer", "illness", "virus", "hantavirus",
+    "dementia", "cancer", "illness", "virus", "hantavirus",
     "treatment", "treatments", "outbreak", "cruise", "hospital",
     "weight loss", "diet", "doctor", "medicine",
 
@@ -32,14 +32,19 @@ BLOCK_PHRASES = {
     "should you", "what you need", "here's why", "heres why",
     "is it time", "how to", "am i", "can i", "do i", "should i",
     "what to know", "things to know", "need to know",
-    "my ", "i'm ", "i am ", "we ", "you ",
+    "my ", "i'm ", "i am ", "we ", "you ","analyst report:",
 }
 
 MARKET_KEYWORDS = {
     # Market/index/macro
     "stocks", "stock market", "shares", "wall street", "nasdaq",
     "s&p", "dow", "futures", "yields", "treasury", "fed",
-    "inflation", "jobs report", "cpi", "ppi", "gdp",
+    "inflation", "jobs report", "cpi", "ppi", "gdp","reports", "reported", "results", "estimates", "estimate",
+    "target", "raises", "lowers", "initiates", "maintains",
+    "overweight", "underweight", "neutral rating",
+    "buy rating", "sell rating", "hold rating",
+    "premarket", "after hours", "trading", "options",
+    "etf", "bitcoin", "crypto", "oil", "energy",
 
     # Company financials
     "earnings", "revenue", "profit", "loss", "eps",
@@ -75,6 +80,9 @@ SOURCE_MAP = {
     "finance.yahoo.com": "Yahoo Finance",
     "investing.com": "Investing.com",
     "zacks.com": "Zacks",
+    "seekingalpha.com": "Seeking Alpha",
+    "barrons.com": "Barron's",
+    "wsj.com": "WSJ",
 }
 
 # ---------------------------------------------------------
