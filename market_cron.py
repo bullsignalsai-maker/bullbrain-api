@@ -81,10 +81,13 @@ COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
 DOC_HOMESCREEN = "homescreen_snapshot"
-DAILY_MOVER_GAINERS_LIMIT = 20
-DAILY_MOVER_LOSERS_LIMIT = 20
 DAILY_MOVER_REFRESH_SECONDS = 60 * 60  # refresh discovery max once per hour
 SP500_DISCOVERY_LIMIT = 540
+DAILY_MOVER_GAINERS_LIMIT = 25
+DAILY_MOVER_LOSERS_LIMIT = 25
+
+DISCOVERY_FULL_SCAN_MAX_AGE_SECONDS = 60
+DISCOVERY_FETCH_DELAY_SECONDS = 0.15
 
 # Logging / behavior toggles (safe defaults)
 LOG_EVERY_N = int((__import__("os").getenv("CRON_LOG_EVERY_N") or "1").strip() or "1")
@@ -404,32 +407,57 @@ def load_daily_mover_symbols(limit: int = 40) -> List[str]:
 
     return out[:limit]
 
-
-def should_refresh_daily_movers() -> bool:
+def get_discovery_phase() -> Optional[str]:
     """
-    Refresh S&P/lightweight daily movers only during market hours.
-    Avoids scanning the full list every 15 minutes.
+    Returns the full-scan phase name if current ET time is inside a scan window.
     """
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_et = datetime.datetime.now(ET)
+    hhmm = now_et.hour * 100 + now_et.minute
 
-    if not is_market_open(now_utc):
-        return False
+    # 9:20–9:29 warm cache before open
+    if 915 <= hhmm <= 929:
+        return "premarket_warm"
+
+    # 9:32–9:44 true opening discovery
+    if 932 <= hhmm <= 944:
+        return "morning_discovery"
+
+    # 12:00–12:14 midday correction
+    if 1200 <= hhmm <= 1214:
+        return "midday_correction"
+
+    # 3:30–3:44 closing correction
+    if 1530 <= hhmm <= 1544:
+        return "closing_correction"
+
+    return None
+
+
+def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
+    """
+    Full 506-symbol discovery runs only once per defined phase.
+    """
+    phase = get_discovery_phase()
+
+    if not phase:
+        return False, None
 
     db = get_db()
     doc_id = _daily_movers_doc_id()
     snap = db.collection(COL_ROOT).document(doc_id).get()
 
     if not snap.exists:
-        return True
+        return True, phase
 
     data = snap.to_dict() or {}
-    age = _seconds_since_iso(data.get("updated_at"))
+    discovery = data.get("discovery", {}) if isinstance(data.get("discovery"), dict) else {}
 
-    if age is None:
-        return True
+    done_key = f"{phase}_done"
 
-    return age >= DAILY_MOVER_REFRESH_SECONDS
+    if discovery.get(done_key) is True:
+        return False, phase
 
+    return True, phase
 
 def refresh_daily_movers_from_sp500() -> List[str]:
     """
@@ -439,11 +467,17 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     - save /bullsignals_ai/daily_movers_YYYY-MM-DD
     - save quote repo entries so quote_worker has fresh baseline
     """
-    if not should_refresh_daily_movers():
-        existing = load_daily_mover_symbols(limit=DAILY_MOVER_GAINERS_LIMIT + DAILY_MOVER_LOSERS_LIMIT)
+    should_run, phase = should_refresh_daily_movers()
+
+    if not should_run:
+        existing = load_daily_mover_symbols(
+            limit=DAILY_MOVER_GAINERS_LIMIT + DAILY_MOVER_LOSERS_LIMIT
+        )
         if existing:
-            log(f"📌 daily movers fresh — using existing list | count={len(existing)}")
+            log(f"📌 daily movers existing — using saved list | count={len(existing)}")
         return existing
+
+    log(f"🚦 daily movers full scan phase={phase}")
 
     db = get_db()
     today = _today_et()
@@ -462,7 +496,27 @@ def refresh_daily_movers_from_sp500() -> List[str]:
 
     for i, sym in enumerate(symbols, start=1):
         try:
-            q = fetch_equity_quote(sym) or {}
+            cached = get_quote_safe(sym)
+
+            use_cache = False
+            if isinstance(cached, dict):
+                cached_price = cached.get("price")
+                cached_chg = cached.get("changePct")
+                cached_age = _seconds_since_iso(cached.get("updated_at"))
+
+                if (
+                    isinstance(cached_price, (int, float))
+                    and isinstance(cached_chg, (int, float))
+                    and cached_age is not None
+                    and cached_age <= DISCOVERY_FULL_SCAN_MAX_AGE_SECONDS
+                ):
+                    use_cache = True
+
+            if use_cache:
+                q = cached or {}
+            else:
+                q = fetch_equity_quote(sym) or {}
+                time.sleep(DISCOVERY_FETCH_DELAY_SECONDS)
 
             price = q.get("price")
             chg = q.get("changePct")
@@ -500,9 +554,6 @@ def refresh_daily_movers_from_sp500() -> List[str]:
         except Exception as e:
             log(f"⚠️ daily mover quote failed for {sym}: {e}")
 
-        # small delay to protect Finnhub/API
-        time.sleep(0.08)
-
         if i % 100 == 0:
             log(f"… daily movers quote scan progress {i}/{len(symbols)} | valid={len(rows)}")
 
@@ -518,8 +569,29 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     )[:DAILY_MOVER_LOSERS_LIMIT]
 
     mover_symbols = list(dict.fromkeys(
-        [r["symbol"] for r in gainers] + [r["symbol"] for r in losers]
+    [r["symbol"] for r in gainers] + [r["symbol"] for r in losers]
     ))
+
+    # ---------------------------------------------------------
+    # Preserve previous discovery phase flags before merge write
+    # ---------------------------------------------------------
+    existing_discovery = {}
+
+    existing_snap = db.collection(COL_ROOT).document(doc_id).get()
+    if existing_snap.exists:
+        existing_data = existing_snap.to_dict() or {}
+        if isinstance(existing_data.get("discovery"), dict):
+            existing_discovery = existing_data["discovery"]
+
+    phase_key = f"{phase}_done" if phase else "unknown_done"
+
+    existing_discovery[phase_key] = True
+    existing_discovery["last_phase"] = phase
+    existing_discovery["last_full_scan_at"] = now_iso
+    existing_discovery["full_scan_max_age_seconds"] = DISCOVERY_FULL_SCAN_MAX_AGE_SECONDS
+    existing_discovery["fetch_delay_seconds"] = DISCOVERY_FETCH_DELAY_SECONDS
+    existing_discovery["last_universe_count"] = len(symbols)
+    existing_discovery["last_valid_quote_count"] = len(rows)
 
     db.collection(COL_ROOT).document(doc_id).set(
         {
@@ -535,6 +607,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
             "expires_at": (
                 datetime.datetime.now(ET).date() + datetime.timedelta(days=1)
             ).isoformat(),
+            "discovery": existing_discovery,
             "schema_version": "v1",
         },
         merge=True,
@@ -1146,7 +1219,7 @@ def persist_internal_market_movers():
     # ✅ Top losers = most negative %
     losers.sort(key=lambda x: x.get("changePct", 0))
 
-    # ✅ Save 20 gainers + 20 losers
+    # ✅ Save 25 gainers + 25 losers
     final_movers = gainers[:25] + losers[:25]
 
     db.collection(COL_ROOT).document("market_movers").set(
@@ -1290,12 +1363,47 @@ def ensure_market_overview_and_baseline_carousel():
 # =========================================================
 # ENTRYPOINT
 # =========================================================
+def get_cron_mode() -> str:
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    now_et = now_utc.astimezone(ET)
+    hhmm = now_et.hour * 100 + now_et.minute
+
+    if now_et.weekday() >= 5 or is_us_market_holiday(now_utc):
+        return "skip"
+
+    # 9:15 cron run: warm quote cache only
+    if 915 <= hhmm <= 929:
+        return "quote_discovery_only"
+
+    # 9:30 cron run: build true morning movers + intelligence
+    if 930 <= hhmm <= 944:
+        return "quote_discovery_plus_intelligence"
+
+    # Normal market hours
+    if 945 <= hhmm <= 1600:
+        return "market_open_intelligence"
+
+    # One final close intelligence pass
+    if 1601 <= hhmm <= 1630:
+        return "final_close_intelligence"
+
+    return "skip"
+
 def main():
     run_id = utc_now_iso()
     log("🧬 market_cron VERSION = 2026-01-CRON | NO HOTLIST | NO BEARWATCH | NO MAG7 SNAPSHOT")
     log(f"🚀 cron start | run_id={run_id}")
 
-    ensure_bullbrain_loaded()
+    mode = get_cron_mode()
+    log(f"🧭 cron mode={mode}")
+
+    if mode == "skip":
+        log("⏸️ outside market intelligence window — skipping heavy cron")
+        return
+
+    # For quote warm phase, do not load BullBrain yet
+    if mode != "quote_discovery_only":
+        ensure_bullbrain_loaded()
 
     # ---------------------------------------------------------
     # 0️⃣ HOMESCREEN BASELINE FIRST (SPY / QQQ / Commodities)
@@ -1305,6 +1413,12 @@ def main():
         log("🏠 homescreen baseline ensured (us_market + commodities)")
     except Exception as e:
         log_exc("homescreen baseline failed", e)
+
+    # 9:15 warm scan: quote-only, no BullBrain
+    if mode == "quote_discovery_only":
+        refresh_daily_movers_from_sp500()
+        log("✅ quote discovery warm scan completed — skipping BullBrain")
+        return
 
     scan_symbols, scan_meta = build_scan_universe()
 
