@@ -1136,21 +1136,42 @@ def persist_internal_market_movers():
                 "quote_updated_at": updated_at,
             })
 
-    movers.sort(key=lambda x: abs(x["changePct"]), reverse=True)
+    # ✅ Separate gainers and losers
+    gainers = [m for m in movers if m.get("direction") == "up"]
+    losers = [m for m in movers if m.get("direction") == "down"]
+
+    # ✅ Top gainers = highest positive %
+    gainers.sort(key=lambda x: x.get("changePct", 0), reverse=True)
+
+    # ✅ Top losers = most negative %
+    losers.sort(key=lambda x: x.get("changePct", 0))
+
+    # ✅ Save 20 gainers + 20 losers
+    final_movers = gainers[:25] + losers[:25]
 
     db.collection(COL_ROOT).document("market_movers").set(
         {
             "as_of": datetime.datetime.now(ET).date().isoformat(),
             "updated_at": utc_now_iso(),
             "source": "internal_quote_change",
-            "limit": 20,
-            "movers": movers[:20],
+            "limit": {
+                "gainers": 25,
+                "losers": 25,
+                "total": 50,
+            },
+            "gainers_count": len(gainers[:25]),
+            "losers_count": len(losers[:25]),
+            "movers": final_movers,
         },
         merge=True,
     )
 
-    log(f"🔥 market_movers updated | count={len(movers[:20])}")
-
+    log(
+        f"🔥 market_movers updated | "
+        f"gainers={len(gainers[:25])} "
+        f"losers={len(losers[:25])} "
+        f"total={len(final_movers)}"
+    )
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
