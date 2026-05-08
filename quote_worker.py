@@ -281,7 +281,35 @@ def collect_on_demand_quotes(db) -> Set[str]:
         log(f"⚠️ Failed to read pending quotes: {e}")
         return set()
 
+def collect_daily_movers(db) -> Set[str]:
+    """
+    Reads today's /bullsignals_ai/daily_movers_YYYY-MM-DD doc.
+    Keeps today's discovered mover quotes fresh.
+    """
+    try:
+        today = datetime.datetime.now(ET).date().isoformat()
+        doc_id = f"daily_movers_{today}"
 
+        snap = db.collection("bullsignals_ai").document(doc_id).get()
+        if not snap.exists:
+            return set()
+
+        d = snap.to_dict() or {}
+        symbols = d.get("symbols", [])
+
+        if not isinstance(symbols, list):
+            return set()
+
+        return {
+            str(sym).upper().strip()
+            for sym in symbols
+            if sym
+        }
+
+    except Exception as e:
+        log(f"⚠️ Failed to read daily movers: {e}")
+        return set()
+    
 # ---------------------------------------------------------
 # Update Firestore Quotes (NO BREAKING CHANGES)
 # ---------------------------------------------------------
@@ -799,6 +827,7 @@ def main() -> None:
             # -------------------------------------------------
             tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
+            daily_movers = collect_daily_movers(db)
 
             # OPTIONAL but strongly recommended if you have this collection:
             # - active_symbols keeps system scalable and guarantees new adds get picked up
@@ -828,16 +857,17 @@ def main() -> None:
                 log(f"⚠️ Failed to read active_symbols: {e}")
                 active = set()
 
-            all_tickers = set()
             all_tickers |= tickers
             all_tickers |= on_demand
             all_tickers |= active
+            all_tickers |= daily_movers
 
             log(
                 f"Refreshing quotes | "
                 f"homescreen={len(tickers)} "
                 f"pending={len(on_demand)} "
                 f"active={len(active)} "
+                f"daily_movers={len(daily_movers)} "
                 f"total={len(all_tickers)} | "
                 f"next_sleep={sleep_seconds}s"
             )

@@ -42,7 +42,7 @@ import firebase_admin
 from firebase_admin import firestore
 
 import main as backend
-from symbols_clean import COMPANY_NAMES
+from symbols_clean import COMPANY_NAMES, REAL_TICKERS
 
 from backend.candle_store import get_candles
 from backend.explain.indicator_states import compute_indicator_states
@@ -57,7 +57,7 @@ from backend.push_alerts import (
 # ✅ Reuse your central quote provider (Finnhub)
 # (safe: if FINNHUB_KEY missing, it returns {})
 from quote_provider import fetch_equity_quote
-from backend.quote_repo import get_quote_safe, is_quote_fresh
+from backend.quote_repo import get_quote_safe, is_quote_fresh, save_quote
 
 # ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
 # If they already exist elsewhere, keep these imports here (no breaking).
@@ -81,6 +81,10 @@ COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
 DOC_HOMESCREEN = "homescreen_snapshot"
+DAILY_MOVER_GAINERS_LIMIT = 20
+DAILY_MOVER_LOSERS_LIMIT = 20
+DAILY_MOVER_REFRESH_SECONDS = 60 * 60  # refresh discovery max once per hour
+SP500_DISCOVERY_LIMIT = 540
 
 # Logging / behavior toggles (safe defaults)
 LOG_EVERY_N = int((__import__("os").getenv("CRON_LOG_EVERY_N") or "1").strip() or "1")
@@ -356,20 +360,211 @@ def load_persisted_market_movers(limit: int = 20) -> List[str]:
     movers = snap.to_dict().get("movers", [])
     return [m["symbol"] for m in movers[:limit] if "symbol" in m]
 
+def _today_et() -> str:
+    return datetime.datetime.now(ET).date().isoformat()
+
+
+def _daily_movers_doc_id(date_str: Optional[str] = None) -> str:
+    return f"daily_movers_{date_str or _today_et()}"
+
+
+def _seconds_since_iso(ts_iso: Optional[str]) -> Optional[int]:
+    try:
+        if not ts_iso:
+            return None
+        ts = datetime.datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+        return int((datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds())
+    except Exception:
+        return None
+
+
+def load_daily_mover_symbols(limit: int = 40) -> List[str]:
+    """
+    Reads today's lightweight-discovered movers.
+    Used by market_cron full intelligence universe.
+    """
+    db = get_db()
+    doc_id = _daily_movers_doc_id()
+
+    snap = db.collection(COL_ROOT).document(doc_id).get()
+    if not snap.exists:
+        return []
+
+    data = snap.to_dict() or {}
+    symbols = data.get("symbols", [])
+
+    if not isinstance(symbols, list):
+        return []
+
+    out = []
+    for sym in symbols:
+        s = str(sym).upper().strip()
+        if s and s not in out:
+            out.append(s)
+
+    return out[:limit]
+
+
+def should_refresh_daily_movers() -> bool:
+    """
+    Refresh S&P/lightweight daily movers only during market hours.
+    Avoids scanning the full list every 15 minutes.
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    if not is_market_open(now_utc):
+        return False
+
+    db = get_db()
+    doc_id = _daily_movers_doc_id()
+    snap = db.collection(COL_ROOT).document(doc_id).get()
+
+    if not snap.exists:
+        return True
+
+    data = snap.to_dict() or {}
+    age = _seconds_since_iso(data.get("updated_at"))
+
+    if age is None:
+        return True
+
+    return age >= DAILY_MOVER_REFRESH_SECONDS
+
+
+def refresh_daily_movers_from_sp500() -> List[str]:
+    """
+    Lightweight discovery:
+    - fetch quotes only for REAL_TICKERS
+    - rank top 20 gainers and top 20 losers
+    - save /bullsignals_ai/daily_movers_YYYY-MM-DD
+    - save quote repo entries so quote_worker has fresh baseline
+    """
+    if not should_refresh_daily_movers():
+        existing = load_daily_mover_symbols(limit=DAILY_MOVER_GAINERS_LIMIT + DAILY_MOVER_LOSERS_LIMIT)
+        if existing:
+            log(f"📌 daily movers fresh — using existing list | count={len(existing)}")
+        return existing
+
+    db = get_db()
+    today = _today_et()
+    doc_id = _daily_movers_doc_id(today)
+    now_iso = utc_now_iso()
+
+    symbols = []
+    for sym in REAL_TICKERS[:SP500_DISCOVERY_LIMIT]:
+        s = str(sym).upper().strip()
+        if s and s not in symbols:
+            symbols.append(s)
+
+    rows: List[Dict[str, Any]] = []
+
+    log(f"🔎 daily movers discovery start | universe={len(symbols)}")
+
+    for i, sym in enumerate(symbols, start=1):
+        try:
+            q = fetch_equity_quote(sym) or {}
+
+            price = q.get("price")
+            chg = q.get("changePct")
+
+            if not isinstance(price, (int, float)) or not isinstance(chg, (int, float)):
+                continue
+
+            payload = {
+                "symbol": sym,
+                "price": price,
+                "change": q.get("change"),
+                "changePct": chg,
+                "open": q.get("open"),
+                "high": q.get("high"),
+                "low": q.get("low"),
+                "prevClose": q.get("prevClose"),
+                "timestamp": q.get("timestamp"),
+                "source": q.get("source", "finnhub"),
+                "needs_refresh": False,
+                "schema_version": "v2",
+            }
+
+            save_quote(sym, payload)
+
+            rows.append({
+                "symbol": sym,
+                "company_name": COMPANY_NAMES.get(sym, sym),
+                "price": round(float(price), 2),
+                "change": q.get("change"),
+                "changePct": round(float(chg), 4),
+                "direction": "up" if chg >= 0 else "down",
+                "quote_updated_at": now_iso,
+            })
+
+        except Exception as e:
+            log(f"⚠️ daily mover quote failed for {sym}: {e}")
+
+        # small delay to protect Finnhub/API
+        time.sleep(0.08)
+
+        if i % 100 == 0:
+            log(f"… daily movers quote scan progress {i}/{len(symbols)} | valid={len(rows)}")
+
+    gainers = sorted(
+        [r for r in rows if isinstance(r.get("changePct"), (int, float)) and r["changePct"] >= 0],
+        key=lambda r: r["changePct"],
+        reverse=True,
+    )[:DAILY_MOVER_GAINERS_LIMIT]
+
+    losers = sorted(
+        [r for r in rows if isinstance(r.get("changePct"), (int, float)) and r["changePct"] < 0],
+        key=lambda r: r["changePct"],
+    )[:DAILY_MOVER_LOSERS_LIMIT]
+
+    mover_symbols = list(dict.fromkeys(
+        [r["symbol"] for r in gainers] + [r["symbol"] for r in losers]
+    ))
+
+    db.collection(COL_ROOT).document(doc_id).set(
+        {
+            "date": today,
+            "source": "sp500_light_quote_scan",
+            "universe": "REAL_TICKERS",
+            "universe_count": len(symbols),
+            "valid_quote_count": len(rows),
+            "gainers": gainers,
+            "losers": losers,
+            "symbols": mover_symbols,
+            "updated_at": now_iso,
+            "expires_at": (
+                datetime.datetime.now(ET).date() + datetime.timedelta(days=1)
+            ).isoformat(),
+            "schema_version": "v1",
+        },
+        merge=True,
+    )
+
+    log(
+        f"✅ daily movers saved | doc={doc_id} "
+        f"gainers={len(gainers)} losers={len(losers)} symbols={len(mover_symbols)}"
+    )
+
+    return mover_symbols
 
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
+    # Existing internal movers from previous stock docs
     phase0 = load_persisted_market_movers(limit=20)
+
+    # New daily movers from lightweight S&P/REAL_TICKERS discovery
+    daily_movers = refresh_daily_movers_from_sp500()
 
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
 
     universe = list(
         dict.fromkeys(
-            [*phase0, *MAG7, *active]
+            [*daily_movers, *phase0, *MAG7, *active]
         )
     )
 
     meta = {
+        "daily_movers": len(daily_movers),
         "market_movers": len(phase0),
         "mag7": len(MAG7),
         "active_ranked": len(active),
@@ -913,11 +1108,32 @@ def persist_internal_market_movers():
         quote = data.get("quote", {})
         chg = quote.get("changePct")
 
+        updated_at = quote.get("updated_at")
+
+        if not updated_at:
+            continue
+
+        try:
+            ts = datetime.datetime.fromisoformat(
+                updated_at.replace("Z", "+00:00")
+            )
+            age_seconds = (
+                datetime.datetime.now(datetime.timezone.utc) - ts
+            ).total_seconds()
+        except Exception:
+            continue
+
+        # Skip very stale quotes from movers
+        # 20 minutes is safe because cron runs every 15 minutes.
+        if age_seconds > 20 * 60:
+            continue
+
         if isinstance(chg, (int, float)):
             movers.append({
                 "symbol": doc.id,
                 "changePct": round(chg, 2),
-                "direction": "up" if chg >= 0 else "down"
+                "direction": "up" if chg >= 0 else "down",
+                "quote_updated_at": updated_at,
             })
 
     movers.sort(key=lambda x: abs(x["changePct"]), reverse=True)
@@ -1074,6 +1290,7 @@ def main():
     log(
     f"📦 scan universe built | "
     f"total={len(scan_symbols)} | "
+    f"daily_movers={scan_meta['daily_movers']} "
     f"market_movers={scan_meta['market_movers']} "
     f"mag7={scan_meta['mag7']} "
     f"active={scan_meta['active_ranked']}"
