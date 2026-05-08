@@ -1371,6 +1371,9 @@ def ensure_market_overview_and_baseline_carousel():
 # ENTRYPOINT
 # =========================================================
 def get_cron_mode() -> str:
+    if os.getenv("FORCE_MARKET_CRON") == "1":
+        return "market_open_intelligence"
+
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     now_et = now_utc.astimezone(ET)
     hhmm = now_et.hour * 100 + now_et.minute
@@ -1378,19 +1381,15 @@ def get_cron_mode() -> str:
     if now_et.weekday() >= 5 or is_us_market_holiday(now_utc):
         return "skip"
 
-    # 9:15 cron run: warm quote cache only
     if 915 <= hhmm <= 929:
         return "quote_discovery_only"
 
-    # 9:30 cron run: build true morning movers + intelligence
     if 930 <= hhmm <= 944:
         return "quote_discovery_plus_intelligence"
 
-    # Normal market hours
     if 945 <= hhmm <= 1600:
         return "market_open_intelligence"
 
-    # One final close intelligence pass
     if 1601 <= hhmm <= 1630:
         return "final_close_intelligence"
 
