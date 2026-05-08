@@ -9,39 +9,52 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------
 
 BLOCK_KEYWORDS = {
-    "mom", "dad", "family", "dementia", "health",
-    "mortgage", "house", "retirement", "retiree",
-    "lifestyle", "cancer", "illness",
-    "benefits", "social security", "ssi",
-    "medicaid", "medicare",
-    "student loan", "credit card", "credit score",
-    "budget", "debt",
+    # Personal / life / consumer advice
+    "mom", "dad", "family", "marriage", "divorce", "dating",
+    "retirement", "retiree", "retirees", "social security",
+    "medicare", "medicaid", "ssi", "benefits",
+    "mortgage", "house", "homebuyer", "rent", "landlord",
+    "student loan", "credit card", "credit score", "budget", "debt",
+
+    # Health / lifestyle / non-market
+    "health", "dementia", "cancer", "illness", "virus", "hantavirus",
+    "treatment", "treatments", "outbreak", "cruise", "hospital",
+    "weight loss", "diet", "doctor", "medicine",
+
+    # Politics / general policy unless clearly market-moving
+    "election", "senate", "congress", "lawmakers",
+
+    # Generic lifestyle
+    "vacation", "travel tips", "recipe", "school", "college",
 }
 
 BLOCK_PHRASES = {
-    "my ", " i ", " we ", " you ",
-    "should you", "what you need",
-    "here's why", "is it time",
-    "how to", "am i", "can i",
-    "do i", "should i",
+    "should you", "what you need", "here's why", "heres why",
+    "is it time", "how to", "am i", "can i", "do i", "should i",
+    "what to know", "things to know", "need to know",
+    "my ", "i'm ", "i am ", "we ", "you ",
 }
-
-# ---------------------------------------------------------
-# ✅ STRONG MARKET LANGUAGE (REQUIRED)
-# ---------------------------------------------------------
 
 MARKET_KEYWORDS = {
-    "earnings", "revenue", "profit", "loss",
-    "beats", "misses", "guidance", "forecast",
-    "shares", "stock", "stocks",
-    "rises", "falls", "jumps", "drops",
-    "downgrade", "upgrade",
-    "ipo", "filing", "sec",
-    "merger", "acquisition",
-    "buyback", "dividend",
-    "nasdaq", "s&p", "dow",
-}
+    # Market/index/macro
+    "stocks", "stock market", "shares", "wall street", "nasdaq",
+    "s&p", "dow", "futures", "yields", "treasury", "fed",
+    "inflation", "jobs report", "cpi", "ppi", "gdp",
 
+    # Company financials
+    "earnings", "revenue", "profit", "loss", "eps",
+    "beats", "misses", "guidance", "forecast", "outlook",
+    "quarter", "q1", "q2", "q3", "q4",
+
+    # Stock moves / analyst
+    "rises", "falls", "jumps", "drops", "surges", "slides",
+    "rallies", "plunges", "upgrade", "downgrade", "price target",
+    "analyst", "bullish", "bearish",
+
+    # Corporate actions
+    "ipo", "filing", "sec", "merger", "acquisition", "deal",
+    "buyback", "dividend", "split",
+}
 # ---------------------------------------------------------
 # ❌ JUNK / ENGLISH-WORD TICKERS
 # ---------------------------------------------------------
@@ -69,9 +82,13 @@ SOURCE_MAP = {
 # ---------------------------------------------------------
 
 def is_strictly_market_news(title: str, summary: str, ticker: str | None) -> bool:
-    text = f"{title} {summary}".lower()
+    text = f" {title} {summary} ".lower()
 
-    # ❌ Block personal / lifestyle / advice immediately
+    # ❌ Block question/advice/personal-title style
+    if has_blocked_personal_style(title):
+        return False
+
+    # ❌ Block personal / lifestyle / health / non-market content
     if any(k in text for k in BLOCK_KEYWORDS):
         return False
 
@@ -82,16 +99,18 @@ def is_strictly_market_news(title: str, summary: str, ticker: str | None) -> boo
     if ticker and ticker in NOISY_TICKERS:
         return False
 
-    # ✅ Allow if VALID ticker exists
-    if ticker:
+    # ✅ Strong market language required
+    has_market_language = any(k in text for k in MARKET_KEYWORDS)
+
+    # ✅ Ticker alone is not enough anymore.
+    # Require ticker + market language.
+    if ticker and has_market_language:
         return True
 
-    # ✅ Otherwise require STRONG market language
-    if any(k in text for k in MARKET_KEYWORDS):
+    if has_market_language:
         return True
 
     return False
-
 
 def normalize_source(link: str) -> str:
     try:
@@ -101,27 +120,25 @@ def normalize_source(link: str) -> str:
         return "News"
 
 
-def extract_ticker(title: str) -> str | None:
-    m = re.search(r"\(([A-Z]{1,5})\)", title)
-    if not m:
-        return None
+def has_blocked_personal_style(title: str) -> bool:
+    t = f" {title.lower().strip()} "
 
-    t = m.group(1)
-    if (
-        t.isalpha()
-        and 2 <= len(t) <= 5
-        and t not in NOISY_TICKERS
-    ):
-        return t
+    if "?" in title:
+        return True
 
-    return None
+    starts = (
+        "should ", "can ", "could ", "will ", "would ",
+        "is ", "are ", "how ", "why ", "what ",
+        "when ", "where ", "who "
+    )
 
+    return title.lower().strip().startswith(starts)
 
 def clean_summary(summary: str, title: str) -> str:
-    if not summary or summary.strip() in {"...", ""}:
+    s = re.sub("<[^<]+?>", "", summary or "").strip()
+    if not s or s in {"...", ""}:
         return title
-    return summary.strip()[:240]
-
+    return s[:240]
 
 def clean_market_news(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
