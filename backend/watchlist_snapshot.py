@@ -110,8 +110,9 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # -------------------------------------------------
 
         watchlist_summary = (
-            market_awareness.get("summary")
+            market_awareness.get("displayLine")
             or market_awareness.get("oneLiner")
+            or market_awareness.get("summary")
             or resolve_watchlist_summary(stock)
         )
 
@@ -183,7 +184,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v5",  # bumped due to summary logic improvement
+        "version": "v6",  # bumped due to summary logic improvement
     }
 
     db.collection(COL_SNAPSHOTS) \
