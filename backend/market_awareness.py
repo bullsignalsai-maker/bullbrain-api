@@ -117,7 +117,30 @@ def _pick_best_catalyst(
 
         if not headline:
             continue
+        # ❌ Do not use question/advice/comparison headlines as catalysts
+        bad_headline_phrases = (
+            "?",
+            "which ",
+            "what ",
+            "why ",
+            "how ",
+            "should ",
+            "could ",
+            "would ",
+            "better after",
+            "looks better",
+            "what it means",
+        )
 
+        headline_l = headline.lower().strip()
+
+        if any(p in headline_l for p in bad_headline_phrases):
+            continue    
+        # ❌ Avoid comparison articles, not direct catalysts
+        comparison_words = (" vs. ", " versus ", " compared with ", " compared to ")
+
+        if any(w in headline_l for w in comparison_words):
+            continue
         # 🔒 IMPORTANT:
         # Only use headline-primary company news as catalyst.
         # This blocks weak related mentions like:
