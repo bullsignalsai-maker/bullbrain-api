@@ -63,8 +63,43 @@ def _detect_catalyst_type(text: str) -> Optional[str]:
             return ctype
     return None
 
+def _company_tokens(company_name: str | None) -> List[str]:
+    raw = (company_name or "").lower()
+    for ch in [",", ".", "(", ")", "-", "&"]:
+        raw = raw.replace(ch, " ")
 
-def _pick_best_catalyst(news_items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    ignore = {
+        "inc", "corp", "corporation", "company", "class",
+        "holdings", "holding", "limited", "ltd", "plc",
+        "common", "stock", "group"
+    }
+
+    return [
+        t.strip()
+        for t in raw.split()
+        if len(t.strip()) > 3 and t.strip() not in ignore
+    ]
+
+
+def _headline_is_primary_for_symbol(
+    headline: str,
+    symbol: str,
+    company_name: str | None,
+) -> bool:
+    h = f" {headline.lower()} "
+    sym = (symbol or "").lower().strip()
+
+    if sym and f" {sym} " in h:
+        return True
+
+    tokens = _company_tokens(company_name)
+    return any(f" {tok} " in h for tok in tokens) 
+
+def _pick_best_catalyst(
+    news_items: List[Dict[str, Any]],
+    symbol: str,
+    company_name: str | None = None,
+) -> Dict[str, Any] | None:
     if not isinstance(news_items, list):
         return None
 
@@ -83,6 +118,15 @@ def _pick_best_catalyst(news_items: List[Dict[str, Any]]) -> Dict[str, Any] | No
         if not headline:
             continue
 
+        # 🔒 IMPORTANT:
+        # Only use headline-primary company news as catalyst.
+        # This blocks weak related mentions like:
+        # TSLA -> Toyota earnings
+        # NVDA -> Corning article
+        # MSFT -> ServiceNow article
+        if not _headline_is_primary_for_symbol(headline, symbol, company_name):
+            continue
+
         combined = f"{headline} {summary}"
         ctype = _detect_catalyst_type(combined)
 
@@ -91,18 +135,18 @@ def _pick_best_catalyst(news_items: List[Dict[str, Any]]) -> Dict[str, Any] | No
 
         score = 1
 
-        # prefer stronger catalyst types
         if ctype in {"price_target", "earnings", "deal", "ai"}:
             score += 3
         elif ctype in {"delivery", "product", "regulatory"}:
             score += 2
 
-        # prefer headline match over summary-only match
         if _detect_catalyst_type(headline):
             score += 2
 
-        # prefer known financial sources
-        if source in {"CNBC", "Reuters", "Bloomberg", "MarketWatch", "Yahoo", "Benzinga", "SeekingAlpha", "Zacks"}:
+        if source in {
+            "CNBC", "Reuters", "Bloomberg", "MarketWatch",
+            "Yahoo", "Benzinga", "SeekingAlpha", "Zacks"
+        }:
             score += 1
 
         if score > best_score:
@@ -117,7 +161,6 @@ def _pick_best_catalyst(news_items: List[Dict[str, Any]]) -> Dict[str, Any] | No
             }
 
     return best
-
 
 def _human_catalyst_phrase(catalyst: Dict[str, Any]) -> str:
     headline = catalyst.get("headline") or ""
@@ -195,7 +238,11 @@ def build_market_awareness(
 
     confidence = bullbrain.get("confidence")
 
-    catalyst = _pick_best_catalyst(news_items)
+    catalyst = _pick_best_catalyst(
+        news_items,
+        symbol,
+        company,
+    )
 
     drivers: List[str] = []
 
@@ -241,7 +288,7 @@ def build_market_awareness(
 
         summary = (
             f"{company} is showing a {tone.lower()} tone today. "
-            f"The move appears linked to {catalyst_phrase}. "
+            f"The likely news catalyst is {catalyst_phrase}. "
             f"BullBrain remains {signal}, so this separates today's market reaction "
             f"from the model's forward-looking rating."
         )
