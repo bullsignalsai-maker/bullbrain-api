@@ -58,7 +58,7 @@ from backend.push_alerts import (
 # (safe: if FINNHUB_KEY missing, it returns {})
 from quote_provider import fetch_equity_quote
 from backend.quote_repo import get_quote_safe, is_quote_fresh, save_quote
-
+from backend.news_repo import fetch_symbol_news
 # ✅ These are referenced in your compute_symbol() but were missing in your pasted code.
 # If they already exist elsewhere, keep these imports here (no breaking).
 from backend.technicals import build_technical_snapshot
@@ -1100,18 +1100,25 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     # 7) Market Awareness / Why It's Moving
     # ---------------------------------------------------------
     try:
-        market_awareness = build_market_awareness(
+        news_items = fetch_symbol_news(
             symbol=symbol,
             company_name=COMPANY_NAMES.get(symbol, symbol),
-            quote=quote,
-            technical=technical,
-            pattern=core.get("pattern"),
-            bullbrain=core.get("bullbrain"),
-            decision=core.get("decision"),
+            limit=5,
         )
     except Exception as e:
-        log_exc(f"{symbol} build_market_awareness failed", e)
-        market_awareness = None
+        log(f"⚠️ {symbol} catalyst news fetch failed: {e}")
+        news_items = []
+
+    market_awareness = build_market_awareness(
+        symbol=symbol,
+        company_name=COMPANY_NAMES.get(symbol, symbol),
+        quote=quote,
+        technical=technical,
+        pattern=core.get("pattern"),
+        bullbrain=core.get("bullbrain"),
+        decision=core.get("decision"),
+        news_items=news_items,
+    )
     # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)
     # ---------------------------------------------------------
