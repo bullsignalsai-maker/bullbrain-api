@@ -4825,7 +4825,8 @@ def get_market_movers():
             "updated_at": None,
         }
 
-    movers = movers_doc.to_dict().get("movers", [])
+    meta = movers_doc.to_dict() or {}
+    movers = meta.get("movers", [])
     out = []
 
     for m in movers:
@@ -4845,11 +4846,34 @@ def get_market_movers():
             continue
 
         s = stock_doc.to_dict() or {}
-        q = s.get("quote", {}) or {}
+
+        # ✅ live quote repo first
+        quote_doc = (
+            db.collection("bullsignals_ai")
+              .document("quotes")
+              .collection("symbols")
+              .document(sym)
+              .get()
+        )
+
+        live_q = quote_doc.to_dict() if quote_doc.exists else {}
+        stock_q = s.get("quote", {}) or {}
+
+        q = live_q if live_q else stock_q
+
+        change_pct = q.get("changePct")
+        direction = None
+
+        if isinstance(change_pct, (int, float)):
+            direction = "up" if change_pct >= 0 else "down"
+        else:
+            direction = m.get("direction")
+
         tech = s.get("technical", {}) or {}
         trend = tech.get("trend", {}) or {}
         pattern = s.get("pattern", {}) or {}
         insights = s.get("insights", {}) or {}
+        market_awareness = s.get("marketAwareness", {}) or {}
 
         out.append({
             "symbol": sym,
@@ -4859,13 +4883,16 @@ def get_market_movers():
                 "price": q.get("price"),
                 "change": q.get("change"),
                 "changePct": q.get("changePct"),
+                "updated_at": q.get("updated_at"),
+                "source": q.get("source"),
+                "needs_refresh": q.get("needs_refresh", False),
             },
 
-            # direction is computed earlier by cron (trusted)
-            "direction": m.get("direction"),  # "up" | "down"
+            # ✅ now live direction based on latest quote
+            "direction": direction,
 
             "trend": {
-                "label": trend.get("label")  # Bullish / Bearish / Sideways
+                "label": trend.get("label") or trend.get("summary"),
             },
 
             "pattern": {
@@ -4873,19 +4900,45 @@ def get_market_movers():
                 "bias": pattern.get("bias") or pattern.get("patternBias"),
             },
 
-            "oneLiner": insights.get("oneLiner"),
+            "oneLiner": (
+                insights.get("oneLiner")
+                or market_awareness.get("summary")
+                or market_awareness.get("oneLiner")
+            ),
         })
 
-    meta = movers_doc.to_dict() or {}
+    # ✅ Re-sort using latest quote values
+    gainers = [
+        x for x in out
+        if isinstance((x.get("quote") or {}).get("changePct"), (int, float))
+        and (x.get("quote") or {}).get("changePct") >= 0
+    ]
+
+    losers = [
+        x for x in out
+        if isinstance((x.get("quote") or {}).get("changePct"), (int, float))
+        and (x.get("quote") or {}).get("changePct") < 0
+    ]
+
+    gainers.sort(
+        key=lambda x: (x.get("quote") or {}).get("changePct", 0),
+        reverse=True,
+    )
+
+    losers.sort(
+        key=lambda x: (x.get("quote") or {}).get("changePct", 0),
+    )
+
+    final_out = gainers + losers
 
     return {
-        "count": len(out),
-        "movers": out,
+        "count": len(final_out),
+        "movers": final_out,
         "as_of": meta.get("as_of"),
         "updated_at": meta.get("updated_at"),
-        "version": "v2",
+        "quote_refreshed": True,
+        "version": "v3-live-quotes",
     }
-
 # -----------------------------
 # 5) Market News
 # -----------------------------

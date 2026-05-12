@@ -828,7 +828,7 @@ def main() -> None:
             tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
             daily_movers = collect_daily_movers(db)
-
+            all_tickers: Set[str] = set()
             # OPTIONAL but strongly recommended if you have this collection:
             # - active_symbols keeps system scalable and guarantees new adds get picked up
             active = set()
