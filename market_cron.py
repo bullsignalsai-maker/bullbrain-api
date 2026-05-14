@@ -637,20 +637,19 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
 
     universe = list(
         dict.fromkeys(
-            [*daily_movers, *phase0, *MAG7, *active]
+            [*daily_movers, *phase0, *CORE_UNIVERSE, *active]
         )
     )
 
     meta = {
         "daily_movers": len(daily_movers),
         "market_movers": len(phase0),
-        "mag7": len(MAG7),
+        "core_universe": len(CORE_UNIVERSE),
         "active_ranked": len(active),
         "universe": len(universe),
     }
 
     return universe[:TOTAL_SCAN_LIMIT], meta
-
 def build_homescreen_universe() -> List[str]:
     """
     Stable curated universe for HomeScreen AI-ranked cards.
@@ -1536,7 +1535,7 @@ def main():
     f"total={len(scan_symbols)} | "
     f"daily_movers={scan_meta['daily_movers']} "
     f"market_movers={scan_meta['market_movers']} "
-    f"mag7={scan_meta['mag7']} "
+    f"core={scan_meta['core_universe']} "
     f"active={scan_meta['active_ranked']}"
     )
 

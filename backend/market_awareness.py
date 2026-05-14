@@ -218,19 +218,18 @@ def _pattern_phrase(pattern_name: str | None) -> str:
 def _catalyst_short(catalyst: Dict[str, Any] | None) -> str:
     if not catalyst:
         return ""
-    headline = _clean_text(catalyst.get("headline") or "", 88)
+    headline = _clean_text(catalyst.get("headline") or "", 85)
     ctype = catalyst.get("type")
 
     phrases = {
-        "price_target": f"analyst conviction improved after {headline}",
-        "ai": f"AI-related momentum stayed in focus after {headline}",
-        "earnings": f"earnings expectations shifted after {headline}",
-        "deal": f"deal momentum improved after {headline}",
-        "delivery": f"delivery and demand signals moved sentiment after {headline}",
-        "product": f"product momentum drew attention after {headline}",
+        "price_target": f"following analyst upgrade on {headline}",
+        "ai": f"on continued AI momentum: {headline}",
+        "earnings": f"after earnings developments: {headline}",
+        "deal": f"on partnership/deal news: {headline}",
+        "delivery": f"on demand and delivery signals: {headline}",
+        "product": f"after product update: {headline}",
     }
-    return phrases.get(ctype, f"company-specific news shaped sentiment after {headline}")
-
+    return phrases.get(ctype, f"on fresh news: {headline}")
 
 def _build_smart_one_liner(
     symbol: str,
@@ -245,16 +244,16 @@ def _build_smart_one_liner(
 
     if catalyst_text:
         if change_pct is None or change_pct >= 0:
-            return _shorten(f"{symbol} is gaining traction as {catalyst_text}.")
+            return _shorten(f"{symbol} gaining traction as {catalyst_text}.")
         else:
-            return _shorten(f"{symbol} is pulling back despite {catalyst_text}.")
+            return _shorten(f"{symbol} pulling back as {catalyst_text}.")
 
     if change_pct is None:
         return _shorten(f"{symbol} trading with {signal.lower()} model bias.")
     elif change_pct >= 2.0 and _confidence_band(confidence) in ("very_high", "high"):
         return _shorten(f"{symbol} showing strong momentum, up {_fmt_pct(change_pct)}.")
     elif change_pct >= 0.8:
-        return _shorten(f"{symbol} is higher with improving price action.")
+        return _shorten(f"{symbol} trading higher with improving momentum.")
     elif change_pct <= -2.0:
         return _shorten(f"{symbol} is under pressure, down {_fmt_pct(change_pct)}.")
     elif pattern_text:
