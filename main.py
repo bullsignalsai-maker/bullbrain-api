@@ -3905,10 +3905,6 @@ def market_overview():
         return {}
 
 
-
-
-
-
 @app.get("/debug-bullbrain/{symbol}")
 def debug_bullbrain(symbol: str):
     try:
@@ -4413,6 +4409,35 @@ def homescreen_carousel():
         "carousel": carousel,
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
+    }
+
+@app.get("/homescreen-data")
+def homescreen_data():
+    cache = read_market_cache("homescreen_snapshot")
+
+    if not cache:
+        return {
+            "status": "empty",
+            "market_overview": {},
+            "core_universe": [],
+            "core_signals": [],
+            "core_universe_count": 0,
+            "core_signals_updated_at": None,
+            "updated_at": None,
+            "version": None,
+            "schema_version": None,
+        }
+
+    return {
+        "status": "ok",
+        "market_overview": cache.get("market_overview", {}),
+        "core_universe": cache.get("core_universe", []),
+        "core_signals": cache.get("core_signals", []),
+        "core_universe_count": cache.get("core_universe_count", 0),
+        "core_signals_updated_at": cache.get("core_signals_updated_at"),
+        "updated_at": cache.get("updated_at"),
+        "version": cache.get("version"),
+        "schema_version": cache.get("schema_version"),
     }
 # ---------------------------------------------------------
 # Stock Detail API — Canonical v1.0
