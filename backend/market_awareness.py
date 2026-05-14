@@ -63,6 +63,7 @@ def _detect_catalyst_type(text: str) -> Optional[str]:
             return ctype
     return None
 
+
 def _company_tokens(company_name: str | None) -> List[str]:
     raw = (company_name or "").lower()
     for ch in [",", ".", "(", ")", "-", "&"]:
@@ -95,6 +96,7 @@ def _headline_is_primary_for_symbol(
     tokens = _company_tokens(company_name)
     return any(f" {tok} " in h for tok in tokens) 
 
+
 def _pick_best_catalyst(
     news_items: List[Dict[str, Any]],
     symbol: str,
@@ -117,36 +119,20 @@ def _pick_best_catalyst(
 
         if not headline:
             continue
-        # ❌ Do not use question/advice/comparison headlines as catalysts
+
         bad_headline_phrases = (
-            "?",
-            "which ",
-            "what ",
-            "why ",
-            "how ",
-            "should ",
-            "could ",
-            "would ",
-            "better after",
-            "looks better",
-            "what it means",
+            "?", "which ", "what ", "why ", "how ", "should ", "could ", "would ",
+            "better after", "looks better", "what it means",
         )
 
         headline_l = headline.lower().strip()
-
         if any(p in headline_l for p in bad_headline_phrases):
             continue    
-        # ❌ Avoid comparison articles, not direct catalysts
-        comparison_words = (" vs. ", " versus ", " compared with ", " compared to ")
 
+        comparison_words = (" vs. ", " versus ", " compared with ", " compared to ")
         if any(w in headline_l for w in comparison_words):
             continue
-        # 🔒 IMPORTANT:
-        # Only use headline-primary company news as catalyst.
-        # This blocks weak related mentions like:
-        # TSLA -> Toyota earnings
-        # NVDA -> Corning article
-        # MSFT -> ServiceNow article
+
         if not _headline_is_primary_for_symbol(headline, symbol, company_name):
             continue
 
@@ -157,19 +143,14 @@ def _pick_best_catalyst(
             continue
 
         score = 1
-
         if ctype in {"price_target", "earnings", "deal", "ai"}:
             score += 3
         elif ctype in {"delivery", "product", "regulatory"}:
             score += 2
-
         if _detect_catalyst_type(headline):
             score += 2
 
-        if source in {
-            "CNBC", "Reuters", "Bloomberg", "MarketWatch",
-            "Yahoo", "Benzinga", "SeekingAlpha", "Zacks"
-        }:
+        if source in {"CNBC", "Reuters", "Bloomberg", "MarketWatch", "Yahoo", "Benzinga", "SeekingAlpha", "Zacks"}:
             score += 1
 
         if score > best_score:
@@ -185,28 +166,6 @@ def _pick_best_catalyst(
 
     return best
 
-def _human_catalyst_phrase(catalyst: Dict[str, Any]) -> str:
-    headline = catalyst.get("headline") or ""
-    ctype = catalyst.get("type")
-
-    if ctype == "price_target":
-        return f"after analyst news: {headline}"
-    if ctype == "ai":
-        return f"as AI-related headlines supported sentiment: {headline}"
-    if ctype == "earnings":
-        return f"after earnings-related news: {headline}"
-    if ctype == "deal":
-        return f"after deal or partnership news: {headline}"
-    if ctype == "delivery":
-        return f"after delivery, shipment, or sales-related news: {headline}"
-    if ctype == "regulatory":
-        return f"as regulatory or policy news influenced sentiment: {headline}"
-    if ctype == "product":
-        return f"after product or software-related news: {headline}"
-
-    return f"after company-specific news: {headline}"
-
-
 def _today_tone(change_pct: float | None) -> str:
     if change_pct is None:
         return "Mixed"
@@ -220,6 +179,111 @@ def _today_tone(change_pct: float | None) -> str:
         return "Slightly Bearish"
     return "Mixed"
 
+
+# ====================== NEW HELPERS ======================
+
+def _shorten(s: str, limit: int = 148) -> str:
+    s = _clean_text(s)
+    if len(s) <= limit:
+        return s
+    return s[:limit - 1].rstrip(" ,.;:-") + "…"
+
+
+def _confidence_band(confidence: Any) -> str:
+    n = _num(confidence)
+    if n is None:
+        return "medium"
+    if n >= 78:
+        return "very_high"
+    if n >= 65:
+        return "high"
+    if n >= 52:
+        return "medium"
+    return "low"
+
+
+def _pattern_phrase(pattern_name: str | None) -> str:
+    if not pattern_name:
+        return ""
+    p = str(pattern_name).replace("_", " ").title()
+    if any(x in p for x in ["Trend", "Acceleration", "Breakout"]):
+        return f"with {p.lower()} still supporting the setup"
+    if any(x in p for x in ["Hammer", "Reversal"]):
+        return f"as a {p.lower()} points to possible stabilization"
+    if "Compression" in p or "Inside" in p:
+        return f"as compression keeps the next move in focus"
+    return f"with the {p} pattern active"
+
+
+def _catalyst_short(catalyst: Dict[str, Any] | None) -> str:
+    if not catalyst:
+        return ""
+    headline = _clean_text(catalyst.get("headline") or "", 88)
+    ctype = catalyst.get("type")
+
+    phrases = {
+        "price_target": f"analyst conviction improved after {headline}",
+        "ai": f"AI-related momentum stayed in focus after {headline}",
+        "earnings": f"earnings expectations shifted after {headline}",
+        "deal": f"deal momentum improved after {headline}",
+        "delivery": f"delivery and demand signals moved sentiment after {headline}",
+        "product": f"product momentum drew attention after {headline}",
+    }
+    return phrases.get(ctype, f"company-specific news shaped sentiment after {headline}")
+
+
+def _build_smart_one_liner(
+    symbol: str,
+    change_pct: float | None,
+    signal: str,
+    confidence: Any,
+    catalyst: Dict[str, Any] | None,
+    pattern_name: str | None,
+) -> str:
+    catalyst_text = _catalyst_short(catalyst)
+    pattern_text = _pattern_phrase(pattern_name)
+
+    if catalyst_text:
+        if change_pct is None or change_pct >= 0:
+            return _shorten(f"{symbol} is gaining traction as {catalyst_text}.")
+        else:
+            return _shorten(f"{symbol} is pulling back despite {catalyst_text}.")
+
+    if change_pct is None:
+        return _shorten(f"{symbol} trading with {signal.lower()} model bias.")
+    elif change_pct >= 2.0 and _confidence_band(confidence) in ("very_high", "high"):
+        return _shorten(f"{symbol} showing strong momentum, up {_fmt_pct(change_pct)}.")
+    elif change_pct >= 0.8:
+        return _shorten(f"{symbol} is higher with improving price action.")
+    elif change_pct <= -2.0:
+        return _shorten(f"{symbol} is under pressure, down {_fmt_pct(change_pct)}.")
+    elif pattern_text:
+        return _shorten(f"{symbol} consolidating {pattern_text}.")
+    else:
+        return _shorten(f"{symbol} showing a {signal.lower()} setup in the current session.")
+
+
+def _build_smart_summary(
+    company: str,
+    tone: str,
+    signal: str,
+    confidence: Any,
+    catalyst: Dict[str, Any] | None,
+    pattern_name: str | None,
+) -> str:
+    conf_text = f" with {round(float(confidence))}% confidence" if isinstance(confidence, (int, float)) else ""
+
+    if catalyst:
+        cat_text = _catalyst_short(catalyst)
+        return f"{company} is showing a {tone.lower()} tone today as {cat_text}. BullBrain remains {signal}{conf_text}."
+
+    if pattern_name:
+        return f"{company} is showing a {tone.lower()} tone with active {pattern_name.lower()} pattern. BullBrain remains {signal}{conf_text}."
+
+    return f"{company} is showing a {tone.lower()} tone today. BullBrain remains {signal}{conf_text} based on price action and technical conditions."
+
+
+# ====================== MAIN FUNCTION ======================
 
 def build_market_awareness(
     symbol: str,
@@ -235,7 +299,6 @@ def build_market_awareness(
     company = company_name or symbol
 
     quote = quote or {}
-    technical = technical or {}
     pattern = pattern or {}
     bullbrain = bullbrain or {}
     decision = decision or {}
@@ -261,11 +324,7 @@ def build_market_awareness(
 
     confidence = bullbrain.get("confidence")
 
-    catalyst = _pick_best_catalyst(
-        news_items,
-        symbol,
-        company,
-    )
+    catalyst = _pick_best_catalyst(news_items, symbol, company)
 
     drivers: List[str] = []
 
@@ -292,77 +351,36 @@ def build_market_awareness(
             f"AI context: BullBrain remains {signal}{conf_part} on forward edge."
         )
 
-    # ---------------------------------------------------------
-    # Catalyst-aware one-liner + summary
-    # ---------------------------------------------------------
-    if catalyst and change_pct is not None:
-        catalyst_phrase = _human_catalyst_phrase(catalyst)
+    # ====================== NEW LOGIC ======================
+    one_liner = _build_smart_one_liner(
+        symbol=symbol,
+        change_pct=change_pct,
+        signal=signal,
+        confidence=confidence,
+        catalyst=catalyst,
+        pattern_name=pattern_name,
+    )
 
-        if change_pct >= 0:
-            one_liner = (
-                f"{symbol} is rising today, up {_fmt_pct(change_pct)}, "
-                f"{catalyst_phrase}."
-            )
-        else:
-            one_liner = (
-                f"{symbol} is pulling back today, down {_fmt_pct(change_pct)}, "
-                f"{catalyst_phrase}."
-            )
+    summary = _build_smart_summary(
+        company=company,
+        tone=tone,
+        signal=signal,
+        confidence=confidence,
+        catalyst=catalyst,
+        pattern_name=pattern_name,
+    )
 
-        summary = (
-            f"{company} is showing a {tone.lower()} tone today. "
-            f"The likely news catalyst is {catalyst_phrase}. "
-            f"BullBrain remains {signal}, so this separates today's market reaction "
-            f"from the model's forward-looking rating."
-        )
+    awareness_source = (
+        "quote+company_news+technicals+pattern+bullbrain"
+        if catalyst
+        else "quote+technicals+pattern+bullbrain"
+    )
 
-        awareness_source = "quote+company_news+technicals+pattern+bullbrain"
-        awareness_confidence = catalyst.get("confidence") or "medium"
-
-    else:
-        # Safe fallback when no clear news catalyst exists
-        if change_pct is None:
-            one_liner = f"{symbol} has limited fresh movement data available right now."
-        elif change_pct >= 1:
-            one_liner = (
-                f"{symbol} is rising today, up {_fmt_pct(change_pct)}, "
-                f"with price action showing stronger buyer interest."
-            )
-        elif change_pct <= -1:
-            one_liner = (
-                f"{symbol} is pulling back today, down {_fmt_pct(change_pct)}, "
-                f"with sellers controlling the latest move."
-            )
-        elif change_pct > 0:
-            one_liner = (
-                f"{symbol} is slightly higher today, up {_fmt_pct(change_pct)}, "
-                f"but no clear company-specific catalyst was detected."
-            )
-        elif change_pct < 0:
-            one_liner = (
-                f"{symbol} is slightly lower today, down {_fmt_pct(change_pct)}, "
-                f"but no clear company-specific catalyst was detected."
-            )
-        else:
-            one_liner = f"{symbol} is mostly flat today, with no major price move yet."
-
-        if pattern_name:
-            summary = (
-                f"{company} is showing a {tone.lower()} tone today. "
-                f"No clear company-specific news catalyst was detected from available sources, "
-                f"so the move is currently explained by price action and the active {pattern_name} pattern. "
-                f"BullBrain remains {signal} on forward edge."
-            )
-        else:
-            summary = (
-                f"{company} is showing a {tone.lower()} tone today. "
-                f"No clear company-specific news catalyst was detected from available sources, "
-                f"so the move is currently explained by price action and technical conditions. "
-                f"BullBrain remains {signal} on forward edge."
-            )
-
-        awareness_source = "quote+technicals+pattern+bullbrain"
-        awareness_confidence = "medium" if len(drivers) >= 2 else "low"
+    awareness_confidence = (
+        catalyst.get("confidence")
+        if catalyst
+        else ("medium" if len(drivers) >= 2 else "low")
+    )
 
     return {
         "title": f"Why {symbol} is moving today",
@@ -377,5 +395,5 @@ def build_market_awareness(
         "change": change,
         "changePct": change_pct,
         "updated_at": utc_now_iso(),
-        "schema_version": "v2",
+        "schema_version": "v3",
     }
