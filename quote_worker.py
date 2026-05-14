@@ -4,9 +4,7 @@
 # Render background worker (long-running)
 #
 # Refreshes quote-backed fields for Firestore:
-#  - MAG7 quotes
-#  - Hotlist quotes
-#  - Bearwatch quotes
+#  - Home core universe quotes
 #  - Carousel: US market, commodities (from existing values w/ parentheses),
 #             Crypto card (BTC/ETH/SOL/XRP/DOGE),
 #             Sentiment card sync (from market_overview.fearGreed),
@@ -56,7 +54,11 @@ from backend.quote_repo import (
 # -----------------------------
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
 SECTOR_MIN_REFRESH_SECONDS = 300   # 5 minutes (market hours only)
-
+CORE_UNIVERSE = [
+    "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA",
+    "AMD", "AVGO", "TSM", "ARM", "SMCI",
+    "PLTR", "NFLX", "COIN", "MSTR", "SOFI",
+]
 
 # ---------------------------------------------------------
 # Firebase Init
@@ -211,11 +213,6 @@ def collect_tickers(db) -> Set[str]:
     if snap.exists:
         d = snap.to_dict() or {}
 
-        # MAG7 list contains symbols directly
-        for m in d.get("mag7", []):
-            if isinstance(m, dict) and m.get("symbol"):
-                out.add(str(m["symbol"]).upper())
-
         # Carousel proxies (only labels like "S&P 500 (SPY)" etc.)
         for card in d.get("carousel", []):
             if not isinstance(card, dict):
@@ -231,18 +228,6 @@ def collect_tickers(db) -> Set[str]:
                     sym = label.split("(")[-1].replace(")", "").strip().upper()
                     if sym:
                         out.add(sym)
-
-    # Hotlist / Bearwatch tickers
-    for doc in ["market_hotlist", "market_bearwatch"]:
-        s = db.collection("bullsignals_ai").document(doc).get()
-        if s.exists:
-            payload = s.to_dict() or {}
-            key = doc.split("_")[-1]  # hotlist / bearwatch
-            rows = payload.get(key, [])
-            if isinstance(rows, list):
-                for row in rows:
-                    if isinstance(row, dict) and row.get("symbol"):
-                        out.add(str(row["symbol"]).upper())
 
     return out
 
@@ -324,31 +309,6 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
 
     if snap.exists:
         d = snap.to_dict() or {}
-
-        # -----------------------------
-        # MAG7 quote update (SAFE)
-        # -----------------------------
-        mag7_list = d.get("mag7", [])
-        if isinstance(mag7_list, list):
-            for m in mag7_list:
-                if not isinstance(m, dict):
-                    continue
-
-                sym = str(m.get("symbol") or "").upper()
-                q = quotes.get(sym)
-
-                if not q:
-                    continue
-
-                # ✅ overwrite ONLY if valid
-                if isinstance(q.get("price"), (int, float)):
-                    m["price"] = q["price"]
-
-                if isinstance(q.get("changePct"), (int, float)):
-                    m["changePct"] = q["changePct"]
-
-                m["quote_updated_at"] = now
-
         # -------------------------------------------------
         # CAROUSEL (SPY / QQQ / GLD / USO / SLV)
         # ❌ NEVER overwrite with "--"
@@ -413,48 +373,11 @@ def update_quotes(db, quotes: Dict[str, Dict[str, Any]]) -> None:
 
         ref.set(
             {
-                "mag7": mag7_list,
                 "carousel": carousel_list,
                 "quote_refreshed_at": now,
             },
             merge=True,
         )
-
-    # -----------------------------------------------------
-    # HOTLIST / BEARWATCH (SAFE UPDATE)
-    # -----------------------------------------------------
-    for name in ["market_hotlist", "market_bearwatch"]:
-        r = db.collection("bullsignals_ai").document(name)
-        s = r.get()
-
-        if not s.exists:
-            continue
-
-        key = "hotlist" if "hot" in name else "bearwatch"
-        rows = (s.to_dict() or {}).get(key, [])
-
-        if not isinstance(rows, list):
-            continue
-
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-
-            sym = str(row.get("symbol") or "").upper()
-            q = quotes.get(sym)
-
-            if not q:
-                continue
-
-            if isinstance(q.get("price"), (int, float)):
-                row["price"] = q["price"]
-
-            if isinstance(q.get("changePct"), (int, float)):
-                row["changePct"] = q["changePct"]
-
-            row["quote_updated_at"] = now
-
-        r.set({key: rows}, merge=True)
 
 
 # ---------------------------------------------------------
@@ -821,9 +744,10 @@ def main() -> None:
 
             # -------------------------------------------------
             # Collect symbols (THIS is the fix)
-            #   1) homescreen tickers (MAG7 + SPY/QQQ/GLD/USO/SLV + hotlist/bearwatch)
-            #   2) on-demand pending (needs_refresh == True)
-            #   3) active symbols (recent watchlist adds)
+            #   1) market context tickers (SPY/QQQ/GLD/USO/SLV from carousel)
+            #   2) core universe tickers for Home
+            #   3) on-demand pending (needs_refresh == True)
+            #   4) active symbols (recent watchlist adds)
             # -------------------------------------------------
             tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
@@ -858,6 +782,7 @@ def main() -> None:
                 active = set()
 
             all_tickers |= tickers
+            all_tickers |= set(CORE_UNIVERSE)
             all_tickers |= on_demand
             all_tickers |= active
             all_tickers |= daily_movers
@@ -865,6 +790,7 @@ def main() -> None:
             log(
                 f"Refreshing quotes | "
                 f"homescreen={len(tickers)} "
+                f"core={len(CORE_UNIVERSE)} "
                 f"pending={len(on_demand)} "
                 f"active={len(active)} "
                 f"daily_movers={len(daily_movers)} "
