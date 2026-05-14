@@ -75,6 +75,11 @@ from backend.firestore_utils import utc_now_iso
 # =========================================================
 
 MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
+CORE_UNIVERSE = [
+    "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA",
+    "AMD", "AVGO", "TSM", "ARM", "SMCI",
+    "PLTR", "NFLX", "COIN", "MSTR", "SOFI",
+]
 ACTIVE_SYMBOL_LIMIT = 60
 TOTAL_SCAN_LIMIT = 120
 COL_ROOT = "bullsignals_ai"
@@ -646,6 +651,12 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
 
     return universe[:TOTAL_SCAN_LIMIT], meta
 
+def build_homescreen_universe() -> List[str]:
+    """
+    Stable curated universe for HomeScreen AI-ranked cards.
+    Keeps Home consistent and high-quality.
+    """
+    return list(dict.fromkeys(CORE_UNIVERSE))
 # =========================================================
 # VALIDATION HELPERS
 # =========================================================
@@ -1218,6 +1229,9 @@ def persist_internal_market_movers():
         if isinstance(chg, (int, float)):
             movers.append({
                 "symbol": doc.id,
+                "company": data.get("company_name") or COMPANY_NAMES.get(doc.id, doc.id),
+                "price": quote.get("price"),
+                "change": quote.get("change"),
                 "changePct": round(chg, 2),
                 "direction": "up" if chg >= 0 else "down",
                 "quote_updated_at": updated_at,
@@ -1259,6 +1273,88 @@ def persist_internal_market_movers():
         f"losers={len(losers[:25])} "
         f"total={len(final_movers)}"
     )
+
+def persist_homescreen_core_signals():
+    """
+    Writes stable curated AI-ranked HomeScreen signals.
+    Hero/mover strip should still come from market_movers.
+    """
+    db = get_db()
+    now_iso = utc_now_iso()
+
+    symbols = build_homescreen_universe()
+    ranked: List[Dict[str, Any]] = []
+
+    for sym in symbols:
+        try:
+            snap = (
+                db.collection(COL_ROOT)
+                  .document(COL_STOCKS)
+                  .collection("symbols")
+                  .document(sym)
+                  .get()
+            )
+
+            if not snap.exists:
+                continue
+
+            data = snap.to_dict() or {}
+            quote = data.get("quote") or {}
+            bullbrain = data.get("bullbrain") or {}
+            decision = data.get("decision") or {}
+            pattern = data.get("pattern") or {}
+            market_awareness = data.get("marketAwareness") or {}
+
+            ranked.append({
+                "symbol": sym,
+                "companyName": (
+                    data.get("companyName")
+                    or data.get("company_name")
+                    or COMPANY_NAMES.get(sym, sym)
+                ),
+                "price": quote.get("price"),
+                "change": quote.get("change"),
+                "changePct": quote.get("changePct"),
+                "lastUpdated": quote.get("updated_at") or data.get("computed_at"),
+                "signal": decision.get("finalSignal") or bullbrain.get("signal", "HOLD"),
+                "confidence": bullbrain.get("confidence", 0),
+                "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
+                "patternWinRate": (
+                    ((data.get("patternHistory") or {})
+                        .get("forwardReturns") or {})
+                        .get("days5", {})
+                        .get("winRate")
+                ),
+                "summary": (
+                    market_awareness.get("oneLiner")
+                    or market_awareness.get("displayLine")
+                    or market_awareness.get("summary")
+                ),
+            })
+
+        except Exception as e:
+            log(f"⚠️ homescreen core signal failed for {sym}: {e}")
+
+    ranked.sort(
+        key=lambda x: (
+            float(x.get("confidence") or 0),
+            abs(float(x.get("changePct") or 0)),
+        ),
+        reverse=True,
+    )
+
+    db.collection(COL_ROOT).document(DOC_HOMESCREEN).set(
+        {
+            "core_universe": symbols,
+            "core_signals": ranked[:10],
+            "core_universe_count": len(symbols),
+            "core_signals_updated_at": now_iso,
+            "schema_version": "home_v2",
+        },
+        merge=True,
+    )
+
+    log(f"🏠 homescreen core_signals saved | count={len(ranked[:10])}")    
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
@@ -1480,6 +1576,7 @@ def main():
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
     persist_internal_market_movers()
+    persist_homescreen_core_signals()
 
     try:
         alert_result = run_watchlist_push_alerts()
