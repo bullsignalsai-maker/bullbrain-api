@@ -136,10 +136,20 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             watchlist_summary,
             bullbrain.get("signal", "HOLD")
         )
-
+        # ADD THIS HERE
+        company_name = (
+            stock.get("companyName")
+            or stock.get("company_name")
+            or stock.get("name")
+            or (stock.get("header") or {}).get("companyName")
+            or (stock.get("header") or {}).get("name")
+            or (stock.get("quote") or {}).get("companyName")
+            or (stock.get("quote") or {}).get("name")
+            or sym
+        )
         items.append({
             "symbol": sym,
-            "companyName": stock.get("company_name"),
+            "companyName": company_name,
 
             # ── QUOTE ──
             "quote": {
