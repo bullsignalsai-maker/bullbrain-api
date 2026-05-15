@@ -114,6 +114,7 @@ def _interpret_trend(trend_strength: Optional[float]) -> Dict[str, Any]:
         "label": "Sideways",
         "comment": "Price is consolidating in a range without clear direction.",
     }
+
 def _interpret_volatility(volatility_20d: Optional[float]) -> Dict[str, Any]:
     if volatility_20d is None or math.isnan(volatility_20d):
         return {"label": "Unknown", "comment": ""}

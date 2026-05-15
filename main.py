@@ -1431,8 +1431,8 @@ def pattern_quality_gate(history_block: dict | None) -> bool:
     count = days5.get("count", 0)
 
     # --- Hard minimum requirements ---
-    MIN_SAMPLES = 20
-    MIN_WINRATE = 0.65
+    MIN_SAMPLES = 12
+    MIN_WINRATE = 0.58
     MIN_AVG_RETURN = 0.0
 
     if win_rate is None:
@@ -1860,7 +1860,7 @@ def momentum_override_signal(
 
     # Strong upside mover
     if (
-        r1 >= 2.0
+        r1 >= 3.5
         and r5 >= 0
         and vol_vs_ma20 >= 10
         and macd_hist >= 0
@@ -1875,7 +1875,7 @@ def momentum_override_signal(
 
     # Strong downside mover
     if (
-        r1 <= -2.0
+        r1 <= -3.5
         and r5 <= 0
         and vol_vs_ma20 >= 10
         and macd_hist <= 0
@@ -1974,7 +1974,7 @@ def final_decision(
 
     # ---------------- 8️⃣ Feature Consensus ----------------
     consensus = feature_consensus_score(features)
-    if abs(consensus) < 2:
+    if abs(consensus) < 1:
         reasons.append("WeakFeatureConsensus")
         return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"consensus": consensus}}
 
