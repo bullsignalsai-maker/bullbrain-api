@@ -351,7 +351,13 @@ def build_technical_snapshot_block(stock: Dict[str, Any]) -> Dict[str, Any]:
 
     if trend_label:
         trend_lines.append(
-            f"Trend is labeled {trend_label}, meaning price is not showing a clean one-direction trend right now."
+            (
+                f"Trend is labeled {trend_label}, meaning price is showing strong directional structure."
+                if trend_label in ("Strong Uptrend", "Strong Downtrend")
+                else f"Trend is labeled {trend_label}, meaning price is trending with a clear directional bias."
+                if trend_label in ("Uptrend", "Downtrend")
+                else f"Trend is labeled {trend_label}, meaning price is not showing a clean one-direction trend right now."
+            )
         )
 
     if price_pos_label and isinstance(price_vs_sma20, (int, float)):

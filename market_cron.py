@@ -1220,9 +1220,23 @@ def persist_internal_market_movers():
     movers = []
 
     for doc in snaps:
+        sym = str(doc.id or "").upper().strip()
+
+        if sym not in REAL_TICKERS:
+            continue
+
         data = doc.to_dict() or {}
         quote = data.get("quote", {})
         chg = quote.get("changePct")
+        price = quote.get("price")
+
+        try:
+            px = float(price)
+        except Exception:
+            continue
+
+        if px < 1.0:
+            continue
 
         updated_at = quote.get("updated_at")
 
@@ -1246,9 +1260,9 @@ def persist_internal_market_movers():
 
         if isinstance(chg, (int, float)):
             movers.append({
-                "symbol": doc.id,
-                "company": data.get("company_name") or COMPANY_NAMES.get(doc.id, doc.id),
-                "price": quote.get("price"),
+                "symbol": sym,
+                "company": data.get("company_name") or COMPANY_NAMES.get(sym, sym),
+                "price": round(px, 2),
                 "change": quote.get("change"),
                 "changePct": round(chg, 2),
                 "direction": "up" if chg >= 0 else "down",
@@ -1387,6 +1401,7 @@ def persist_homescreen_core_signals():
             "core_signals": ranked[:10],
             "core_universe_count": len(symbols),
             "core_signals_updated_at": now_iso,
+            "updated_at": now_iso,
             "schema_version": "home_v2",
         },
         merge=True,
