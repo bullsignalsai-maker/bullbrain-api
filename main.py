@@ -4206,134 +4206,64 @@ def remove_watchlist_symbol(user_id: str, symbol: str):
 # -----------------------------
 
 @app.get("/market-movers")
-def get_market_movers():
-    movers_doc = (
-        db.collection("bullsignals_ai")
-          .document("market_movers")
-          .get()
-    )
+def get_market_movers(mode: str = "preview"):
+    try:
+        snap = (
+            db.collection("bullsignals_ai")
+              .document("market_movers")
+              .get()
+        )
 
-    if not movers_doc.exists:
+        if not snap.exists:
+            return {
+                "count": 0,
+                "movers": [],
+                "gainers": [],
+                "losers": [],
+                "as_of": None,
+                "updated_at": None,
+                "version": "empty",
+            }
+
+        data = snap.to_dict() or {}
+
+        home_rising = data.get("home_rising", []) or []
+        preview_rising = data.get("preview_rising", []) or []
+        preview_falling = data.get("preview_falling", []) or []
+        all_movers = data.get("movers", []) or []
+
+        if mode == "home":
+            movers = home_rising
+        elif mode == "all":
+            movers = all_movers
+        else:
+            movers = preview_rising + preview_falling
+
+        gainers = [m for m in movers if m.get("direction") == "up"]
+        losers = [m for m in movers if m.get("direction") == "down"]
+
+        return {
+            "count": len(movers),
+            "movers": movers,
+            "gainers": gainers,
+            "losers": losers,
+            "as_of": data.get("as_of"),
+            "updated_at": data.get("updated_at"),
+            "source": data.get("source"),
+            "version": data.get("schema_version", "market_movers_v4"),
+        }
+
+    except Exception as e:
+        print("[market-movers] error:", e)
         return {
             "count": 0,
             "movers": [],
+            "gainers": [],
+            "losers": [],
+            "as_of": None,
             "updated_at": None,
+            "error": str(e),
         }
-
-    meta = movers_doc.to_dict() or {}
-    movers = meta.get("movers", [])
-    out = []
-
-    for m in movers:
-        sym = m.get("symbol")
-        if not sym:
-            continue
-
-        stock_doc = (
-            db.collection("bullsignals_ai")
-              .document("stocks")
-              .collection("symbols")
-              .document(sym)
-              .get()
-        )
-
-        if not stock_doc.exists:
-            continue
-
-        s = stock_doc.to_dict() or {}
-
-        # ✅ live quote repo first
-        quote_doc = (
-            db.collection("bullsignals_ai")
-              .document("quotes")
-              .collection("symbols")
-              .document(sym)
-              .get()
-        )
-
-        live_q = quote_doc.to_dict() if quote_doc.exists else {}
-        stock_q = s.get("quote", {}) or {}
-
-        q = live_q if live_q else stock_q
-
-        change_pct = q.get("changePct")
-        direction = None
-
-        if isinstance(change_pct, (int, float)):
-            direction = "up" if change_pct >= 0 else "down"
-        else:
-            direction = m.get("direction")
-
-        tech = s.get("technical", {}) or {}
-        trend = tech.get("trend", {}) or {}
-        pattern = s.get("pattern", {}) or {}
-        insights = s.get("insights", {}) or {}
-        market_awareness = s.get("marketAwareness", {}) or {}
-
-        out.append({
-            "symbol": sym,
-            "company": s.get("company_name") or sym,
-
-            "quote": {
-                "price": q.get("price"),
-                "change": q.get("change"),
-                "changePct": q.get("changePct"),
-                "updated_at": q.get("updated_at"),
-                "source": q.get("source"),
-                "needs_refresh": q.get("needs_refresh", False),
-            },
-
-            # ✅ now live direction based on latest quote
-            "direction": direction,
-
-            "trend": {
-                "label": trend.get("label") or trend.get("summary"),
-            },
-
-            "pattern": {
-                "name": pattern.get("pattern") or pattern.get("patternLabel"),
-                "bias": pattern.get("bias") or pattern.get("patternBias"),
-            },
-
-            "oneLiner": (
-                insights.get("oneLiner")
-                or market_awareness.get("summary")
-                or market_awareness.get("oneLiner")
-            ),
-        })
-
-    # ✅ Re-sort using latest quote values
-    gainers = [
-        x for x in out
-        if isinstance((x.get("quote") or {}).get("changePct"), (int, float))
-        and (x.get("quote") or {}).get("changePct") >= 0
-    ]
-
-    losers = [
-        x for x in out
-        if isinstance((x.get("quote") or {}).get("changePct"), (int, float))
-        and (x.get("quote") or {}).get("changePct") < 0
-    ]
-
-    gainers.sort(
-        key=lambda x: (x.get("quote") or {}).get("changePct", 0),
-        reverse=True,
-    )
-
-    losers.sort(
-        key=lambda x: (x.get("quote") or {}).get("changePct", 0),
-    )
-
-    final_out = gainers + losers
-
-    return {
-        "count": len(final_out),
-        "movers": final_out,
-        "as_of": meta.get("as_of"),
-        "updated_at": meta.get("updated_at"),
-        "quote_refreshed": True,
-        "version": "v3-live-quotes",
-    }
 # -----------------------------
 # 5) Market News
 # -----------------------------

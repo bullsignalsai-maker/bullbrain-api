@@ -74,15 +74,25 @@ from backend.firestore_utils import utc_now_iso
 # CONSTANTS
 # =========================================================
 
-MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
+# =========================================================
+# CONSTANTS
+# =========================================================
+
+MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]  # Keep if needed elsewhere
+
 CORE_UNIVERSE = [
-     "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AMD","NFLX","AVGO",
-    "JPM","BAC","XOM","CVX","UNH","WMT","HD","PG","LLY","V","MA","KO","PEP",
-    "MRK","ABBV","ORCL","INTC","CRM","COST","PYPL","QCOM","ADBE","TXN",
-    "NKE","PFE","T","VZ","NEE","UPS","UNP","GS","MS","BA","CAT","GE","IBM",
-]
+    # Homescreen Top 20 (High Signal)
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AVGO",
+    "AMD", "PLTR", "SMCI", "ARM", "NFLX", "COIN", "MSTR",
+    "LLY", "JPM", "V", "MA", "CRM",
+
+    # Additional strong candidates for movers
+    "ORCL", "ADBE", "QCOM", "INTC", "BAC", "GS", "MS", "XOM", "CVX",
+    "WMT", "HD", "COST", "PFE", "ABBV", "MRK"
+]  # Total ~35
+
 ACTIVE_SYMBOL_LIMIT = 60
-TOTAL_SCAN_LIMIT = 120
+TOTAL_SCAN_LIMIT = 80
 COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
@@ -651,12 +661,20 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     }
 
     return universe[:TOTAL_SCAN_LIMIT], meta
+
 def build_homescreen_universe() -> List[str]:
     """
-    Stable curated universe for HomeScreen AI-ranked cards.
-    Keeps Home consistent and high-quality.
+    Curated Top 20 high-signal universe for Homescreen.
+    Then we rank + boost momentum inside persist_homescreen_core_signals()
     """
-    return list(dict.fromkeys(CORE_UNIVERSE))
+    return [
+        # Mega-cap + AI leaders
+        "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AVGO",
+        # High momentum / retail favorites
+        "AMD", "PLTR", "SMCI", "ARM", "NFLX", "COIN", "MSTR",
+        # Stable anchors + growth
+        "LLY", "JPM", "V", "MA", "CRM"
+    ]
 # =========================================================
 # VALIDATION HELPERS
 # =========================================================
@@ -1247,7 +1265,10 @@ def persist_internal_market_movers():
     # ✅ Top losers = most negative %
     losers.sort(key=lambda x: x.get("changePct", 0))
 
-    # ✅ Save 25 gainers + 25 losers
+    # ✅ Prepare cached views once during cron
+    home_rising = gainers[:5]
+    preview_rising = gainers[:4]
+    preview_falling = losers[:4]
     final_movers = gainers[:25] + losers[:25]
 
     db.collection(COL_ROOT).document("market_movers").set(
@@ -1256,17 +1277,23 @@ def persist_internal_market_movers():
             "updated_at": utc_now_iso(),
             "source": "internal_quote_change",
             "limit": {
+                "home_rising": 5,
+                "preview_rising": 4,
+                "preview_falling": 4,
                 "gainers": 25,
                 "losers": 25,
                 "total": 50,
             },
+            "home_rising": home_rising,
+            "preview_rising": preview_rising,
+            "preview_falling": preview_falling,
             "gainers_count": len(gainers[:25]),
             "losers_count": len(losers[:25]),
             "movers": final_movers,
+            "schema_version": "market_movers_v4",
         },
         merge=True,
     )
-
     log(
         f"🔥 market_movers updated | "
         f"gainers={len(gainers[:25])} "
@@ -1277,12 +1304,11 @@ def persist_internal_market_movers():
 def persist_homescreen_core_signals():
     """
     Writes stable curated AI-ranked HomeScreen signals.
-    Hero/mover strip should still come from market_movers.
     """
     db = get_db()
     now_iso = utc_now_iso()
 
-    symbols = build_homescreen_universe()
+    symbols = build_homescreen_universe()   # Top 20
     ranked: List[Dict[str, Any]] = []
 
     for sym in symbols:
@@ -1294,7 +1320,6 @@ def persist_homescreen_core_signals():
                   .document(sym)
                   .get()
             )
-
             if not snap.exists:
                 continue
 
@@ -1307,11 +1332,7 @@ def persist_homescreen_core_signals():
 
             ranked.append({
                 "symbol": sym,
-                "companyName": (
-                    data.get("companyName")
-                    or data.get("company_name")
-                    or COMPANY_NAMES.get(sym, sym)
-                ),
+                "companyName": data.get("company_name") or COMPANY_NAMES.get(sym, sym),
                 "price": quote.get("price"),
                 "change": quote.get("change"),
                 "changePct": quote.get("changePct"),
@@ -1321,13 +1342,12 @@ def persist_homescreen_core_signals():
                 "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
                 "patternWinRate": (
                     ((data.get("patternHistory") or {})
-                        .get("forwardReturns") or {})
-                        .get("days5", {})
-                        .get("winRate")
+                     .get("forwardReturns") or {})
+                     .get("days5", {})
+                     .get("winRate")
                 ),
                 "summary": (
                     market_awareness.get("oneLiner")
-                    or market_awareness.get("displayLine")
                     or market_awareness.get("summary")
                 ),
             })
@@ -1335,10 +1355,12 @@ def persist_homescreen_core_signals():
         except Exception as e:
             log(f"⚠️ homescreen core signal failed for {sym}: {e}")
 
+    # === FINAL SORT (Momentum First) ===
     ranked.sort(
         key=lambda x: (
-            float(x.get("confidence") or 0),
-            abs(float(x.get("changePct") or 0)),
+            abs(float(x.get("changePct") or 0)) * 1.4,
+            float(x.get("confidence") or 0) * 0.8,
+            25 if abs(float(x.get("changePct") or 0)) > 5.0 else 0,
         ),
         reverse=True,
     )
@@ -1354,7 +1376,8 @@ def persist_homescreen_core_signals():
         merge=True,
     )
 
-    log(f"🏠 homescreen core_signals saved | count={len(ranked[:10])}")    
+    top5 = [item["symbol"] for item in ranked[:5]]
+    log(f"🏠 homescreen updated | count={len(ranked[:10])} | top5={top5}")
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
