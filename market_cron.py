@@ -76,9 +76,10 @@ from backend.firestore_utils import utc_now_iso
 
 MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]
 CORE_UNIVERSE = [
-    "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA",
-    "AMD", "AVGO", "TSM", "ARM", "SMCI",
-    "PLTR", "NFLX", "COIN", "MSTR", "SOFI",
+     "AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AMD","NFLX","AVGO",
+    "JPM","BAC","XOM","CVX","UNH","WMT","HD","PG","LLY","V","MA","KO","PEP",
+    "MRK","ABBV","ORCL","INTC","CRM","COST","PYPL","QCOM","ADBE","TXN",
+    "NKE","PFE","T","VZ","NEE","UPS","UNP","GS","MS","BA","CAT","GE","IBM",
 ]
 ACTIVE_SYMBOL_LIMIT = 60
 TOTAL_SCAN_LIMIT = 120
