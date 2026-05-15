@@ -1818,7 +1818,77 @@ def signal_rarity(
     rarity = occurrences / total_days
     return round(min(max(rarity, 0.0), 1.0), 4)
 
+def momentum_override_signal(
+    *,
+    model_signal: str,
+    features: dict,
+    pattern_name: str | None,
+) -> str | None:
+    """
+    Allows strong real-time momentum setups to surface as BUY/SELL
+    without weakening the whole decision ladder.
+    Conservative App Store-safe override.
+    """
 
+    try:
+        r1 = float(features.get("return_1d") or 0)
+        r5 = float(features.get("return_5d") or 0)
+        vol_vs_ma20 = float(features.get("volume_vs_ma20_pct") or 0)
+        rsi = float(features.get("rsi14") or 50)
+        macd_hist = float(features.get("macd_hist") or 0)
+        trend = float(features.get("trend_strength_20") or 0)
+    except Exception:
+        return None
+
+    patt_bias = pattern_bias(pattern_name)
+
+    bullish_patterns = {
+        "GAP UP & RUNNING",
+        "VOLUME BREAKOUT",
+        "HAMMER REVERSAL",
+        "TREND ACCELERATION",
+        "BUY THE DIP (UPTREND)",
+        "OVERSOLD BOUNCE",
+    }
+
+    bearish_patterns = {
+        "FAILED BREAKOUT TRAP",
+        "GAP DOWN & PRESSURE",
+        "OVERBOUGHT DISTRIBUTION",
+        "DEAD CAT BOUNCE",
+    }
+
+    # Strong upside mover
+    if (
+        r1 >= 2.0
+        and r5 >= 0
+        and vol_vs_ma20 >= 10
+        and macd_hist >= 0
+        and rsi < 78
+        and (
+            patt_bias == "bull"
+            or pattern_name in bullish_patterns
+            or model_signal == "BUY"
+        )
+    ):
+        return "BUY"
+
+    # Strong downside mover
+    if (
+        r1 <= -2.0
+        and r5 <= 0
+        and vol_vs_ma20 >= 10
+        and macd_hist <= 0
+        and rsi > 22
+        and (
+            patt_bias == "bear"
+            or pattern_name in bearish_patterns
+            or model_signal == "SELL"
+        )
+    ):
+        return "SELL"
+
+    return None
 # -----------------------------------------------------------
 # STEP 16: Final Decision Ladder (Single Authority)
 # -----------------------------------------------------------
@@ -1851,6 +1921,26 @@ def final_decision(
         reasons.append(f"Liquidity={liq}")
         return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"liquidity": liq}}
 
+        # ---------------- 1.5️⃣ Momentum Override ----------------
+    override = momentum_override_signal(
+        model_signal=model_signal,
+        features=features,
+        pattern_name=pattern_name,
+    )
+
+    if override:
+        return {
+            "finalSignal": override,
+            "decisionReasons": ["MOMENTUM_OVERRIDE"],
+            "quality": {
+                "liquidity": liq,
+                "override": True,
+                "overrideType": "strong_price_volume_momentum",
+                "originalModelSignal": model_signal,
+                "pattern": pattern_name,
+            },
+        }
+    
     # ---------------- 2️⃣ Market Regime ----------------
     regime = detect_market_regime(features)
 

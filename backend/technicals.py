@@ -88,33 +88,32 @@ def _interpret_trend(trend_strength: Optional[float]) -> Dict[str, Any]:
     if trend_strength is None or math.isnan(trend_strength):
         return {"label": "Unknown", "comment": ""}
 
-    if trend_strength > 15:
+    # trend_strength_20 is a slope (typically -1.0 to +1.0 range)
+    if trend_strength > 0.55:
         return {
             "label": "Strong Uptrend",
-            "comment": "Price is rising consistently with strong trend momentum.",
+            "comment": "Consistent upward momentum with strong conviction.",
         }
-    elif trend_strength > 5:
+    elif trend_strength > 0.18:
         return {
             "label": "Uptrend",
-            "comment": "The stock is trending higher with moderate strength.",
+            "comment": "Price is trending higher with moderate strength.",
         }
-    elif trend_strength < -15:
+    elif trend_strength < -0.55:
         return {
             "label": "Strong Downtrend",
-            "comment": "Price is falling sharply with strong selling pressure.",
+            "comment": "Persistent selling pressure and downward momentum.",
         }
-    elif trend_strength < -5:
+    elif trend_strength < -0.18:
         return {
             "label": "Downtrend",
-            "comment": "The stock is trending lower with persistent weakness.",
+            "comment": "Price is trending lower with steady weakness.",
         }
 
     return {
         "label": "Sideways",
-        "comment": "Price action is range-bound without a clear trend.",
+        "comment": "Price is consolidating in a range without clear direction.",
     }
-
-
 def _interpret_volatility(volatility_20d: Optional[float]) -> Dict[str, Any]:
     if volatility_20d is None or math.isnan(volatility_20d):
         return {"label": "Unknown", "comment": ""}
