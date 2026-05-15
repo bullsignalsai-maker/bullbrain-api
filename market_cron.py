@@ -1329,7 +1329,22 @@ def persist_homescreen_core_signals():
             decision = data.get("decision") or {}
             pattern = data.get("pattern") or {}
             market_awareness = data.get("marketAwareness") or {}
+            raw_signal = decision.get("finalSignal") or bullbrain.get("signal", "HOLD")
+            change_pct = quote.get("changePct")
 
+            display_signal = raw_signal
+
+            try:
+                cp = float(change_pct or 0)
+
+                # HomeScreen is daily-move focused.
+                # Avoid showing Bullish on hard red days or Bearish on strong green days.
+                if cp <= -2.0 and raw_signal == "BUY":
+                    display_signal = "HOLD"
+                elif cp >= 2.0 and raw_signal == "SELL":
+                    display_signal = "HOLD"
+            except Exception:
+                pass
             ranked.append({
                 "symbol": sym,
                 "companyName": data.get("company_name") or COMPANY_NAMES.get(sym, sym),
@@ -1337,7 +1352,8 @@ def persist_homescreen_core_signals():
                 "change": quote.get("change"),
                 "changePct": quote.get("changePct"),
                 "lastUpdated": quote.get("updated_at") or data.get("computed_at"),
-                "signal": decision.get("finalSignal") or bullbrain.get("signal", "HOLD"),
+                "signal": display_signal,
+                "rawSignal": raw_signal,
                 "confidence": bullbrain.get("confidence", 0),
                 "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
                 "patternWinRate": (
