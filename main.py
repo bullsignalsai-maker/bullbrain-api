@@ -3784,6 +3784,21 @@ def homescreen_context():
 @app.get("/homescreen-data")
 def homescreen_data():
     cache = read_market_cache("homescreen_snapshot")
+    alpha_watch = read_market_cache("alpha_watch") or {}
+
+    safe_alpha_watch = {
+        "title": alpha_watch.get("title", "AI Opportunity Watch"),
+        "subtitle": alpha_watch.get(
+            "subtitle",
+            "AI-ranked setups showing momentum, trend quality, pattern edge, and participation.",
+        ),
+        "count": alpha_watch.get("count", 0),
+        "items": alpha_watch.get("items", []),
+        "market_regime": alpha_watch.get("market_regime"),
+        "updated_at": alpha_watch.get("updated_at"),
+        "disclaimer": alpha_watch.get("disclaimer"),
+        "schema_version": alpha_watch.get("schema_version"),
+    }
 
     if not cache:
         return {
@@ -3796,6 +3811,7 @@ def homescreen_data():
             "updated_at": None,
             "version": None,
             "schema_version": None,
+            "alpha_watch": safe_alpha_watch,
         }
 
     return {
@@ -3808,6 +3824,7 @@ def homescreen_data():
         "updated_at": cache.get("updated_at"),
         "version": cache.get("version"),
         "schema_version": cache.get("schema_version"),
+        "alpha_watch": safe_alpha_watch,
     }
 # ---------------------------------------------------------
 # Stock Detail API — Canonical v1.0
