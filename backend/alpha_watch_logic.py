@@ -23,9 +23,9 @@ HISTORY_ROOT = "alpha_watch_history"
 MIN_PRICE = 12.0
 MIN_AVG_VOLUME_20D = 1_200_000
 MAX_FRESHNESS_HOURS = 36
-MIN_FINAL_SCORE = 68.0
-MIN_PROB_UP_SOFT = 0.48
-MIN_PROB_UP_STRONG = 0.52
+MIN_PROB_UP_SOFT = 0.42
+MIN_PROB_UP_STRONG = 0.48
+MIN_FINAL_SCORE = 64.0
 NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
 MAX_EARLY_EXPANSION_DEFAULT = 85.0
 MAX_ITEMS = 8
@@ -518,10 +518,10 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Strong upside opportunity must have at least reasonable upside probability.
     # BUY can survive slightly lower probability because decision ladder may override based on pattern/momentum.
-    if prob_up < MIN_PROB_UP_SOFT:
+    if prob_up < MIN_PROB_UP_SOFT and signal != "BUY":
         return None
 
-    if prob_up < MIN_PROB_UP_STRONG and signal != "BUY":
+    if prob_up < MIN_PROB_UP_STRONG and signal not in {"BUY", "HOLD"}:
         return None
 
     regime = detect_regime(stock)
