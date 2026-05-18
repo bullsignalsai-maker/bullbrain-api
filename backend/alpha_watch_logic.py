@@ -149,8 +149,8 @@ def passes_quality_filter(stock: Dict[str, Any]) -> Tuple[bool, List[str]]:
         reasons.append("missing_pattern")
 
     liquidity = quality.get("liquidity")
-    if liquidity and liquidity != "GOOD":
-        reasons.append(f"liquidity_{liquidity}")
+    if liquidity == "POOR":
+        reasons.append("liquidity_POOR")
 
     fragility = _num(quality.get("fragility"), 0.0)
     if fragility is not None and fragility > 2:
@@ -518,10 +518,10 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Strong upside opportunity must have at least reasonable upside probability.
     # BUY can survive slightly lower probability because decision ladder may override based on pattern/momentum.
-    if prob_up < MIN_PROB_UP_SOFT and signal != "BUY":
+    if prob_up < 0.40:
         return None
 
-    if prob_up < MIN_PROB_UP_STRONG and signal not in {"BUY", "HOLD"}:
+    if prob_up < 0.46 and signal != "BUY":
         return None
 
     regime = detect_regime(stock)
