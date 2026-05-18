@@ -540,7 +540,23 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "volume": score_volume(features),
         "early_expansion": score_early_expansion(features),
     }
+    pattern_name = (
+    (stock.get("pattern") or {}).get("pattern")
+    or (stock.get("pattern") or {}).get("patternLabel")
+    or ""
+    )
 
+    bearish_patterns = {
+        "GAP DOWN & PRESSURE",
+        "BEARISH ENGULFING",
+        "BREAKDOWN",
+        "DISTRIBUTION DAY",
+    }
+
+    bearish_pattern_setup = pattern_name in bearish_patterns
+
+    if bearish_pattern_setup:
+        factor_scores["pattern"] = min(factor_scores["pattern"], 35)
     # Early expansion should not dominate unless model/probability confirms it.
     if not (
         prob_up >= 0.55
@@ -571,6 +587,14 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     setup_label = derive_setup_label(stock, factor_scores)
+
+    if bearish_pattern_setup:
+        setup_label = "Cautionary Momentum Watch"
+
+    if prob_up < 0.40:
+        setup_label = "Low-Conviction Momentum Watch"
+    elif prob_up < 0.46 and signal != "BUY":
+        setup_label = "Momentum Watch"
 
     if pullback_setup:
         setup_label = "Constructive Pullback Watch"
