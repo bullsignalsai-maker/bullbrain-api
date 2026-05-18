@@ -397,9 +397,13 @@ def stability_profile(stock: Dict[str, Any]) -> Dict[str, Any]:
         mult *= 0.84
         flags.append("Moderate fragility")
 
-    if liq and liq != "GOOD":
+    if liq == "THIN":
+        mult *= 0.88
+        flags.append("Liquidity thin")
+
+    elif liq == "POOR":
         mult *= 0.65
-        flags.append(f"Liquidity {liq}")
+        flags.append("Liquidity poor")
 
     if rsi > 78:
         mult *= 0.70
@@ -595,7 +599,7 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "weights": weights,
         "pattern": (stock.get("pattern") or {}).get("pattern")
             or (stock.get("pattern") or {}).get("patternLabel"),
-        "schema_version": "alpha_watch_item_v3",
+        "schema_version": "alpha_watch_item_v4",
     }
 
 def apply_diversity_filter(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
