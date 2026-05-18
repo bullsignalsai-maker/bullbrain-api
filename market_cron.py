@@ -681,12 +681,26 @@ def build_homescreen_universe() -> List[str]:
     Then we rank + boost momentum inside persist_homescreen_core_signals()
     """
     return [
-        # Mega-cap + AI leaders
-        "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AVGO",
-        # High momentum / retail favorites
-        "AMD", "PLTR", "SMCI", "ARM", "NFLX", "COIN", "MSTR",
-        # Stable anchors + growth
-        "LLY", "JPM", "V", "MA", "CRM"
+       "NVDA",   # NVIDIA
+    "GOOGL",  # Alphabet (Google)
+    "AAPL",   # Apple
+    "MSFT",   # Microsoft
+    "AMZN",   # Amazon
+    "AVGO",   # Broadcom
+    "META",   # Meta Platforms
+    "TSLA",   # Tesla
+    "LLY",    # Eli Lilly
+    "WMT",    # Walmart
+    "BRK.B",  # Berkshire Hathaway
+    "JPM",    # JPMorgan Chase
+    "V",      # Visa
+    "MA",     # Mastercard
+    "XOM",    # Exxon Mobil
+    "UNH",    # UnitedHealth Group
+    "PG",     # Procter & Gamble
+    "HD",     # Home Depot
+    "COST",   # Costco
+    "MRK"     # Merck
     ]
 # =========================================================
 # VALIDATION HELPERS
