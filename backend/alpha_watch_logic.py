@@ -24,6 +24,10 @@ MIN_PRICE = 12.0
 MIN_AVG_VOLUME_20D = 1_200_000
 MAX_FRESHNESS_HOURS = 36
 MIN_FINAL_SCORE = 68.0
+MIN_PROB_UP_SOFT = 0.48
+MIN_PROB_UP_STRONG = 0.52
+NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
+MAX_EARLY_EXPANSION_DEFAULT = 85.0
 MAX_ITEMS = 8
 MAX_PER_THEME = 2
 
@@ -330,46 +334,47 @@ def score_early_expansion(f: Dict[str, Any]) -> float:
     vol20 = _num(f.get("volatility_20d"), 2.0) or 2.0
     dist_high = _num(f.get("distance_from_20d_high"), 0.0) or 0.0
 
-    score = 50.0
+    score = 42.0
 
     if r5 > 0 and r10 > 0:
-        score += 14
+        score += 12
     elif r5 > 0:
-        score += 8
-
-    if r1 > 0 and r5 > 0:
         score += 6
 
-    if 0 < vs20 < 9:
-        score += 15
-    elif 9 <= vs20 <= 14:
+    if r1 > 0 and r5 > 0:
         score += 5
-    elif vs20 > 16:
-        score -= 10
 
-    if vol_vs > 20:
+    if 0 < vs20 < 7:
+        score += 12
+    elif 7 <= vs20 <= 12:
+        score += 5
+    elif vs20 > 15:
+        score -= 12
+
+    if vol_vs > 25:
         score += 14
-    elif vol_vs > 5:
+    elif vol_vs > 10:
         score += 8
     elif vol_vs < -10:
-        score -= 10
+        score -= 12
 
     if macd > 0:
         score += 8
+    else:
+        score -= 6
 
-    if 48 <= rsi <= 68:
-        score += 11
-    elif rsi > 76:
-        score -= 15
+    if 48 <= rsi <= 66:
+        score += 10
+    elif rsi > 74:
+        score -= 14
 
-    if vol20 < 3.8:
-        score += 9
-
-    if -6 <= dist_high <= 0:
+    if vol20 < 3.5:
         score += 6
 
-    return round(_clamp(score), 2)
+    if -5 <= dist_high <= 0:
+        score += 5
 
+    return round(_clamp(score), 2)
 
 def stability_profile(stock: Dict[str, Any]) -> Dict[str, Any]:
     q = ((stock.get("decision") or {}).get("quality") or {})
@@ -450,7 +455,7 @@ def build_reason(stock: Dict[str, Any], scores: Dict[str, float]) -> str:
     one_liner = awareness.get("oneLiner") or awareness.get("summary")
 
     if isinstance(one_liner, str) and one_liner.strip():
-        return one_liner.strip()[:190]
+        return clean_reason_text(one_liner)
 
     strongest = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:2]
     names = [k.replace("_", " ").title() for k, _ in strongest]
@@ -475,6 +480,28 @@ def build_why_now(scores: Dict[str, float]) -> List[str]:
 
     return points[:3] or ["Multiple Alphaclara intelligence factors are aligning"]
 
+def clean_reason_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+
+    s = (
+        text.replace("â", "'")
+            .replace("â", '"')
+            .replace("â", '"')
+            .replace("â", "-")
+            .replace("â", "-")
+            .replace("  ", " ")
+            .strip()
+    )
+
+    # Avoid ugly partial endings
+    for sep in [". ", "; ", " - "]:
+        if sep in s[:190]:
+            parts = s[:190].split(sep)
+            if len(parts[0]) > 35:
+                return parts[0].strip() + "."
+
+    return s[:170].rstrip(" ,;:-") + "."
 
 def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     ok, reject_reasons = passes_quality_filter(stock)
@@ -484,6 +511,18 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     symbol = str(stock.get("symbol") or "").upper()
     quote = stock.get("quote") or {}
     features = stock.get("features_meta") or {}
+
+    prob_up = _prob_up(stock)
+    signal = _signal(stock)
+    change_pct = _num(quote.get("changePct"), 0.0) or 0.0
+
+    # Strong upside opportunity must have at least reasonable upside probability.
+    # BUY can survive slightly lower probability because decision ladder may override based on pattern/momentum.
+    if prob_up < MIN_PROB_UP_SOFT:
+        return None
+
+    if prob_up < MIN_PROB_UP_STRONG and signal != "BUY":
+        return None
 
     regime = detect_regime(stock)
     weights = dynamic_weights(regime)
@@ -497,12 +536,39 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "early_expansion": score_early_expansion(features),
     }
 
+    # Early expansion should not dominate unless model/probability confirms it.
+    if not (
+        prob_up >= 0.55
+        and change_pct >= 0
+        and factor_scores["volume"] >= 65
+        and factor_scores["momentum"] >= 65
+    ):
+        factor_scores["early_expansion"] = min(
+            factor_scores["early_expansion"],
+            MAX_EARLY_EXPANSION_DEFAULT,
+        )
+
     opportunity_score = sum(factor_scores[k] * weights[k] for k in weights)
     stability = stability_profile(stock)
-    final_score = round(_clamp(opportunity_score * stability["multiplier"]), 2)
+
+    final_score = opportunity_score * stability["multiplier"]
+
+    # Negative daily move penalty.
+    # It may still qualify, but only as a pullback setup, not acceleration.
+    pullback_setup = False
+    if change_pct <= NEGATIVE_MOVE_PENALTY_TRIGGER:
+        final_score *= 0.82
+        pullback_setup = True
+
+    final_score = round(_clamp(final_score), 2)
 
     if final_score < MIN_FINAL_SCORE:
         return None
+
+    setup_label = derive_setup_label(stock, factor_scores)
+
+    if pullback_setup:
+        setup_label = "Constructive Pullback Watch"
 
     return {
         "symbol": symbol,
@@ -512,15 +578,15 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "opportunityScore": round(opportunity_score, 2),
         "stabilityMultiplier": stability["multiplier"],
         "confidence": round(_clamp(_confidence(stock)), 2),
-        "probUp": round(_prob_up(stock), 4),
-        "signal": _signal(stock),
+        "probUp": round(prob_up, 4),
+        "signal": signal,
         "price": quote.get("price"),
         "change": quote.get("change"),
         "changePct": quote.get("changePct"),
         "quote_updated_at": quote.get("updated_at"),
         "computed_at": stock.get("computed_at"),
         "marketRegime": regime,
-        "setupLabel": derive_setup_label(stock, factor_scores),
+        "setupLabel": setup_label,
         "reason": build_reason(stock, factor_scores),
         "whyNow": build_why_now(factor_scores),
         "riskLevel": stability["riskLevel"],
@@ -529,9 +595,8 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "weights": weights,
         "pattern": (stock.get("pattern") or {}).get("pattern")
             or (stock.get("pattern") or {}).get("patternLabel"),
-        "schema_version": "alpha_watch_item_v2",
+        "schema_version": "alpha_watch_item_v3",
     }
-
 
 def apply_diversity_filter(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     selected = []
