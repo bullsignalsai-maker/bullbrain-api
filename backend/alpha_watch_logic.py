@@ -620,14 +620,27 @@ def apply_diversity_filter(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     scored = []
+    reject_counts: Dict[str, int] = {}
 
     for doc in stock_docs:
         try:
+            ok, reasons = passes_quality_filter(doc)
+
+            if not ok:
+                for r in reasons:
+                    reject_counts[r] = reject_counts.get(r, 0) + 1
+                continue
+
             item = score_stock(doc)
             if item:
                 scored.append(item)
+            else:
+                reject_counts["score_below_threshold_or_prob_gate"] = (
+                    reject_counts.get("score_below_threshold_or_prob_gate", 0) + 1
+                )
+
         except Exception:
-            continue
+            reject_counts["exception"] = reject_counts.get("exception", 0) + 1
 
     scored.sort(key=lambda x: x.get("score", 0), reverse=True)
     selected = apply_diversity_filter(scored)
@@ -666,11 +679,11 @@ def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, A
             "input_docs": len(stock_docs),
             "qualified_before_diversity": len(scored),
             "selected": len(selected),
+            "reject_counts": reject_counts,
         },
         "disclaimer": "AI Opportunity Watch is probabilistic and for informational and educational purposes only. Not financial advice.",
-        "schema_version": "alpha_watch_v2",
+        "schema_version": "alpha_watch_v2_debug",
     }
-
 
 def persist_alpha_watch(db: firestore.Client, stock_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
     payload = build_alpha_watch_from_docs(stock_docs)
