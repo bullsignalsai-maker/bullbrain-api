@@ -82,15 +82,27 @@ from backend.firestore_utils import utc_now_iso
 MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]  # Keep if needed elsewhere
 
 CORE_UNIVERSE = [
-    # Homescreen Top 20 (High Signal)
-    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AVGO",
-    "AMD", "PLTR", "SMCI", "ARM", "NFLX", "COIN", "MSTR",
-    "LLY", "JPM", "V", "MA", "CRM",
-
-    # Additional strong candidates for movers
-    "ORCL", "ADBE", "QCOM", "INTC", "BAC", "GS", "MS", "XOM", "CVX",
-    "WMT", "HD", "COST", "PFE", "ABBV", "MRK"
-]  # Total ~35
+    "NVDA",   # NVIDIA
+    "GOOGL",  # Alphabet (Google)
+    "AAPL",   # Apple
+    "MSFT",   # Microsoft
+    "AMZN",   # Amazon
+    "AVGO",   # Broadcom
+    "META",   # Meta Platforms
+    "TSLA",   # Tesla
+    "LLY",    # Eli Lilly
+    "WMT",    # Walmart
+    "BRK.B",  # Berkshire Hathaway
+    "JPM",    # JPMorgan Chase
+    "V",      # Visa
+    "MA",     # Mastercard
+    "XOM",    # Exxon Mobil
+    "UNH",    # UnitedHealth Group
+    "PG",     # Procter & Gamble
+    "HD",     # Home Depot
+    "COST",   # Costco
+    "MRK"     # Merck
+]
 
 ACTIVE_SYMBOL_LIMIT = 60
 TOTAL_SCAN_LIMIT = 80
