@@ -63,6 +63,7 @@ from backend.news_repo import fetch_symbol_news
 # If they already exist elsewhere, keep these imports here (no breaking).
 from backend.technicals import build_technical_snapshot
 from backend.market_awareness import build_market_awareness
+from backend.alpha_watch_logic import persist_alpha_watch
 try:
     from zoneinfo import ZoneInfo  # py3.9+
 except Exception:
@@ -1632,6 +1633,16 @@ def main():
     persist_internal_market_movers()
     persist_homescreen_core_signals()
 
+    try:
+        alpha_watch = persist_alpha_watch(get_db(), results)
+        log(
+            f"🎯 alpha_watch updated | "
+            f"count={alpha_watch.get('count', 0)} "
+            f"regime={alpha_watch.get('market_regime')} "
+            f"updated_at={alpha_watch.get('updated_at')}"
+        )
+    except Exception as e:
+        log_exc("alpha_watch persistence failed", e)
     try:
         alert_result = run_watchlist_push_alerts()
         log(f"🔔 watchlist push alerts checked | {alert_result}")
