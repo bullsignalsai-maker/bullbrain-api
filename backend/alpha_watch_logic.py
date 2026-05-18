@@ -25,7 +25,7 @@ MIN_AVG_VOLUME_20D = 1_200_000
 MAX_FRESHNESS_HOURS = 36
 MIN_PROB_UP_SOFT = 0.42
 MIN_PROB_UP_STRONG = 0.48
-MIN_FINAL_SCORE = 64.0
+MIN_FINAL_SCORE = 62.0
 NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
 MAX_EARLY_EXPANSION_DEFAULT = 85.0
 MAX_ITEMS = 8
@@ -541,9 +541,9 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "early_expansion": score_early_expansion(features),
     }
     pattern_name = (
-    (stock.get("pattern") or {}).get("pattern")
-    or (stock.get("pattern") or {}).get("patternLabel")
-    or ""
+        (stock.get("pattern") or {}).get("pattern")
+        or (stock.get("pattern") or {}).get("patternLabel")
+        or ""
     )
 
     bearish_patterns = {
@@ -592,7 +592,7 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         setup_label = "Cautionary Momentum Watch"
 
     if prob_up < 0.40:
-        setup_label = "Low-Conviction Momentum Watch"
+        setup_label = "Developing Momentum Watch"
     elif prob_up < 0.46 and signal != "BUY":
         setup_label = "Momentum Watch"
 
