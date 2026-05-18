@@ -522,11 +522,12 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     # Strong upside opportunity must have at least reasonable upside probability.
     # BUY can survive slightly lower probability because decision ladder may override based on pattern/momentum.
-    if prob_up < 0.40:
-        return None
 
-    if prob_up < 0.46 and signal != "BUY":
-        return None
+    probability_penalty = 1.0
+    if prob_up < 0.40:
+        probability_penalty = 0.78
+    elif prob_up < 0.46:
+        probability_penalty = 0.90
 
     regime = detect_regime(stock)
     weights = dynamic_weights(regime)
@@ -555,7 +556,7 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     opportunity_score = sum(factor_scores[k] * weights[k] for k in weights)
     stability = stability_profile(stock)
 
-    final_score = opportunity_score * stability["multiplier"]
+    final_score = opportunity_score * stability["multiplier"] * probability_penalty
 
     # Negative daily move penalty.
     # It may still qualify, but only as a pullback setup, not acceleration.
