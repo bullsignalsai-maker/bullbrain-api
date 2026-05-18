@@ -4174,12 +4174,41 @@ def add_watchlist_symbol(user_id: str, symbol: str):
     except Exception:
         pass
 
-    # 3️⃣ Warm caches (best effort, non-blocking)
+    # 3️⃣ Warm quote immediately first
+    quote_status = "pending"
+
     try:
-        ensure_quote(sym)
+        from backend.quote_provider import fetch_equity_quote
+        from backend.quote_repo import save_quote
+
+        live_quote = fetch_equity_quote(sym)
+
+        if live_quote and live_quote.get("price") is not None:
+            live_quote["needs_refresh"] = False
+            save_quote(sym, live_quote)
+            quote_status = "ready"
+        else:
+            ensure_quote(sym)
+            quote_status = "pending"
+
+    except Exception as e:
+        print(f"[watchlist] quote warm failed for {sym}: {e}")
+        try:
+            ensure_quote(sym)
+        except Exception:
+            pass
+        quote_status = "pending"
+
+
+    # 4️⃣ Warm intelligence best-effort
+    intelligence_status = "pending"
+
+    try:
         bootstrap_stock(sym)
-    except Exception:
-        pass
+        intelligence_status = "ready"
+    except Exception as e:
+        print(f"[watchlist] bootstrap pending for {sym}: {e}")
+        intelligence_status = "pending"
 
     # 4️⃣ 🔥 FORCE snapshot rebuild (ignore TTL)
     try:
@@ -4191,6 +4220,8 @@ def add_watchlist_symbol(user_id: str, symbol: str):
         "status": "ok",
         "user_id": user_id,
         "symbol": sym,
+        "quote_status": quote_status,
+        "intelligence_status": intelligence_status,
     }
 
 

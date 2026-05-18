@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from backend.stock_repo import get_stock
 from backend.firestore_utils import utc_now_iso, get_db
 from backend.explain.watchlist_summary import resolve_watchlist_summary
-
+from backend.quote_repo import get_quote
 
 COL_SNAPSHOTS = "watchlist_snapshots"
 
@@ -90,8 +90,26 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         days5 = fwd.get("days5") or {}
 
         stock_quote = stock.get("quote") or {}
-        price = stock_quote.get("price")
-        change_pct = stock_quote.get("changePct")
+        shared_quote = get_quote(sym) or {}
+
+        price = (
+            stock_quote.get("price")
+            if stock_quote.get("price") is not None
+            else shared_quote.get("price")
+        )
+
+        change_pct = (
+            stock_quote.get("changePct")
+            if stock_quote.get("changePct") is not None
+            else shared_quote.get("changePct")
+        )
+
+        quote_updated_at = (
+            stock_quote.get("updated_at")
+            or stock.get("quote_updated_at")
+            or shared_quote.get("updated_at")
+        )
+
         market_awareness = stock.get("marketAwareness") or {}
 
         # -------------------------------------------------
@@ -157,7 +175,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "change": change,
                 "changePct": change_pct,
             },
-            "quote_updated_at": stock_quote.get("updated_at"),
+            "quote_updated_at": quote_updated_at,
 
             # ── BULLBRAIN ──
             "bullbrain": {
