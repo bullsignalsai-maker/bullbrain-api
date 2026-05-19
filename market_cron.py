@@ -69,8 +69,14 @@ try:
 except Exception:
     ZoneInfo = None  # type: ignore
 from backend.firestore_utils import utc_now_iso
-
-
+try:
+    from backend.grok_firestore_writer import save_grok_market_memory
+except Exception:
+    save_grok_market_memory = None
+try:
+    from backend.verified_alpha_builder import save_verified_alpha_payload
+except Exception:
+    save_verified_alpha_payload = None
 # =========================================================
 # CONSTANTS
 # =========================================================
@@ -221,6 +227,31 @@ US_MARKET_HOLIDAYS = {
     "2026-12-25",
 }
 
+def run_verified_alpha_safely():
+    if save_verified_alpha_payload is None:
+        log("verified alpha builder unavailable. Skipping.")
+        return
+
+    try:
+        result = save_verified_alpha_payload()
+        log(f"verified alpha result: {result}")
+    except Exception as e:
+        log_exc("verified alpha failed safely", e)
+
+def run_grok_market_memory_safely():
+    """
+    Grok/Google Sheets is enhancement only.
+    If it fails, internal Alphaclara intelligence continues.
+    """
+    if save_grok_market_memory is None:
+        print("[market-cron] Grok writer unavailable. Skipping.", flush=True)
+        return
+
+    try:
+        result = save_grok_market_memory()
+        print(f"[market-cron] Grok memory result: {result}", flush=True)
+    except Exception as e:
+        print(f"[market-cron] Grok memory failed safely: {e}", flush=True)
 
 def is_us_market_holiday(now_utc: datetime.datetime) -> bool:
     et = now_utc.astimezone(ET)
@@ -1658,6 +1689,15 @@ def main():
     )
     persist_internal_market_movers()
     persist_homescreen_core_signals()
+
+    # ---------------------------------------------------------
+    # GROK ENHANCEMENT LAYER (SAFE)
+    # ---------------------------------------------------------
+    try:
+        run_grok_market_memory_safely()
+        run_verified_alpha_safely()
+    except Exception as e:
+        log_exc("grok enhancement layer failed", e)
 
     try:
         alpha_watch = persist_alpha_watch(get_db(), results)

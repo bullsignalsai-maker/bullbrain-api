@@ -4312,6 +4312,100 @@ def get_market_movers(mode: str = "preview"):
             "updated_at": None,
             "error": str(e),
         }
+    
+
+@app.get("/verified-alpha")
+def get_verified_alpha():
+    """
+    App-facing verified alpha endpoint.
+
+    Priority:
+    1. Verified Grok + Google Sheets + Finnhub enriched payload
+    2. Internal market_movers fallback
+    3. Empty safe response
+    """
+    try:
+        snap = (
+            db.collection("bullsignals_ai")
+              .document("verified_alpha_opportunities")
+              .get()
+        )
+
+        if snap.exists:
+            data = snap.to_dict() or {}
+
+            if not data.get("fallback_required"):
+                return {
+                    "status": "ok",
+                    "source": data.get("source", "grok_google_sheet_verified"),
+                    "updated_at": data.get("updated_at"),
+                    "counts": data.get("counts", {}),
+                    "premarket_gainers": data.get("premarket_gainers", []),
+                    "premarket_losers": data.get("premarket_losers", []),
+                    "alpha_opportunities": data.get("alpha_opportunities", []),
+                    "schema_version": data.get("schema_version", "verified_alpha_v1"),
+                    "fallback_used": False,
+                }
+
+        # -----------------------------------------------------
+        # Fallback: internal market movers
+        # -----------------------------------------------------
+        mover_snap = (
+            db.collection("bullsignals_ai")
+              .document("market_movers")
+              .get()
+        )
+
+        if mover_snap.exists:
+            m = mover_snap.to_dict() or {}
+
+            movers = m.get("movers", []) or []
+            gainers = [x for x in movers if x.get("direction") == "up"][:10]
+            losers = [x for x in movers if x.get("direction") == "down"][:10]
+
+            return {
+                "status": "fallback",
+                "source": "internal_market_movers",
+                "updated_at": m.get("updated_at"),
+                "counts": {
+                    "premarket_gainers": len(gainers),
+                    "premarket_losers": len(losers),
+                    "alpha_opportunities": 0,
+                },
+                "premarket_gainers": gainers,
+                "premarket_losers": losers,
+                "alpha_opportunities": [],
+                "schema_version": "verified_alpha_fallback_v1",
+                "fallback_used": True,
+            }
+
+        return {
+            "status": "empty",
+            "source": "none",
+            "updated_at": None,
+            "counts": {
+                "premarket_gainers": 0,
+                "premarket_losers": 0,
+                "alpha_opportunities": 0,
+            },
+            "premarket_gainers": [],
+            "premarket_losers": [],
+            "alpha_opportunities": [],
+            "schema_version": "verified_alpha_empty_v1",
+            "fallback_used": True,
+        }
+
+    except Exception as e:
+        print("[verified-alpha] error:", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "premarket_gainers": [],
+            "premarket_losers": [],
+            "alpha_opportunities": [],
+            "fallback_used": True,
+        }
+        
 # -----------------------------
 # 5) Market News
 # -----------------------------

@@ -10,3 +10,6 @@ scikit-learn
 gdown
 firebase-admin==6.2.0
 google-cloud-firestore
+gspread
+google-auth
+firebase-admin
