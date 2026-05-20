@@ -28,12 +28,27 @@ def latest_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [r for r in rows if str(r.get("generated_at", "")) == latest_ts]
 
 def get_sheet_client():
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=SCOPES,
-    )
-    return gspread.authorize(creds)
+    import json
 
+    # Prefer dedicated Google Sheets service account if added later.
+    service_json = (
+        os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        or os.getenv("FIREBASE_ADMIN_JSON")
+    )
+
+    if service_json:
+        info = json.loads(service_json)
+        creds = Credentials.from_service_account_info(
+            info,
+            scopes=SCOPES,
+        )
+    else:
+        creds = Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE,
+            scopes=SCOPES,
+        )
+
+    return gspread.authorize(creds)
 
 def read_tab(tab_name: str) -> List[Dict[str, Any]]:
     client = get_sheet_client()
