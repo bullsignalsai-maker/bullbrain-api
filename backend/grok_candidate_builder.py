@@ -6,8 +6,15 @@ from backend.market_memory_sheet import get_all_market_memory_candidates
 
 
 def _clean_symbol(symbol: str) -> str:
-    return str(symbol or "").strip().upper()
+    s = str(symbol or "").strip().upper()
 
+    # Fix accidental repeated symbols like AMDAMD, LLYLLY, JPMJPM
+    if len(s) % 2 == 0:
+        half = len(s) // 2
+        if s[:half] == s[half:]:
+            s = s[:half]
+
+    return s
 
 def _to_int(value, default: int = 0) -> int:
     try:

@@ -25,8 +25,40 @@ def latest_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
-    latest_ts = max(str(r.get("generated_at", "")) for r in rows)
-    return [r for r in rows if str(r.get("generated_at", "")) == latest_ts]
+    clean_rows = [
+        r for r in rows
+        if r.get("market_day") and r.get("session_type")
+    ]
+
+    if not clean_rows:
+        return rows
+
+    latest_day = max(str(r.get("market_day", "")) for r in clean_rows)
+
+    day_rows = [
+        r for r in clean_rows
+        if str(r.get("market_day", "")) == latest_day
+    ]
+
+    session_rank = {
+        "PREMARKET": 1,
+        "MIDDAY": 2,
+        "END_OF_DAY": 3,
+    }
+
+    latest_session = max(
+        (
+            str(r.get("session_type", "")).upper()
+            for r in day_rows
+            if str(r.get("session_type", "")).upper() in session_rank
+        ),
+        key=lambda s: session_rank[s],
+    )
+
+    return [
+        r for r in day_rows
+        if str(r.get("session_type", "")).upper() == latest_session
+    ]
 
 def get_sheet_client():
     import json
@@ -58,7 +90,7 @@ def read_tab(tab_name: str) -> List[Dict[str, Any]]:
     else:
         sheet = client.open(SHEET_NAME)
     worksheet = sheet.worksheet(tab_name)
-    
+
     return worksheet.get_all_records()
 
 
