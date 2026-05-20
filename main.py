@@ -4339,6 +4339,8 @@ def get_verified_alpha():
                     "status": "ok",
                     "source": data.get("source", "grok_google_sheet_verified"),
                     "updated_at": data.get("updated_at"),
+                    "session_type": data.get("session_type", "PREMARKET"),
+                    "market_summary": data.get("market_summary", {}),
                     "counts": data.get("counts", {}),
                     "premarket_gainers": data.get("premarket_gainers", []),
                     "premarket_losers": data.get("premarket_losers", []),

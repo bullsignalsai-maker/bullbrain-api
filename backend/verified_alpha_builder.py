@@ -101,6 +101,8 @@ def build_verified_alpha_payload() -> Dict[str, Any]:
     return {
         "source": "grok_google_sheet_verified",
         "updated_at": _now_iso(),
+        "session_type": enriched.get("session_type", "PREMARKET"),
+        "market_summary": enriched.get("market_summary", {}),
         "fallback_required": fallback_required,
         "counts": {
             "premarket_gainers": len(gainers),
