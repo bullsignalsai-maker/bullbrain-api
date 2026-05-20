@@ -54,7 +54,27 @@ def build_verified_alpha_payload() -> Dict[str, Any]:
     - If Grok/Sheets fail or produce no verified data, caller can fall back to internal docs.
     """
 
-    enriched = enrich_candidates()
+    db = _db()
+    snap = db.collection(COL_ROOT).document("grok_market_memory").get()
+
+    if not snap.exists:
+        return {
+            "source": "grok_google_sheet_verified",
+            "updated_at": _now_iso(),
+            "fallback_required": True,
+            "counts": {
+                "premarket_gainers": 0,
+                "premarket_losers": 0,
+                "alpha_opportunities": 0,
+            },
+            "premarket_gainers": [],
+            "premarket_losers": [],
+            "alpha_opportunities": [],
+            "schema_version": "verified_alpha_v1",
+        }
+
+    memory = snap.to_dict() or {}
+    enriched = memory.get("premarket_latest") or {}
 
     gainers = [_normalize_for_app(x) for x in enriched.get("premarket_gainers", [])]
     losers = [_normalize_for_app(x) for x in enriched.get("premarket_losers", [])]
