@@ -6,6 +6,7 @@ from google.oauth2.service_account import Credentials
 
 
 SHEET_NAME = "Alphaclara Market Memory"
+SHEET_ID = os.getenv("MARKET_MEMORY_SHEET_ID")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -52,8 +53,12 @@ def get_sheet_client():
 
 def read_tab(tab_name: str) -> List[Dict[str, Any]]:
     client = get_sheet_client()
-    sheet = client.open(SHEET_NAME)
+    if SHEET_ID:
+        sheet = client.open_by_key(SHEET_ID)
+    else:
+        sheet = client.open(SHEET_NAME)
     worksheet = sheet.worksheet(tab_name)
+    
     return worksheet.get_all_records()
 
 

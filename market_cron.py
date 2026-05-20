@@ -427,9 +427,13 @@ def _today_et() -> str:
     return datetime.datetime.now(ET).date().isoformat()
 
 
-def _daily_movers_doc_id(date_str: Optional[str] = None) -> str:
-    return f"daily_movers_{date_str or _today_et()}"
-
+def _daily_movers_doc_ref(db, date_str: Optional[str] = None):
+    return (
+        db.collection(COL_ROOT)
+          .document("market_memory")
+          .collection("daily_movers")
+          .document(date_str or _today_et())
+    )
 
 def _seconds_since_iso(ts_iso: Optional[str]) -> Optional[int]:
     try:
@@ -447,9 +451,8 @@ def load_daily_mover_symbols(limit: int = 40) -> List[str]:
     Used by market_cron full intelligence universe.
     """
     db = get_db()
-    doc_id = _daily_movers_doc_id()
+    snap = _daily_movers_doc_ref(db).get()
 
-    snap = db.collection(COL_ROOT).document(doc_id).get()
     if not snap.exists:
         return []
 
@@ -503,8 +506,7 @@ def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
         return False, None
 
     db = get_db()
-    doc_id = _daily_movers_doc_id()
-    snap = db.collection(COL_ROOT).document(doc_id).get()
+    snap = _daily_movers_doc_ref(db).get()
 
     if not snap.exists:
         return True, phase
@@ -541,7 +543,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
 
     db = get_db()
     today = _today_et()
-    doc_id = _daily_movers_doc_id(today)
+    doc_ref = _daily_movers_doc_ref(db, today)
     now_iso = utc_now_iso()
 
     symbols = []
@@ -637,7 +639,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     # ---------------------------------------------------------
     existing_discovery = {}
 
-    existing_snap = db.collection(COL_ROOT).document(doc_id).get()
+    existing_snap = doc_ref.get()
     if existing_snap.exists:
         existing_data = existing_snap.to_dict() or {}
         if isinstance(existing_data.get("discovery"), dict):
@@ -653,7 +655,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     existing_discovery["last_universe_count"] = len(symbols)
     existing_discovery["last_valid_quote_count"] = len(rows)
 
-    db.collection(COL_ROOT).document(doc_id).set(
+    doc_ref.set(
         {
             "date": today,
             "source": "sp500_light_quote_scan",
@@ -674,7 +676,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     )
 
     log(
-        f"✅ daily movers saved | doc={doc_id} "
+        f"✅ daily movers saved | doc=market_memory/daily_movers/{today} "
         f"gainers={len(gainers)} losers={len(losers)} symbols={len(mover_symbols)}"
     )
 
