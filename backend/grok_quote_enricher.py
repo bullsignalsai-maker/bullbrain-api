@@ -3,8 +3,6 @@
 from typing import Dict, List, Any
 
 from backend.grok_candidate_builder import build_grok_candidates
-
-# quote_provider.py is in project root, not backend/
 from quote_provider import fetch_equity_quote
 
 
@@ -18,34 +16,54 @@ def _safe_float(value, default=0.0):
         return default
 
 
-def enrich_symbol(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    symbol = candidate.get("symbol")
+def _get_cached_quote(symbol: str, quote_cache: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    symbol = str(symbol or "").upper().strip()
 
     if not symbol:
         return {}
 
+    if symbol in quote_cache:
+        return quote_cache[symbol]
+
     try:
-        quote = fetch_equity_quote(symbol)
+        quote = fetch_equity_quote(symbol) or {}
     except Exception as e:
-        print(f"[grok_quote_enricher] quote fetch failed for {symbol}: {e}")
+        print(f"[grok_quote_enricher] quote fetch failed for {symbol}: {e}", flush=True)
+        quote = {}
+
+    quote_cache[symbol] = quote
+    return quote
+
+
+def enrich_symbol(candidate: Dict[str, Any], quote_cache: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    symbol = str(candidate.get("symbol") or "").upper().strip()
+
+    if not symbol:
         return {}
+
+    quote = _get_cached_quote(symbol, quote_cache)
 
     if not quote:
-        return {}
-
-    price = _safe_float(quote.get("price"))
+        print(f"[grok_quote_enricher] no quote returned for {symbol}; keeping unverified", flush=True)
+        return {
+            **candidate,
+            "quote_verified": False,
+            "quote": {},
+        }
+    raw_price = quote.get("price")
+    price = _safe_float(raw_price, default=None)
     change = _safe_float(quote.get("change"))
     change_pct = _safe_float(quote.get("changePct"))
 
-    # Filter out penny / invalid stocks for app-facing quality
-    if price < MIN_PRICE:
+    if price is not None and price < MIN_PRICE:
+        print(f"[grok_quote_enricher] skipped {symbol}: price {price} < {MIN_PRICE}", flush=True)
         return {}
 
     return {
         **candidate,
         "quote_verified": True,
         "quote": {
-            "price": round(price, 2),
+            "price": round(price, 2) if price is not None else None,
             "change": round(change, 2),
             "changePct": round(change_pct, 2),
             "open": quote.get("open"),
@@ -59,6 +77,7 @@ def enrich_symbol(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
 def enrich_candidates() -> Dict[str, List[Dict[str, Any]]]:
     candidates = build_grok_candidates()
+    quote_cache: Dict[str, Dict[str, Any]] = {}
 
     result = {
         "premarket_gainers": [],
@@ -66,9 +85,16 @@ def enrich_candidates() -> Dict[str, List[Dict[str, Any]]]:
         "alpha_opportunities": [],
     }
 
-    for section in result.keys():
+    # IMPORTANT: alpha first, so best opportunities do not suffer from rate limits
+    section_order = [
+        "alpha_opportunities",
+        "premarket_gainers",
+        "premarket_losers",
+    ]
+
+    for section in section_order:
         for candidate in candidates.get(section, []):
-            enriched = enrich_symbol(candidate)
+            enriched = enrich_symbol(candidate, quote_cache)
             if enriched:
                 result[section].append(enriched)
 
