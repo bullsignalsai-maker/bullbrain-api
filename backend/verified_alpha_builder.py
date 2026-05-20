@@ -45,49 +45,63 @@ def _normalize_for_app(item: Dict[str, Any]) -> Dict[str, Any]:
         "generatedAt": item.get("generated_at"),
     }
 
+def _empty_payload() -> Dict[str, Any]:
+    return {
+        "source": "grok_google_sheet_verified",
+        "updated_at": _now_iso(),
+        "fallback_required": True,
+        "counts": {
+            "premarket_gainers": 0,
+            "premarket_losers": 0,
+            "alpha_opportunities": 0,
+        },
+        "premarket_gainers": [],
+        "premarket_losers": [],
+        "alpha_opportunities": [],
+        "schema_version": "verified_alpha_v1",
+    }
+
 
 def build_verified_alpha_payload() -> Dict[str, Any]:
-    """
-    Builds app-facing verified alpha + movers payload.
-
-    Safe rule:
-    - If Grok/Sheets fail or produce no verified data, caller can fall back to internal docs.
-    """
-
     db = _db()
+
     snap = db.collection(COL_ROOT).document("grok_market_memory").get()
 
     if not snap.exists:
-        return {
-            "source": "grok_google_sheet_verified",
-            "updated_at": _now_iso(),
-            "fallback_required": True,
-            "counts": {
-                "premarket_gainers": 0,
-                "premarket_losers": 0,
-                "alpha_opportunities": 0,
-            },
-            "premarket_gainers": [],
-            "premarket_losers": [],
-            "alpha_opportunities": [],
-            "schema_version": "verified_alpha_v1",
-        }
+        return _empty_payload()
 
     memory = snap.to_dict() or {}
     enriched = memory.get("premarket_latest") or {}
 
-    gainers = [_normalize_for_app(x) for x in enriched.get("premarket_gainers", [])]
-    losers = [_normalize_for_app(x) for x in enriched.get("premarket_losers", [])]
-    opportunities = [_normalize_for_app(x) for x in enriched.get("alpha_opportunities", [])]
+    gainers_raw = enriched.get("premarket_gainers", []) or []
+    losers_raw = enriched.get("premarket_losers", []) or []
+    alpha_raw = enriched.get("alpha_opportunities", []) or []
+
+    gainers = [_normalize_for_app(x) for x in gainers_raw]
+    losers = [_normalize_for_app(x) for x in losers_raw]
+    opportunities = [_normalize_for_app(x) for x in alpha_raw]
+
+    gainers = [x for x in gainers if x.get("symbol")]
+    losers = [x for x in losers if x.get("symbol")]
+    opportunities = [x for x in opportunities if x.get("symbol")]
 
     gainers.sort(key=lambda x: float(x.get("changePct") or 0), reverse=True)
     losers.sort(key=lambda x: float(x.get("changePct") or 0))
-    opportunities.sort(key=lambda x: float(x.get("finalAlphaScore") or 0), reverse=True)
+    opportunities.sort(
+        key=lambda x: float(x.get("finalAlphaScore") or 0),
+        reverse=True,
+    )
+
+    fallback_required = (
+        len(gainers) == 0
+        and len(losers) == 0
+        and len(opportunities) == 0
+    )
 
     return {
         "source": "grok_google_sheet_verified",
         "updated_at": _now_iso(),
-        "fallback_required": len(opportunities) == 0 and len(gainers) == 0 and len(losers) == 0,
+        "fallback_required": fallback_required,
         "counts": {
             "premarket_gainers": len(gainers),
             "premarket_losers": len(losers),
@@ -98,7 +112,6 @@ def build_verified_alpha_payload() -> Dict[str, Any]:
         "alpha_opportunities": opportunities[:10],
         "schema_version": "verified_alpha_v1",
     }
-
 
 def save_verified_alpha_payload() -> Dict[str, Any]:
     payload = build_verified_alpha_payload()
