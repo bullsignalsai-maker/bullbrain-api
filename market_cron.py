@@ -43,7 +43,7 @@ from firebase_admin import firestore
 
 import main as backend
 from symbols_clean import COMPANY_NAMES, REAL_TICKERS
-
+from backend.market_momentum import save_market_momentum_screen
 from backend.candle_store import get_candles
 from backend.explain.indicator_states import compute_indicator_states
 from backend.explain.narrative_engine import build_full_narrative_bundle
@@ -1709,8 +1709,26 @@ def main():
             f"regime={alpha_watch.get('market_regime')} "
             f"updated_at={alpha_watch.get('updated_at')}"
         )
+
     except Exception as e:
         log_exc("alpha_watch persistence failed", e)
+
+    # ---------------------------------------------------------
+    # MARKET MOMENTUM SCREEN CACHE
+    # Builds Firestore-first UI-ready data for Momentum Movers screen
+    # ---------------------------------------------------------
+    try:
+        momentum_screen = save_market_momentum_screen(window_days=5)
+        log(
+            f"📈 market momentum screen updated | "
+            f"repeated={momentum_screen.get('pulse', {}).get('repeatedSymbols')} "
+            f"positive={len(momentum_screen.get('momentumMovers', []))} "
+            f"pullbacks={len(momentum_screen.get('pullbackWatch', []))} "
+            f"ai={len(momentum_screen.get('aiWatchlistMomentum', []))}"
+        )
+    except Exception as e:
+        log_exc("market momentum screen persistence failed", e)
+            
     try:
         alert_result = run_watchlist_push_alerts()
         log(f"🔔 watchlist push alerts checked | {alert_result}")

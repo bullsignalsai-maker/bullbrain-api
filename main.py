@@ -34,7 +34,7 @@ from backend.watchlist_snapshot import (
 from fastapi import APIRouter
 
 from backend.news.market_news_repo import get_market_news
-
+from backend.market_momentum import get_market_momentum_screen, save_market_momentum_screen
 
 router = APIRouter()
 app = FastAPI()
@@ -4498,3 +4498,11 @@ def quotes_bulk(
     }
 
 
+@app.get("/market-momentum")
+def market_momentum():
+    return get_market_momentum_screen()
+
+
+@app.post("/market-momentum/refresh")
+def refresh_market_momentum():
+    return save_market_momentum_screen()
