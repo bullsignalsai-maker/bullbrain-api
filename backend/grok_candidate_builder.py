@@ -28,7 +28,9 @@ def _normalize_candidate(row: Dict[str, Any], source: str) -> Dict[str, Any]:
 
     return {
         "symbol": symbol,
-        "source": source,  # premarket_gainer / premarket_loser / alpha_opportunity
+        "source": source,
+        "market_day": str(row.get("market_day", "")).strip(),
+        "session_type": str(row.get("session_type", "")).strip().upper(),
         "sector": str(row.get("sector", "")).strip(),
         "mover_quality": str(row.get("mover_quality", "")).strip(),
         "primary_catalysts": str(row.get("primary_catalysts", "")).strip(),
