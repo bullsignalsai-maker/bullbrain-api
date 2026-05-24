@@ -188,91 +188,128 @@ def _sparkline_from_rows(rows: List[Dict[str, Any]]) -> List[float]:
 
 
 def _build_continuous_movers(daily_docs: List[Dict[str, Any]], window_days: int):
-    positive = defaultdict(list)
-    negative = defaultdict(list)
+    by_symbol = defaultdict(list)
 
     for doc in daily_docs:
         date = doc.get("date")
 
-        for row in doc.get("gainers") or []:
+        for row in (doc.get("gainers") or []):
             sym = _clean_symbol(row.get("symbol"))
             if sym:
-                positive[sym].append({**row, "date": date})
+                by_symbol[sym].append({
+                    **row,
+                    "date": date,
+                    "direction": "up",
+                })
 
-        for row in doc.get("losers") or []:
+        for row in (doc.get("losers") or []):
             sym = _clean_symbol(row.get("symbol"))
             if sym:
-                negative[sym].append({**row, "date": date})
+                by_symbol[sym].append({
+                    **row,
+                    "date": date,
+                    "direction": "down",
+                })
 
     momentum_movers = []
     pullback_watch = []
-
-    for sym, rows in positive.items():
+    for sym, rows in by_symbol.items():
         if len(rows) < 2:
             continue
 
-        rows = sorted(rows, key=lambda r: str(r.get("date") or ""), reverse=True)
-        latest = rows[0]
-        changes = [_safe_float(r.get("changePct")) for r in rows]
-        avg_change = sum(changes) / len(changes)
+        rows = sorted(
+            rows,
+            key=lambda r: str(r.get("date") or ""),
+            reverse=True,
+        )
 
-        momentum_movers.append({
+        latest = rows[0]
+
+        positive_sessions = 0
+        negative_sessions = 0
+
+        changes = []
+
+        for r in rows:
+            cp = _safe_float(r.get("changePct"))
+
+            if cp > 0:
+                positive_sessions += 1
+            elif cp < 0:
+                negative_sessions += 1
+
+            changes.append(cp)
+
+        net_move = sum(changes)
+        avg_change = net_move / len(changes)
+
+        dominant_direction = (
+            "up"
+            if positive_sessions >= negative_sessions
+            else "down"
+        )
+
+        payload = {
             "symbol": sym,
-            "companyName": latest.get("company_name") or latest.get("companyName") or sym,
+            "companyName": latest.get("company_name")
+            or latest.get("companyName")
+            or sym,
+
             "price": _round(latest.get("price")),
             "change": _round(latest.get("change")),
             "changePct": _round(latest.get("changePct"), 2),
-            "direction": "up",
+
+            "direction": dominant_direction,
+
             "appearances": len(rows),
+            "positiveSessions": positive_sessions,
+            "negativeSessions": negative_sessions,
+
             "windowDays": window_days,
+
+            "netMovePct": _round(net_move, 2),
             "avgMovePct": _round(avg_change, 2),
-            "latestMovePct": _round(latest.get("changePct"), 2),
-            "momentumScore": _score_market_mover(
-                len(rows),
-                avg_change,
-                _safe_float(latest.get("changePct")),
+
+            "latestMovePct": _round(
+                latest.get("changePct"),
+                2,
             ),
-            "momentumLabel": _label_for_positive(
-                len(rows),
-                avg_change,
-                _safe_float(latest.get("changePct")),
-            ),
+
             "sparkline": _sparkline_from_rows(rows),
+
             "quote_updated_at": latest.get("quote_updated_at"),
+
             "source": "daily_movers",
-        })
+        }
 
-    for sym, rows in negative.items():
-        if len(rows) < 2:
-            continue
-
-        rows = sorted(rows, key=lambda r: str(r.get("date") or ""), reverse=True)
-        latest = rows[0]
-        changes = [_safe_float(r.get("changePct")) for r in rows]
-        avg_change = sum(changes) / len(changes)
-
-        pullback_watch.append({
-            "symbol": sym,
-            "companyName": latest.get("company_name") or latest.get("companyName") or sym,
-            "price": _round(latest.get("price")),
-            "change": _round(latest.get("change")),
-            "changePct": _round(latest.get("changePct"), 2),
-            "direction": "down",
-            "appearances": len(rows),
-            "windowDays": window_days,
-            "avgMovePct": _round(avg_change, 2),
-            "latestMovePct": _round(latest.get("changePct"), 2),
-            "momentumScore": _score_pullback(
+        if dominant_direction == "up":
+            payload["momentumScore"] = _score_market_mover(
                 len(rows),
                 avg_change,
                 _safe_float(latest.get("changePct")),
-            ),
-            "momentumLabel": _label_for_negative(len(rows), avg_change),
-            "sparkline": _sparkline_from_rows(rows),
-            "quote_updated_at": latest.get("quote_updated_at"),
-            "source": "daily_movers",
-        })
+            )
 
+            payload["momentumLabel"] = _label_for_positive(
+                len(rows),
+                avg_change,
+                _safe_float(latest.get("changePct")),
+            )
+
+            momentum_movers.append(payload)
+
+        else:
+            payload["momentumScore"] = _score_pullback(
+                len(rows),
+                avg_change,
+                _safe_float(latest.get("changePct")),
+            )
+
+            payload["momentumLabel"] = _label_for_negative(
+                len(rows),
+                avg_change,
+            )
+
+            pullback_watch.append(payload)
     momentum_movers.sort(
         key=lambda x: (
             x.get("appearances", 0),
