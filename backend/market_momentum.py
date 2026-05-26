@@ -8,7 +8,7 @@ import firebase_admin
 from firebase_admin import firestore
 
 COL_ROOT = "bullsignals_ai"
-WINDOW_DAYS_DEFAULT = 5
+LOOKBACK_SNAPSHOTS_DEFAULT = 12
 
 
 def get_db():
@@ -55,13 +55,6 @@ def _clean_symbol(symbol: Any) -> str:
     return s
 
 
-def _date_strings(window_days: int) -> List[str]:
-    today = _today_utc_date()
-    return [
-        (today - datetime.timedelta(days=i)).isoformat()
-        for i in range(window_days + 7)
-    ]
-
 
 def _label_for_positive(appearances: int, avg_change: float, latest_change: float) -> str:
     if appearances >= 4 and avg_change >= 4:
@@ -93,46 +86,37 @@ def _score_pullback(appearances: int, avg_change: float, latest_change: float) -
     return min(100, round(score, 1))
 
 
-def _read_daily_movers(db, window_days: int) -> List[Dict[str, Any]]:
+def _read_latest_docs(db, collection_name: str, limit: int) -> List[Dict[str, Any]]:
+    """
+    Reads the latest N available market-memory snapshot documents.
+    This is snapshot-based, not calendar-day based.
+    """
     docs = []
 
-    for d in _date_strings(window_days):
-        snap = (
-            db.collection(COL_ROOT)
-            .document("market_memory")
-            .collection("daily_movers")
-            .document(d)
-            .get()
-        )
+    snaps = (
+        db.collection(COL_ROOT)
+        .document("market_memory")
+        .collection(collection_name)
+        .order_by("__name__", direction=firestore.Query.DESCENDING)
+        .limit(limit)
+        .stream()
+    )
 
+    for snap in snaps:
         if snap.exists:
-            docs.append(snap.to_dict() or {})
-
-        if len(docs) >= window_days:
-            break
+            data = snap.to_dict() or {}
+            data.setdefault("date", snap.id)
+            docs.append(data)
 
     return docs
 
 
-def _read_daily_alpha_intelligence(db, window_days: int) -> List[Dict[str, Any]]:
-    docs = []
+def _read_daily_movers(db, lookback_snapshots: int) -> List[Dict[str, Any]]:
+    return _read_latest_docs(db, "daily_movers", lookback_snapshots)
 
-    for d in _date_strings(window_days):
-        snap = (
-            db.collection(COL_ROOT)
-            .document("market_memory")
-            .collection("daily_alpha_intelligence")
-            .document(d)
-            .get()
-        )
 
-        if snap.exists:
-            docs.append(snap.to_dict() or {})
-
-        if len(docs) >= window_days:
-            break
-
-    return docs
+def _read_daily_alpha_intelligence(db, lookback_snapshots: int) -> List[Dict[str, Any]]:
+    return _read_latest_docs(db, "daily_alpha_intelligence", lookback_snapshots)
 
 
 def _read_alpha_watch_current(db) -> Dict[str, Any]:
@@ -187,7 +171,7 @@ def _sparkline_from_rows(rows: List[Dict[str, Any]]) -> List[float]:
     return values[-10:]
 
 
-def _build_continuous_movers(daily_docs: List[Dict[str, Any]], window_days: int):
+def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshots: int):
     by_symbol = defaultdict(list)
 
     for doc in daily_docs:
@@ -265,7 +249,7 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], window_days: int)
             "positiveSessions": positive_sessions,
             "negativeSessions": negative_sessions,
 
-            "windowDays": window_days,
+            "lookbackSnapshots": lookback_snapshots,
 
             "netMovePct": _round(net_move, 2),
             "avgMovePct": _round(avg_change, 2),
@@ -331,7 +315,7 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], window_days: int)
     return momentum_movers[:20], pullback_watch[:12]
 
 
-def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], window_days: int):
+def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], lookback_snapshots: int):
     by_symbol = defaultdict(list)
     sector_counter = Counter()
     catalyst_counter = Counter()
@@ -408,7 +392,7 @@ def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], window_days: int):
             "riskLevel": latest.get("riskLevel"),
             "alphaAppearances": len(rows),
             "sessions": sessions,
-            "windowDays": window_days,
+            "lookbackSnapshots": lookback_snapshots,
             "avgAlphaScore": _round(avg_score, 1),
             "latestAlphaScore": _round(latest.get("grokAlphaPriorityScore"), 1),
             "lastSession": latest.get("session_type"),
@@ -575,15 +559,23 @@ def _enrich_latest_quotes(db, items: List[Dict[str, Any]]) -> List[Dict[str, Any
     return out
 
 
-def build_market_momentum_payload(window_days: int = WINDOW_DAYS_DEFAULT) -> Dict[str, Any]:
+def build_market_momentum_payload(
+    lookback_snapshots: int = LOOKBACK_SNAPSHOTS_DEFAULT,
+) -> Dict[str, Any]:
     db = get_db()
 
-    daily_docs = _read_daily_movers(db, window_days)
-    alpha_memory_docs = _read_daily_alpha_intelligence(db, window_days)
+    daily_docs = _read_daily_movers(db, lookback_snapshots)
+    alpha_memory_docs = _read_daily_alpha_intelligence(db, lookback_snapshots)
     alpha_watch = _read_alpha_watch_current(db)
 
-    momentum_movers, pullback_watch = _build_continuous_movers(daily_docs, window_days)
-    alpha_memory = _build_alpha_memory(alpha_memory_docs, window_days)
+    momentum_movers, pullback_watch = _build_continuous_movers(
+    daily_docs,
+    lookback_snapshots,
+    )
+    alpha_memory = _build_alpha_memory(
+        alpha_memory_docs,
+        lookback_snapshots,
+    )
 
     confirmed = _build_confirmed_momentum(
         momentum_movers,
@@ -634,7 +626,8 @@ def build_market_momentum_payload(window_days: int = WINDOW_DAYS_DEFAULT) -> Dic
         "screen": "market_momentum",
         "schema_version": "market_momentum_v2",
         "updated_at": utc_now_iso(),
-        "windowDays": window_days,
+        "lookbackSnapshots": lookback_snapshots,
+        "memorySnapshotCount": len(daily_docs),
 
         "pulse": {
             "marketBias": "Bullish" if positive_count >= pullback_count else "Mixed",
@@ -670,9 +663,18 @@ def build_market_momentum_payload(window_days: int = WINDOW_DAYS_DEFAULT) -> Dic
     return payload
 
 
-def save_market_momentum_screen(window_days: int = WINDOW_DAYS_DEFAULT) -> Dict[str, Any]:
+def save_market_momentum_screen(
+    lookback_snapshots: int = LOOKBACK_SNAPSHOTS_DEFAULT,
+    window_days: int | None = None,  # backward compatibility
+) -> Dict[str, Any]:
     db = get_db()
-    payload = build_market_momentum_payload(window_days=window_days)
+
+    if window_days is not None:
+        lookback_snapshots = window_days
+
+    payload = build_market_momentum_payload(
+        lookback_snapshots=lookback_snapshots,
+    )
 
     ref = (
         db.collection(COL_ROOT)

@@ -1643,7 +1643,7 @@ def main():
 
         # Build and save Momentum Movers screen cache after pre-market discovery
         try:
-            momentum_screen = save_market_momentum_screen(window_days=5)
+            momentum_screen = save_market_momentum_screen(lookback_snapshots=12)
             log(
                 f"📈 market momentum screen updated after quote discovery | "
                 f"repeated={momentum_screen.get('pulse', {}).get('repeatedMovers')} "
@@ -1731,7 +1731,7 @@ def main():
     # Builds Firestore-first UI-ready data for Momentum Movers screen
     # ---------------------------------------------------------
     try:
-        momentum_screen = save_market_momentum_screen(window_days=5)
+        momentum_screen = save_market_momentum_screen(lookback_snapshots=12)
         log(
             f"📈 market momentum screen updated | "
             f"repeated={momentum_screen.get('pulse', {}).get('repeatedMovers')} "
