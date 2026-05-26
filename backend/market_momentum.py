@@ -88,17 +88,17 @@ def _score_pullback(appearances: int, avg_change: float, latest_change: float) -
 
 def _read_latest_docs(db, collection_name: str, limit: int) -> List[Dict[str, Any]]:
     """
-    Reads the latest N available market-memory snapshot documents.
-    This is snapshot-based, not calendar-day based.
+    Reads latest available market-memory snapshot docs.
+    Snapshot-based (not calendar-day based).
+    Avoids Firestore index requirements.
     """
+
     docs = []
 
     snaps = (
         db.collection(COL_ROOT)
         .document("market_memory")
         .collection(collection_name)
-        .order_by("__name__", direction=firestore.Query.DESCENDING)
-        .limit(limit)
         .stream()
     )
 
@@ -108,8 +108,12 @@ def _read_latest_docs(db, collection_name: str, limit: int) -> List[Dict[str, An
             data.setdefault("date", snap.id)
             docs.append(data)
 
-    return docs
+    docs.sort(
+        key=lambda d: str(d.get("date") or ""),
+        reverse=True,
+    )
 
+    return docs[:limit]
 
 def _read_daily_movers(db, lookback_snapshots: int) -> List[Dict[str, Any]]:
     return _read_latest_docs(db, "daily_movers", lookback_snapshots)
