@@ -1640,9 +1640,22 @@ def main():
     # 9:15 warm scan: quote-only, no BullBrain
     if mode == "quote_discovery_only":
         refresh_daily_movers_from_sp500()
+
+        # Build and save Momentum Movers screen cache after pre-market discovery
+        try:
+            momentum_screen = save_market_momentum_screen(window_days=5)
+            log(
+                f"📈 market momentum screen updated after quote discovery | "
+                f"repeated={momentum_screen.get('pulse', {}).get('repeatedMovers')} "
+                f"positive={len(momentum_screen.get('momentumMovers', []))} "
+                f"pullbacks={len(momentum_screen.get('pullbackWatch', []))} "
+                f"ai={len(momentum_screen.get('aiWatchlistMomentum', []))}"
+            )
+        except Exception as e:
+            log_exc("market momentum screen persistence failed after quote discovery", e)
+
         log("✅ quote discovery warm scan completed — skipping BullBrain")
         return
-
     scan_symbols, scan_meta = build_scan_universe()
 
     log(
@@ -1721,7 +1734,7 @@ def main():
         momentum_screen = save_market_momentum_screen(window_days=5)
         log(
             f"📈 market momentum screen updated | "
-            f"repeated={momentum_screen.get('pulse', {}).get('repeatedSymbols')} "
+            f"repeated={momentum_screen.get('pulse', {}).get('repeatedMovers')} "
             f"positive={len(momentum_screen.get('momentumMovers', []))} "
             f"pullbacks={len(momentum_screen.get('pullbackWatch', []))} "
             f"ai={len(momentum_screen.get('aiWatchlistMomentum', []))}"
