@@ -76,10 +76,34 @@ def _label_for_negative(appearances: int, avg_change: float) -> str:
     return "Pullback Watch"
 
 
-def _score_market_mover(appearances: int, avg_change: float, latest_change: float) -> float:
-    score = appearances * 16 + max(avg_change, 0) * 4 + max(latest_change, 0) * 2
-    return min(100, round(score, 1))
+def _score_market_mover(
+    appearances: int,
+    avg_change: float,
+    latest_change: float,
+    net_move: float = 0.0,
+    positive_sessions: int = 0,
+    negative_sessions: int = 0,
+) -> float:
+    persistence_score = min(appearances, 8) * 7
+    expansion_score = max(net_move, 0) * 1.8
+    avg_strength_score = max(avg_change, 0) * 4.5
+    latest_score = max(latest_change, 0) * 1.6
 
+    clean_trend_bonus = 0
+    if appearances >= 3 and negative_sessions == 0:
+        clean_trend_bonus = 18
+    elif appearances >= 4 and positive_sessions > negative_sessions:
+        clean_trend_bonus = 10
+
+    score = (
+        persistence_score
+        + expansion_score
+        + avg_strength_score
+        + latest_score
+        + clean_trend_bonus
+    )
+
+    return min(100, round(score, 1))
 
 def _score_pullback(appearances: int, avg_change: float, latest_change: float) -> float:
     score = appearances * 16 + abs(min(avg_change, 0)) * 4 + abs(min(latest_change, 0)) * 2
@@ -275,6 +299,9 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
                 len(rows),
                 avg_change,
                 _safe_float(latest.get("changePct")),
+                net_move,
+                positive_sessions,
+                negative_sessions,
             )
 
             payload["momentumLabel"] = _label_for_positive(
@@ -282,7 +309,14 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
                 avg_change,
                 _safe_float(latest.get("changePct")),
             )
+            is_real_momentum = (
+                net_move >= 8
+                or avg_change >= 2
+                or (positive_sessions >= 4 and net_move > 4)
+            )
 
+            if not is_real_momentum:
+                continue
             momentum_movers.append(payload)
 
         else:
@@ -300,9 +334,11 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
             pullback_watch.append(payload)
     momentum_movers.sort(
         key=lambda x: (
-            x.get("appearances", 0),
             x.get("momentumScore", 0),
-            abs(_safe_float(x.get("changePct"))),
+            _safe_float(x.get("netMovePct")),
+            _safe_float(x.get("avgMovePct")),
+            x.get("positiveSessions", 0),
+            x.get("appearances", 0),
         ),
         reverse=True,
     )
