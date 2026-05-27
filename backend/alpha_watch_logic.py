@@ -515,6 +515,8 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     symbol = str(stock.get("symbol") or "").upper()
     quote = stock.get("quote") or {}
     features = stock.get("features_meta") or {}
+    profile = stock.get("profile") or {}
+    logo_url = profile.get("logoUrl")
 
     prob_up = _prob_up(stock)
     signal = _signal(stock)
@@ -602,6 +604,7 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {
         "symbol": symbol,
         "companyName": stock.get("company_name") or symbol,
+        "logoUrl": logo_url,
         "theme": _theme_for_symbol(symbol),
         "score": final_score,
         "opportunityScore": round(opportunity_score, 2),
