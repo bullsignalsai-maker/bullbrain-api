@@ -1208,12 +1208,32 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         decision=core.get("decision"),
         news_items=news_items,
     )
+
+    # ---------------------------------------------------------
+    # 8) Preserve existing profile/logo metadata
+    # ---------------------------------------------------------
+    try:
+        existing_snap = (
+            get_db()
+            .collection(COL_ROOT)
+            .document(COL_STOCKS)
+            .collection("symbols")
+            .document(symbol)
+            .get()
+        )
+        existing_data = existing_snap.to_dict() or {}
+        profile = existing_data.get("profile") or {}
+    except Exception as e:
+        log(f"⚠️ {symbol} profile/logo read failed: {e}")
+        profile = {}
+
     # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)
     # ---------------------------------------------------------
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
+        "profile": profile,
         "quote": quote,
         "features_meta": feat_dict,
         "technical": technical,
