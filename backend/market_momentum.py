@@ -422,7 +422,7 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
                 avg_change,
             )
 
-            pullback_watch.append(payload)
+          
             pullback_watch.append(payload)
     momentum_movers.sort(
         key=lambda x: (
@@ -721,10 +721,12 @@ def build_market_momentum_payload(
     )
 
     top_ai_setup = _build_top_ai_setup(alpha_watch)
-    top_leader = dict(momentum_movers[0]) if momentum_movers else {}
+
     momentum_movers = _enrich_latest_quotes(db, momentum_movers[:20])
     pullback_watch = _enrich_latest_quotes(db, pullback_watch[:12])
     confirmed = _enrich_latest_quotes(db, confirmed[:12])
+
+    top_leader = dict(momentum_movers[0]) if momentum_movers else {}
 
     positive_count = len(momentum_movers)
     pullback_count = len(pullback_watch)
@@ -820,7 +822,7 @@ def save_market_momentum_screen(
         .document("momentum")
     )
 
-    ref.set(payload, merge=True)
+    ref.set(payload)
     return payload
 
 
