@@ -76,6 +76,70 @@ def _label_for_negative(appearances: int, avg_change: float) -> str:
     return "Pullback Watch"
 
 
+def _label_for_momentum(
+    appearances: int,
+    avg_change: float,
+    latest_change: float,
+    net_move: float,
+    positive_sessions: int,
+    negative_sessions: int,
+) -> str:
+    if net_move >= 25 and positive_sessions >= 4 and negative_sessions <= 1:
+        return "Elite Momentum"
+
+    if net_move >= 15 and positive_sessions >= 3:
+        return "Strong Continuation"
+
+    if latest_change >= 8:
+        return "Momentum Spike"
+
+    if net_move >= 8:
+        return "Steady Strength"
+
+    if appearances >= 3:
+        return "3-Day Runner"
+
+    return "Positive Momentum"
+
+
+def _is_true_pullback(
+    net_move: float,
+    latest_change: float,
+    positive_sessions: int,
+    negative_sessions: int,
+) -> bool:
+    return (
+        negative_sessions > positive_sessions
+        and net_move < 0
+        and (
+            negative_sessions >= 3
+            or latest_change <= -3
+            or net_move <= -4
+        )
+    )
+
+
+def _recency_rank(date_value: Any) -> int:
+    try:
+        if not date_value:
+            return 0
+
+        d = datetime.date.fromisoformat(str(date_value)[:10])
+        today = _today_utc_date()
+        age = (today - d).days
+
+        if age <= 0:
+            return 5
+        if age <= 2:
+            return 4
+        if age <= 5:
+            return 3
+        if age <= 10:
+            return 2
+        return 1
+    except Exception:
+        return 0
+    
 def _score_market_mover(
     appearances: int,
     avg_change: float,
@@ -304,10 +368,13 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
                 negative_sessions,
             )
 
-            payload["momentumLabel"] = _label_for_positive(
+            payload["momentumLabel"] = _label_for_momentum(
                 len(rows),
                 avg_change,
                 _safe_float(latest.get("changePct")),
+                net_move,
+                positive_sessions,
+                negative_sessions,
             )
             is_real_momentum = (
                 net_move >= 8
@@ -320,10 +387,20 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
             momentum_movers.append(payload)
 
         else:
+            latest_change = _safe_float(latest.get("changePct"))
+
+            if not _is_true_pullback(
+                net_move,
+                latest_change,
+                positive_sessions,
+                negative_sessions,
+            ):
+                continue
+
             payload["momentumScore"] = _score_pullback(
                 len(rows),
                 avg_change,
-                _safe_float(latest.get("changePct")),
+                latest_change,
             )
 
             payload["momentumLabel"] = _label_for_negative(
@@ -331,6 +408,7 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
                 avg_change,
             )
 
+            pullback_watch.append(payload)
             pullback_watch.append(payload)
     momentum_movers.sort(
         key=lambda x: (
@@ -345,9 +423,11 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
 
     pullback_watch.sort(
         key=lambda x: (
-            x.get("appearances", 0),
             x.get("momentumScore", 0),
-            abs(_safe_float(x.get("changePct"))),
+            abs(_safe_float(x.get("netMovePct"))),
+            x.get("negativeSessions", 0),
+            x.get("appearances", 0),
+            abs(_safe_float(x.get("latestMovePct"))),
         ),
         reverse=True,
     )
@@ -443,6 +523,7 @@ def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], lookback_snapshots: in
     alpha_items.sort(
         key=lambda x: (
             x.get("alphaAppearances", 0),
+            _recency_rank(x.get("lastSeenDate")),
             _safe_float(x.get("avgAlphaScore")),
             _safe_float(x.get("latestAlphaScore")),
         ),
@@ -623,7 +704,7 @@ def build_market_momentum_payload(
     )
 
     top_ai_setup = _build_top_ai_setup(alpha_watch)
-
+    top_leader = momentum_movers[0] if momentum_movers else top_ai_setup
     momentum_movers = _enrich_latest_quotes(db, momentum_movers[:20])
     pullback_watch = _enrich_latest_quotes(db, pullback_watch[:12])
     confirmed = _enrich_latest_quotes(db, confirmed[:12])
@@ -689,13 +770,12 @@ def build_market_momentum_payload(
         },
 
         "topAISetup": top_ai_setup,
+        "topLeader": top_leader,
         "confirmedMomentum": confirmed,
         "continuousMovers": momentum_movers,
         "historicalAlphaMomentum": alpha_memory.get("historicalAlphaMomentum") or [],
         "pullbackWatch": pullback_watch,
 
-        # Backward-compatible aliases for your older UI/mock code
-        "topLeader": top_ai_setup,
         "momentumMovers": momentum_movers,
         "aiWatchlistMomentum": alpha_memory.get("historicalAlphaMomentum") or [],
     }
