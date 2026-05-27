@@ -22,13 +22,38 @@ def _score_item(item: Dict[str, Any]) -> float:
     # V1 hybrid score: Grok reasoning + real market movement
     return round((grok_score * 0.75) + (min(change_pct, 10) * 2.5), 2)
 
+def _logo_url_for_symbol(db, symbol: str) -> str | None:
+    try:
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return None
 
-def _normalize_for_app(item: Dict[str, Any]) -> Dict[str, Any]:
+        snap = (
+            db.collection(COL_ROOT)
+            .document("stocks")
+            .collection("symbols")
+            .document(sym)
+            .get()
+        )
+
+        if snap.exists:
+            stock = snap.to_dict() or {}
+            profile = stock.get("profile") or {}
+            return profile.get("logoUrl")
+    except Exception:
+        pass
+
+    return None
+
+def _normalize_for_app(db, item: Dict[str, Any]) -> Dict[str, Any]:
     quote = item.get("quote") or {}
     final_score = _score_item(item)
+    symbol = item.get("symbol")
+    logo_url = _logo_url_for_symbol(db, symbol)
 
     return {
         "symbol": item.get("symbol"),
+        "logoUrl": logo_url,
         "sector": item.get("sector"),
         "source": item.get("source"),
         "reason": item.get("reason"),
@@ -77,9 +102,9 @@ def build_verified_alpha_payload() -> Dict[str, Any]:
     losers_raw = enriched.get("premarket_losers", []) or []
     alpha_raw = enriched.get("alpha_opportunities", []) or []
 
-    gainers = [_normalize_for_app(x) for x in gainers_raw]
-    losers = [_normalize_for_app(x) for x in losers_raw]
-    opportunities = [_normalize_for_app(x) for x in alpha_raw]
+    gainers = [_normalize_for_app(db, x) for x in gainers_raw]
+    losers = [_normalize_for_app(db, x) for x in losers_raw]
+    opportunities = [_normalize_for_app(db, x) for x in alpha_raw]
 
     gainers = [x for x in gainers if x.get("symbol")]
     losers = [x for x in losers if x.get("symbol")]
