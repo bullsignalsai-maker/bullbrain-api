@@ -169,6 +169,20 @@ def _score_market_mover(
 
     return min(100, round(score, 1))
 
+def _dedupe_items_by_symbol(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+
+    for item in items:
+        sym = _clean_symbol(item.get("symbol"))
+        if not sym or sym in seen:
+            continue
+
+        seen.add(sym)
+        out.append(item)
+
+    return out
+
 def _score_pullback(appearances: int, avg_change: float, latest_change: float) -> float:
     score = appearances * 16 + abs(min(avg_change, 0)) * 4 + abs(min(latest_change, 0)) * 2
     return min(100, round(score, 1))
@@ -431,6 +445,9 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
         ),
         reverse=True,
     )
+
+    momentum_movers = _dedupe_items_by_symbol(momentum_movers)
+    pullback_watch = _dedupe_items_by_symbol(pullback_watch)
 
     return momentum_movers[:20], pullback_watch[:12]
 
@@ -704,7 +721,7 @@ def build_market_momentum_payload(
     )
 
     top_ai_setup = _build_top_ai_setup(alpha_watch)
-    top_leader = momentum_movers[0] if momentum_movers else top_ai_setup
+    top_leader = dict(momentum_movers[0]) if momentum_movers else {}
     momentum_movers = _enrich_latest_quotes(db, momentum_movers[:20])
     pullback_watch = _enrich_latest_quotes(db, pullback_watch[:12])
     confirmed = _enrich_latest_quotes(db, confirmed[:12])
