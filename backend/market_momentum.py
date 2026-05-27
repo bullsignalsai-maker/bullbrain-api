@@ -470,7 +470,7 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
     return momentum_movers[:20], pullback_watch[:12]
 
 
-def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], lookback_snapshots: int):
+def _build_alpha_memory(db, alpha_docs: List[Dict[str, Any]], lookback_snapshots: int):
     by_symbol = defaultdict(list)
     sector_counter = Counter()
     catalyst_counter = Counter()
@@ -537,9 +537,12 @@ def _build_alpha_memory(alpha_docs: List[Dict[str, Any]], lookback_snapshots: in
                     seen_catalysts.add(key)
                     catalysts.append(clean)
 
+        logo_url = _logo_url_for_symbol(db, sym)
+
         alpha_items.append({
             "symbol": sym,
             "companyName": latest.get("companyName") or latest.get("company_name") or sym,
+            "logoUrl": logo_url,
             "sector": latest.get("sector"),
             "moverQuality": latest.get("moverQuality"),
             "primaryCatalysts": catalysts[:4],
@@ -732,6 +735,7 @@ def build_market_momentum_payload(
     lookback_snapshots,
     )
     alpha_memory = _build_alpha_memory(
+        db,
         alpha_memory_docs,
         lookback_snapshots,
     )
