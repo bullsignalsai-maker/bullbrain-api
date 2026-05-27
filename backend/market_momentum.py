@@ -101,6 +101,24 @@ def _label_for_momentum(
 
     return "Positive Momentum"
 
+def _logo_url_for_symbol(db, symbol: str) -> str | None:
+    try:
+        sym = _clean_symbol(symbol)
+        snap = (
+            db.collection(COL_ROOT)
+            .document("stocks")
+            .collection("symbols")
+            .document(sym)
+            .get()
+        )
+        if snap.exists:
+            stock = snap.to_dict() or {}
+            profile = stock.get("profile") or {}
+            return profile.get("logoUrl")
+    except Exception:
+        pass
+
+    return None
 
 def _is_true_pullback(
     net_move: float,
@@ -634,6 +652,7 @@ def _build_top_ai_setup(alpha_watch: Dict[str, Any]) -> Dict[str, Any]:
         ranked.append({
             "symbol": _clean_symbol(item.get("symbol")),
             "companyName": item.get("companyName") or item.get("symbol"),
+            "logoUrl": item.get("logoUrl"),
             "price": _round(item.get("price")),
             "change": _round(item.get("change")),
             "changePct": _round(item.get("changePct"), 2),
@@ -682,6 +701,7 @@ def _enrich_latest_quotes(db, items: List[Dict[str, Any]]) -> List[Dict[str, Any
     for item in items:
         sym = _clean_symbol(item.get("symbol"))
         quote = _latest_quote_for_symbol(db, sym)
+        logo_url = _logo_url_for_symbol(db, sym)
 
         if quote:
             item = {
@@ -691,7 +711,8 @@ def _enrich_latest_quotes(db, items: List[Dict[str, Any]]) -> List[Dict[str, Any
                 "changePct": _round(quote.get("changePct"), 2) if quote.get("changePct") is not None else item.get("changePct"),
                 "quote_updated_at": quote.get("updated_at") or item.get("quote_updated_at"),
             }
-
+        if logo_url:
+            item["logoUrl"] = logo_url
         out.append(item)
 
     return out
