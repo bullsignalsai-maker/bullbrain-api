@@ -10,7 +10,8 @@ def build_stock_header(stock: Dict[str, Any]) -> Dict[str, Any]:
     technical = stock.get("technical") or {}
     pattern = stock.get("pattern") or {}
     history = stock.get("patternHistory") or {}
-
+    profile = stock.get("profile") or {}
+    logo_url = profile.get("logoUrl") or stock.get("logoUrl")
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
 
     final_signal = decision.get("finalSignal") or bull.get("signal")
@@ -21,7 +22,7 @@ def build_stock_header(stock: Dict[str, Any]) -> Dict[str, Any]:
         # -------------------------------------------------
         "symbol": stock.get("symbol"),
         "companyName": stock.get("company_name"),
-
+        "logoUrl": logo_url,
         # -------------------------------------------------
         # Quote (authoritative – Firestore only)
         # -------------------------------------------------
