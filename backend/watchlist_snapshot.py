@@ -111,6 +111,8 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         )
 
         market_awareness = stock.get("marketAwareness") or {}
+        profile = stock.get("profile") or {}
+        logo_url = profile.get("logoUrl")
 
         # -------------------------------------------------
         # PRICE CHANGE (derived, safe)
@@ -168,7 +170,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         items.append({
             "symbol": sym,
             "companyName": company_name,
-
+            "logoUrl": logo_url or None,
             # ── QUOTE ──
             "quote": {
                 "price": price,
