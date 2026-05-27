@@ -1289,6 +1289,8 @@ def persist_internal_market_movers():
         quote = data.get("quote", {})
         chg = quote.get("changePct")
         price = quote.get("price")
+        profile = data.get("profile") or {}
+        logo_url = profile.get("logoUrl")
 
         try:
             px = float(price)
@@ -1327,6 +1329,7 @@ def persist_internal_market_movers():
                 "changePct": round(chg, 2),
                 "direction": "up" if chg >= 0 else "down",
                 "quote_updated_at": updated_at,
+                "logoUrl": logo_url or None,
             })
 
     # ✅ Separate gainers and losers
@@ -1405,6 +1408,8 @@ def persist_homescreen_core_signals():
             market_awareness = data.get("marketAwareness") or {}
             raw_signal = decision.get("finalSignal") or bullbrain.get("signal", "HOLD")
             change_pct = quote.get("changePct")
+            profile = data.get("profile") or {}
+            logo_url = profile.get("logoUrl")
 
             display_signal = raw_signal
 
@@ -1430,6 +1435,7 @@ def persist_homescreen_core_signals():
                 "rawSignal": raw_signal,
                 "confidence": bullbrain.get("confidence", 0),
                 "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
+                "logoUrl": logo_url or None,   
                 "patternWinRate": (
                     ((data.get("patternHistory") or {})
                      .get("forwardReturns") or {})
