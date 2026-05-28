@@ -706,8 +706,6 @@ def build_market_momentum_payload(
     pullback_watch = _enrich_latest_quotes(db, pullback_watch[:12])
     confirmed = _enrich_latest_quotes(db, confirmed[:12])
 
-    top_leader = dict(momentum_movers[0]) if momentum_movers else {}
-
     positive_count = len(momentum_movers)
     pullback_count = len(pullback_watch)
     repeated_alpha = len(ai_setups)
@@ -740,10 +738,9 @@ def build_market_momentum_payload(
     payload = {
         "status": "ok",
         "screen": "market_momentum",
-        "schema_version": "market_momentum_v2",
+        "schema_version": "market_momentum_v3",
         "updated_at": utc_now_iso(),
         "lookbackSnapshots": lookback_snapshots,
-        "memorySnapshotCount": len(daily_docs),
 
         "pulse": {
             "marketBias": "Bullish" if positive_count >= pullback_count else "Mixed",
@@ -765,15 +762,10 @@ def build_market_momentum_payload(
         },
 
         "topAISetup": top_ai_setup,
-        "topLeader": top_leader,
+        "aiSetups": ai_setups,
         "confirmedMomentum": confirmed,
         "continuousMovers": momentum_movers,
-        "historicalAlphaMomentum": [],
-        "aiSetups": ai_setups,
         "pullbackWatch": pullback_watch,
-
-        "momentumMovers": momentum_movers,
-        "aiWatchlistMomentum": ai_setups,
     }
 
     return payload
