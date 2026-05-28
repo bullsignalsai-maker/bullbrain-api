@@ -9,25 +9,6 @@ from backend.quote_repo import get_quote
 COL_SNAPSHOTS = "watchlist_snapshots"
 
 
-# =========================================================
-# INTERNAL HELPERS (WATCHLIST-SAFE)
-# =========================================================
-def _confidence_badge(confidence: float | None) -> str:
-    """
-    Convert numeric confidence into a UI-friendly badge.
-    No text interpretation.
-    """
-    try:
-        c = float(confidence or 0)
-        if c >= 65:
-            return "HIGH"
-        if c >= 50:
-            return "MEDIUM"
-        return "LOW"
-    except Exception:
-        return "UNKNOWN"
-
-
 def _apply_hold_caution(summary: str | None, signal: str) -> str | None:
     """
     Append a mild HOLD caution if summary sounds directional.
@@ -82,7 +63,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
 
         narratives = stock.get("narratives") or {}
         bullbrain = stock.get("bullbrain") or {}
-        raw = bullbrain.get("raw") or {}
+       
 
         pattern = stock.get("pattern") or {}
         pattern_hist = stock.get("patternHistory") or {}
@@ -171,38 +152,26 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             "symbol": sym,
             "companyName": company_name,
             "logoUrl": logo_url or None,
-            # ── QUOTE ──
+
             "quote": {
                 "price": price,
                 "change": change,
                 "changePct": change_pct,
             },
+
             "quote_updated_at": quote_updated_at,
 
-            # ── BULLBRAIN ──
             "bullbrain": {
                 "signal": bullbrain.get("signal", "HOLD"),
                 "confidence": bullbrain.get("confidence", 0),
-                "confidenceBadge": _confidence_badge(bullbrain.get("confidence")),
-                "prob_up": raw.get("prob_up"),
-                "prob_down": raw.get("prob_down"),
             },
 
-            # ── PATTERN ──
             "pattern": {
                 "name": pattern.get("pattern") or pattern.get("patternLabel"),
-                "bias": pattern.get("bias") or pattern.get("patternBias"),
                 "winRate": days5.get("winRate"),
             },
 
-            # ── MARKET AWARENESS ──
-            "marketAwareness": market_awareness,
-
-            # ── WATCHLIST SUMMARY ──
             "watchlistSummary": watchlist_summary,
-            "insight": watchlist_summary,
-
-            "updated_at": stock.get("computed_at"),
         })
 
     # -----------------------------------------------------
@@ -214,7 +183,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v6",  # bumped due to summary logic improvement
+        "version": "v7",
     }
 
     db.collection(COL_SNAPSHOTS) \
