@@ -3923,8 +3923,12 @@ def stock_detail(symbol: str, source: str | None = None):
     # ---------------------------------------------------------
     # 5️⃣ FULL Stock Detail Report (v1.0 — deterministic)
     # ---------------------------------------------------------
-    from backend.ui_stock_builder import build_stockdetail_v1
-    content = build_stockdetail_v1(stock) or {}
+    from backend.ui_stock_builder import build_stockdetail_v1, build_stockdetail_ui_v1
+
+    if source == "ui":
+        content = build_stockdetail_ui_v1(stock) or {}
+    else:
+        content = build_stockdetail_v1(stock) or {}
 
     # Ensure sparkline is available at top-level for UI
     if sparkline:

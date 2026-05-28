@@ -778,3 +778,33 @@ def build_stockdetail_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
         "news": build_news_block(stock),
         "computed_at": stock.get("computed_at"),
     }
+
+def build_stockdetail_ui_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
+    full = build_stockdetail_v1(stock)
+
+    return {
+        "signal": full.get("signal"),
+        "probability": {
+            "up": (full.get("probability") or {}).get("up"),
+            "down": (full.get("probability") or {}).get("down"),
+            "bias": (full.get("probability") or {}).get("bias"),
+        },
+        "pattern": {
+            "name": (full.get("pattern") or {}).get("name"),
+            "bias": (full.get("pattern") or {}).get("bias"),
+            "winRate5d": (full.get("pattern") or {}).get("winRate5d"),
+            "patternState": (full.get("pattern") or {}).get("patternState"),
+            "edgeState": (full.get("pattern") or {}).get("edgeState"),
+            "sampleState": (full.get("pattern") or {}).get("sampleState"),
+            "stats": (full.get("pattern") or {}).get("stats"),
+        },
+        "technicalSnapshot": full.get("technicalSnapshot"),
+        "outlook": {
+            "shortTerm": (full.get("outlook") or {}).get("shortTerm"),
+            "mediumTerm": (full.get("outlook") or {}).get("mediumTerm"),
+            "longTerm": (full.get("outlook") or {}).get("longTerm"),
+        },
+        "risksOpportunities": full.get("risksOpportunities"),
+        "news": full.get("news") or [],
+        "computed_at": full.get("computed_at"),
+    }
