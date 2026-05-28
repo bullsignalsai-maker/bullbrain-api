@@ -20,16 +20,16 @@ COL_ROOT = "bullsignals_ai"
 DOC_ALPHA_WATCH = "alpha_watch"
 HISTORY_ROOT = "alpha_watch_history"
 
-MIN_PRICE = 12.0
+MIN_PRICE = 5.0
 MIN_AVG_VOLUME_20D = 1_200_000
-MAX_FRESHNESS_HOURS = 36
-MIN_PROB_UP_SOFT = 0.42
-MIN_PROB_UP_STRONG = 0.48
+MAX_FRESHNESS_HOURS = 18
 MIN_FINAL_SCORE = 62.0
 NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
 MAX_EARLY_EXPANSION_DEFAULT = 85.0
-MAX_ITEMS = 8
-MAX_PER_THEME = 2
+MAX_ITEMS = 12
+MAX_PER_THEME = 3
+MARKET_MOMENTUM_LOOKBACK = 12
+MAX_MARKET_MOMENTUM_BONUS = 12.0
 
 BASE_WEIGHTS = {
     "momentum": 0.28,
@@ -438,7 +438,11 @@ def derive_setup_label(stock: Dict[str, Any], scores: Dict[str, float]) -> str:
 
     if pattern_name in {"TREND ACCELERATION", "GAP UP & RUNNING", "VOLUME BREAKOUT"}:
         return str(pattern_name).title()
+    if scores.get("early_expansion", 0) >= 78 and scores.get("volume", 0) >= 70:
+        return "Early Momentum Expansion"
 
+    if scores.get("bullbrain", 0) >= 75 and scores.get("trend", 0) >= 70:
+        return "High Conviction AI Setup"
     if scores.get("momentum", 0) >= 72 and scores.get("volume", 0) >= 65:
         return "Momentum Expansion"
 
@@ -507,7 +511,121 @@ def clean_reason_text(text: str) -> str:
 
     return s[:170].rstrip(" ,;:-") + "."
 
-def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _clean_symbol(symbol: Any) -> str:
+    s = str(symbol or "").strip().upper()
+    if len(s) % 2 == 0:
+        half = len(s) // 2
+        if s[:half] == s[half:]:
+            s = s[:half]
+    return s
+
+
+def _read_recent_daily_movers(db: firestore.Client, limit: int = MARKET_MOMENTUM_LOOKBACK) -> Dict[str, Dict[str, Any]]:
+    """
+    Reads recent internal daily movers memory and builds persistence stats by symbol.
+    Source: /bullsignals_ai/market_memory/daily_movers/*
+    """
+    try:
+        snaps = (
+            db.collection(COL_ROOT)
+            .document("market_memory")
+            .collection("daily_movers")
+            .stream()
+        )
+
+        docs = []
+        for snap in snaps:
+            if snap.exists:
+                data = snap.to_dict() or {}
+                data.setdefault("date", snap.id)
+                docs.append(data)
+
+        docs.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
+        docs = docs[:limit]
+
+        by_symbol: Dict[str, Dict[str, Any]] = {}
+
+        for doc in docs:
+            date = doc.get("date")
+
+            for direction_key, direction in [("gainers", "up"), ("losers", "down")]:
+                for row in doc.get(direction_key) or []:
+                    sym = _clean_symbol(row.get("symbol"))
+                    if not sym:
+                        continue
+
+                    cp = _num(row.get("changePct"), 0.0) or 0.0
+
+                    stats = by_symbol.setdefault(sym, {
+                        "appearances": 0,
+                        "positiveSessions": 0,
+                        "negativeSessions": 0,
+                        "netMovePct": 0.0,
+                        "latestMovePct": 0.0,
+                        "lastSeenDate": date,
+                    })
+
+                    stats["appearances"] += 1
+                    stats["netMovePct"] += cp
+
+                    if cp > 0:
+                        stats["positiveSessions"] += 1
+                    elif cp < 0:
+                        stats["negativeSessions"] += 1
+
+                    if str(date or "") >= str(stats.get("lastSeenDate") or ""):
+                        stats["latestMovePct"] = cp
+                        stats["lastSeenDate"] = date
+
+        for sym, stats in by_symbol.items():
+            appearances = max(int(stats.get("appearances") or 0), 1)
+            stats["avgMovePct"] = round(float(stats.get("netMovePct") or 0) / appearances, 2)
+            stats["netMovePct"] = round(float(stats.get("netMovePct") or 0), 2)
+            stats["latestMovePct"] = round(float(stats.get("latestMovePct") or 0), 2)
+
+        return by_symbol
+
+    except Exception:
+        return {}
+
+
+def _market_momentum_bonus(stats: Dict[str, Any]) -> float:
+    """
+    Adds a small bonus when internal AI setup is confirmed by repeated real market movement.
+    """
+    if not stats:
+        return 0.0
+
+    appearances = int(stats.get("appearances") or 0)
+    positive = int(stats.get("positiveSessions") or 0)
+    negative = int(stats.get("negativeSessions") or 0)
+    net_move = _num(stats.get("netMovePct"), 0.0) or 0.0
+    latest = _num(stats.get("latestMovePct"), 0.0) or 0.0
+    avg_move = _num(stats.get("avgMovePct"), 0.0) or 0.0
+
+    bonus = 0.0
+
+    if appearances >= 2:
+        bonus += 3.0
+    if appearances >= 4:
+        bonus += 2.0
+    if positive > negative:
+        bonus += 2.0
+    if positive >= 3 and negative <= 1:
+        bonus += 2.0
+    if net_move >= 8:
+        bonus += 2.0
+    if avg_move >= 2:
+        bonus += 1.0
+    if latest >= 2:
+        bonus += 1.0
+
+    return round(min(MAX_MARKET_MOMENTUM_BONUS, bonus), 2)
+
+def score_stock(
+    stock: Dict[str, Any],
+    mover_stats_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
     ok, reject_reasons = passes_quality_filter(stock)
     if not ok:
         return None
@@ -575,6 +693,13 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     stability = stability_profile(stock)
 
     final_score = opportunity_score * stability["multiplier"] * probability_penalty
+    mover_stats = (mover_stats_by_symbol or {}).get(symbol) or {}
+    market_bonus = _market_momentum_bonus(mover_stats)
+
+    if change_pct >= 0:
+        final_score += market_bonus
+    else:
+        market_bonus = 0.0
 
     # Negative daily move penalty.
     # It may still qualify, but only as a pullback setup, not acceleration.
@@ -599,8 +724,10 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         setup_label = "Momentum Watch"
 
     if pullback_setup:
-        setup_label = "Constructive Pullback Watch"
-
+        if prob_up >= 0.55 and factor_scores["trend"] >= 65:
+            setup_label = "High Quality Pullback"
+        else:
+            setup_label = "Constructive Pullback Watch"
     return {
         "symbol": symbol,
         "companyName": stock.get("company_name") or symbol,
@@ -608,6 +735,8 @@ def score_stock(stock: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "theme": _theme_for_symbol(symbol),
         "score": final_score,
         "opportunityScore": round(opportunity_score, 2),
+        "marketMomentumBonus": market_bonus,
+        "marketMomentumStats": mover_stats,
         "stabilityMultiplier": stability["multiplier"],
         "confidence": round(_clamp(_confidence(stock)), 2),
         "probUp": round(prob_up, 4),
@@ -650,7 +779,10 @@ def apply_diversity_filter(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return selected
 
 
-def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+def build_alpha_watch_from_docs(
+    stock_docs: List[Dict[str, Any]],
+    mover_stats_by_symbol: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     scored = []
     reject_counts: Dict[str, int] = {}
 
@@ -663,7 +795,7 @@ def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, A
                     reject_counts[r] = reject_counts.get(r, 0) + 1
                 continue
 
-            item = score_stock(doc)
+            item = score_stock(doc, mover_stats_by_symbol=mover_stats_by_symbol)
             if item:
                 scored.append(item)
             else:
@@ -706,6 +838,9 @@ def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, A
             "regime_adjusted": True,
             "stability_adjusted": True,
             "diversity_control": True,
+            "market_momentum_bonus_enabled": True,
+            "market_momentum_bonus_max": MAX_MARKET_MOMENTUM_BONUS,
+            "market_momentum_lookback": MARKET_MOMENTUM_LOOKBACK,
         },
         "quality": {
             "input_docs": len(stock_docs),
@@ -718,7 +853,12 @@ def build_alpha_watch_from_docs(stock_docs: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 def persist_alpha_watch(db: firestore.Client, stock_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    payload = build_alpha_watch_from_docs(stock_docs)
+    mover_stats_by_symbol = _read_recent_daily_movers(db, MARKET_MOMENTUM_LOOKBACK)
+
+    payload = build_alpha_watch_from_docs(
+        stock_docs,
+        mover_stats_by_symbol=mover_stats_by_symbol,
+    )
 
     db.collection(COL_ROOT).document(DOC_ALPHA_WATCH).set(payload, merge=True)
 

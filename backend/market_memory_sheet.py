@@ -46,12 +46,17 @@ def latest_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "END_OF_DAY": 3,
     }
 
+    valid_sessions = [
+        str(r.get("session_type", "")).upper()
+        for r in day_rows
+        if str(r.get("session_type", "")).upper() in session_rank
+    ]
+
+    if not valid_sessions:
+        return day_rows
+
     latest_session = max(
-        (
-            str(r.get("session_type", "")).upper()
-            for r in day_rows
-            if str(r.get("session_type", "")).upper() in session_rank
-        ),
+        valid_sessions,
         key=lambda s: session_rank[s],
     )
 

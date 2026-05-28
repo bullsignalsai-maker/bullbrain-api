@@ -69,23 +69,11 @@ try:
 except Exception:
     ZoneInfo = None  # type: ignore
 from backend.firestore_utils import utc_now_iso
-try:
-    from backend.grok_firestore_writer import save_grok_market_memory
-except Exception:
-    save_grok_market_memory = None
-try:
-    from backend.verified_alpha_builder import save_verified_alpha_payload
-except Exception:
-    save_verified_alpha_payload = None
-# =========================================================
-# CONSTANTS
-# =========================================================
 
 # =========================================================
 # CONSTANTS
 # =========================================================
 
-MAG7 = ["AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA"]  # Keep if needed elsewhere
 
 CORE_UNIVERSE = [
     "NVDA",   # NVIDIA
@@ -116,7 +104,7 @@ COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
 DOC_HOMESCREEN = "homescreen_snapshot"
-DAILY_MOVER_REFRESH_SECONDS = 60 * 60  # refresh discovery max once per hour
+
 SP500_DISCOVERY_LIMIT = 540
 DAILY_MOVER_GAINERS_LIMIT = 25
 DAILY_MOVER_LOSERS_LIMIT = 25
@@ -227,31 +215,6 @@ US_MARKET_HOLIDAYS = {
     "2026-12-25",
 }
 
-def run_verified_alpha_safely():
-    if save_verified_alpha_payload is None:
-        log("verified alpha builder unavailable. Skipping.")
-        return
-
-    try:
-        result = save_verified_alpha_payload()
-        log(f"verified alpha result: {result}")
-    except Exception as e:
-        log_exc("verified alpha failed safely", e)
-
-def run_grok_market_memory_safely():
-    """
-    Grok/Google Sheets is enhancement only.
-    If it fails, internal Alphaclara intelligence continues.
-    """
-    if save_grok_market_memory is None:
-        print("[market-cron] Grok writer unavailable. Skipping.", flush=True)
-        return
-
-    try:
-        result = save_grok_market_memory()
-        print(f"[market-cron] Grok memory result: {result}", flush=True)
-    except Exception as e:
-        print(f"[market-cron] Grok memory failed safely: {e}", flush=True)
 
 def is_us_market_holiday(now_utc: datetime.datetime) -> bool:
     et = now_utc.astimezone(ET)
@@ -470,6 +433,69 @@ def load_daily_mover_symbols(limit: int = 40) -> List[str]:
 
     return out[:limit]
 
+def load_spreadsheet_discovery_metadata(limit: int = 80) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+    """
+    Reads latest spreadsheet symbols + catalyst metadata as discovery seeds.
+    No quote enrichment.
+    No Firestore write.
+    Cron discovery validates real movement later.
+    """
+    try:
+        db = get_db()
+        snap = db.collection(COL_ROOT).document("grok_market_memory").get()
+
+        if not snap.exists:
+            return [], {}
+
+        data = snap.to_dict() or {}
+        latest = data.get("premarket_latest") or {}
+
+        buckets = [
+            latest.get("alpha_opportunities") or [],
+            latest.get("premarket_gainers") or [],
+            latest.get("premarket_losers") or [],
+        ]
+
+        symbols = []
+        metadata_by_symbol: Dict[str, Dict[str, Any]] = {}
+
+        for bucket in buckets:
+            for item in bucket:
+                if not isinstance(item, dict):
+                    continue
+
+                sym = str(item.get("symbol") or "").upper().strip()
+                if not sym:
+                    continue
+
+                if sym not in symbols:
+                    symbols.append(sym)
+
+                metadata_by_symbol[sym] = {
+                    "spreadsheetSource": item.get("source"),
+                    "spreadsheetSector": item.get("sector"),
+                    "primaryCatalysts": item.get("primary_catalysts"),
+                    "reason": item.get("reason"),
+                    "moverQuality": item.get("mover_quality"),
+                    "riskLevel": item.get("risk_level"),
+                    "marketDay": item.get("market_day"),
+                    "sessionType": item.get("session_type"),
+                    "generatedAt": item.get("generated_at"),
+                }
+
+        symbols = symbols[:limit]
+        metadata_by_symbol = {
+            sym: metadata_by_symbol[sym]
+            for sym in symbols
+            if sym in metadata_by_symbol
+        }
+
+        return symbols, metadata_by_symbol
+
+    except Exception as e:
+        log(f"⚠️ spreadsheet discovery metadata unavailable: {e}")
+        return [], {}
+      
 def get_discovery_phase() -> Optional[str]:
     """
     Returns the full-scan phase name if current ET time is inside a scan window.
@@ -546,12 +572,18 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     doc_ref = _daily_movers_doc_ref(db, today)
     now_iso = utc_now_iso()
 
+    spreadsheet_symbols, spreadsheet_metadata = load_spreadsheet_discovery_metadata()
+
     symbols = []
-    for sym in REAL_TICKERS[:SP500_DISCOVERY_LIMIT]:
+    for sym in [*spreadsheet_symbols, *REAL_TICKERS[:SP500_DISCOVERY_LIMIT]]:
         s = str(sym).upper().strip()
         if s and s not in symbols:
             symbols.append(s)
 
+    log(
+        f"📄 spreadsheet discovery seeds added | "
+        f"spreadsheet={len(spreadsheet_symbols)} total_universe={len(symbols)}"
+    )
     rows: List[Dict[str, Any]] = []
 
     log(f"🔎 daily movers discovery start | universe={len(symbols)}")
@@ -611,6 +643,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
                 "changePct": round(float(chg), 4),
                 "direction": "up" if chg >= 0 else "down",
                 "quote_updated_at": now_iso,
+                "spreadsheet": spreadsheet_metadata.get(sym),
             })
 
         except Exception as e:
@@ -671,6 +704,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
             ).isoformat(),
             "discovery": existing_discovery,
             "schema_version": "v1",
+            "spreadsheet_metadata": spreadsheet_metadata,
         },
         merge=True,
     )
@@ -765,144 +799,6 @@ def _validate_feature_dict(symbol: str, feat_dict: Dict[str, Any]) -> bool:
     return True
 
 
-def _normalize_candles_list(raw: Any) -> List[Dict[str, Any]]:
-    """
-    get_candles() may return:
-      A) list[dict] candles  ✅
-      B) dict with key 'candles' holding list[dict]  ✅
-      C) dict-of-arrays (open/high/low/close/volume/timestamp)  ✅ (convert)
-    This function returns list[dict] always.
-    """
-    if raw is None:
-        return []
-
-    # A) already a list of candle dicts
-    if isinstance(raw, list):
-        return [c for c in raw if isinstance(c, dict)]
-
-    # B) dict wrapper: {"candles": [...]}
-    if isinstance(raw, dict):
-        if isinstance(raw.get("candles"), list):
-            return [c for c in raw["candles"] if isinstance(c, dict)]
-
-        # C) dict-of-arrays
-        keys = ["open", "high", "low", "close"]
-        if all(k in raw for k in keys) and isinstance(raw.get("close"), list):
-            o = raw.get("open") or []
-            h = raw.get("high") or []
-            l = raw.get("low") or []
-            cl = raw.get("close") or []
-            v = raw.get("volume") or []
-            ts = raw.get("timestamp") or []
-
-            n = min(len(o), len(h), len(l), len(cl))
-            out: List[Dict[str, Any]] = []
-            for i in range(n):
-                out.append({
-                    "t": ts[i] if i < len(ts) else None,
-                    "open": o[i],
-                    "high": h[i],
-                    "low": l[i],
-                    "close": cl[i],
-                    "volume": v[i] if i < len(v) else 0.0,
-                })
-            return out
-
-    return []
-
-
-def _candles_list_to_arrays(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Convert get_candles() output (list of candle dicts) into the dict-of-arrays
-    format expected by scan_smart_pattern_history().
-    """
-    out = {
-        "open": [],
-        "high": [],
-        "low": [],
-        "close": [],
-        "volume": [],
-        "timestamp": [],  # ms epoch expected by your scanner
-    }
-
-    for c in candles:
-        if not isinstance(c, dict):
-            continue
-
-        # tolerate multiple key names
-        t = c.get("t") or c.get("timestamp") or c.get("time")
-        o = c.get("open")
-        h = c.get("high")
-        l = c.get("low")
-        cl = c.get("close")
-        v = c.get("volume")
-
-        # require the core OHLC
-        if o is None or h is None or l is None or cl is None:
-            continue
-
-        out["open"].append(float(o))
-        out["high"].append(float(h))
-        out["low"].append(float(l))
-        out["close"].append(float(cl))
-        out["volume"].append(float(v) if v is not None else 0.0)
-
-        # normalize timestamp to ms epoch if possible
-        try:
-            if isinstance(t, (int, float)):
-                # if it's seconds, convert to ms
-                t_ms = int(t * 1000) if t < 10_000_000_000 else int(t)
-                out["timestamp"].append(t_ms)
-            else:
-                out["timestamp"].append(None)
-        except Exception:
-            out["timestamp"].append(None)
-
-    return out
-
-
-def _build_candle_summary(candles: List[Dict[str, Any]], cap: int = 120) -> Dict[str, Any]:
-    """
-    Persist minimal candle data in stocks doc (UI-safe and cost-safe).
-    """
-    tail = [c for c in candles if isinstance(c, dict)][-cap:]
-    return {
-        "count": len(candles),
-        "candles": [
-            {
-                "t": c.get("t") or c.get("timestamp") or c.get("time"),
-                "close": c.get("close"),
-            }
-            for c in tail
-        ],
-    }
-
-
-def _build_sparkline(candles: List[Dict[str, Any]], points: int = 30) -> List[float]:
-    """
-    1Y sparkline array for UI.
-    Uses full available candle close history and downsamples to fixed points.
-    """
-    closes: List[float] = []
-
-    for c in candles[-252:]:
-        if isinstance(c, dict) and c.get("close") is not None:
-            try:
-                closes.append(float(c["close"]))
-            except Exception:
-                pass
-
-    if len(closes) <= points:
-        return closes
-
-    sampled: List[float] = []
-    last_idx = len(closes) - 1
-
-    for i in range(points):
-        idx = round(i * last_idx / (points - 1))
-        sampled.append(closes[idx])
-
-    return sampled
 
 def _build_chart_summary(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -1037,13 +933,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
 
         return out
 
-    def _build_candle_summary(lst: List[Dict[str, Any]], cap: int = 120) -> Dict[str, Any]:
-        tail = [c for c in lst if isinstance(c, dict)][-cap:]
-        return {
-            "count": len(lst),
-            "candles": [{"t": (c.get("t") or c.get("timestamp") or c.get("time")), "close": c.get("close")} for c in tail],
-        }
-
     def _build_sparkline(lst: List[Dict[str, Any]], points: int = 30) -> List[float]:
         closes: List[float] = []
         # sample a bit more than needed to tolerate missing closes
@@ -1087,7 +976,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
     log(f"✅ {symbol} candles={n}")
 
     # UI-safe persistence fields
-    candle_summary = _build_candle_summary(candles_list, cap=120)
+    
     sparkline = _build_sparkline(candles_list, points=30)
     chart_summary = _build_chart_summary(candles_list)
 
@@ -1121,10 +1010,10 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         decision = core["decision"]
 
         final_signal = decision["finalSignal"]
-        confidence = bull.get("confidence", 0.0)
+        
 
         prob_up = bull.get("raw", {}).get("prob_up")
-        prob_down = bull.get("raw", {}).get("prob_down")
+        
 
     except Exception as e:
         log_exc(f"{symbol} run_bullbrain_from_inputs crashed", e)
@@ -1275,7 +1164,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         final_signal = core["decision"]["finalSignal"]
         conf = core["bullbrain"].get("confidence")
         # 🔐 Defensive alias (backward compatibility)
-        signal = final_signal
+    
         log(
             f"✅ {symbol} wrote stocks/symbols/{symbol} | "
             f"final={final_signal} conf={conf}% | {dt:.2f}s"
@@ -1287,6 +1176,27 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         log_exc(f"{symbol} Firestore write failed", e)
         return None
 
+def load_today_spreadsheet_mover_metadata() -> Dict[str, Dict[str, Any]]:
+    """
+    Reads metadata saved during today's discovery scan.
+    Used only to attach catalyst/reason to validated internal movers.
+    """
+    try:
+        db = get_db()
+        snap = _daily_movers_doc_ref(db).get()
+
+        if not snap.exists:
+            return {}
+
+        data = snap.to_dict() or {}
+        meta = data.get("spreadsheet_metadata") or {}
+
+        return meta if isinstance(meta, dict) else {}
+
+    except Exception as e:
+        log(f"⚠️ daily spreadsheet mover metadata unavailable: {e}")
+        return {}
+    
 def persist_internal_market_movers():
     db = get_db()
 
@@ -1298,6 +1208,7 @@ def persist_internal_market_movers():
     )
 
     movers = []
+    spreadsheet_metadata = load_today_spreadsheet_mover_metadata()
 
     for doc in snaps:
         sym = str(doc.id or "").upper().strip()
@@ -1339,7 +1250,7 @@ def persist_internal_market_movers():
         # 20 minutes is safe because cron runs every 15 minutes.
         if age_seconds > 20 * 60:
             continue
-
+        sheet_meta = spreadsheet_metadata.get(sym) or {}    
         if isinstance(chg, (int, float)):
             movers.append({
                 "symbol": sym,
@@ -1350,6 +1261,16 @@ def persist_internal_market_movers():
                 "direction": "up" if chg >= 0 else "down",
                 "quote_updated_at": updated_at,
                 "logoUrl": logo_url or None,
+
+                # Optional spreadsheet catalyst metadata.
+                # Present only when this symbol came from the spreadsheet
+                # and later became a real validated internal mover.
+                "primaryCatalysts": sheet_meta.get("primaryCatalysts"),
+                "reason": sheet_meta.get("reason"),
+                "moverQuality": sheet_meta.get("moverQuality"),
+                "riskLevel": sheet_meta.get("riskLevel"),
+                "spreadsheetSource": sheet_meta.get("spreadsheetSource"),
+                "spreadsheetSector": sheet_meta.get("spreadsheetSector"),
             })
 
     # ✅ Separate gainers and losers
@@ -1734,12 +1655,14 @@ def main():
     # ---------------------------------------------------------
     # GROK ENHANCEMENT LAYER (SAFE)
     # ---------------------------------------------------------
+    # Spreadsheet/Grok UI pipeline disabled.
+    # Spreadsheet symbols should only be used as lightweight discovery seeds.
+    # No quote enrichment. No verified-alpha Firestore write.
+    # No separate UI pipeline.
     try:
-        run_grok_market_memory_safely()
-        run_verified_alpha_safely()
+        log("📄 Grok/verified-alpha pipeline disabled — using internal movers only")
     except Exception as e:
-        log_exc("grok enhancement layer failed", e)
-
+        log_exc("grok enhancement layer disabled block failed", e)
     try:
         alpha_watch = persist_alpha_watch(get_db(), results)
         log(

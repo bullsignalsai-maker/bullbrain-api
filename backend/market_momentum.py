@@ -238,11 +238,6 @@ def _read_latest_docs(db, collection_name: str, limit: int) -> List[Dict[str, An
 def _read_daily_movers(db, lookback_snapshots: int) -> List[Dict[str, Any]]:
     return _read_latest_docs(db, "daily_movers", lookback_snapshots)
 
-
-def _read_daily_alpha_intelligence(db, lookback_snapshots: int) -> List[Dict[str, Any]]:
-    return _read_latest_docs(db, "daily_alpha_intelligence", lookback_snapshots)
-
-
 def _read_alpha_watch_current(db) -> Dict[str, Any]:
     snap = db.collection(COL_ROOT).document("alpha_watch").get()
     return snap.to_dict() if snap.exists else {}
@@ -470,162 +465,6 @@ def _build_continuous_movers(daily_docs: List[Dict[str, Any]], lookback_snapshot
     return momentum_movers[:20], pullback_watch[:12]
 
 
-def _build_alpha_memory(db, alpha_docs: List[Dict[str, Any]], lookback_snapshots: int):
-    by_symbol = defaultdict(list)
-    sector_counter = Counter()
-    catalyst_counter = Counter()
-    session_counter = Counter()
-
-    for doc in alpha_docs:
-        date = doc.get("date")
-        sessions = doc.get("sessions") or {}
-
-        for session_name, session_payload in sessions.items():
-            session_type = str(session_name or session_payload.get("session_type") or "").upper()
-            session_counter[session_type] += 1
-
-            for item in session_payload.get("items") or []:
-                sym = _clean_symbol(item.get("symbol"))
-                if not sym:
-                    continue
-
-                enriched = {
-                    **item,
-                    "symbol": sym,
-                    "date": date,
-                    "session_type": session_type,
-                }
-
-                by_symbol[sym].append(enriched)
-
-                sector = str(item.get("sector") or "").strip()
-                if sector and sector.lower() not in {"other", "unknown", "general", "mixed"}:
-                    sector_counter[sector] += 1
-
-                catalysts = str(item.get("primaryCatalysts") or "").replace(",", "|").split("|")
-                for c in catalysts:
-                    c = c.strip()
-                    if c:
-                        catalyst_counter[c] += 1
-
-    alpha_items = []
-
-    for sym, rows in by_symbol.items():
-        rows = sorted(
-            rows,
-            key=lambda r: (
-                str(r.get("date") or ""),
-                str(r.get("generated_at") or ""),
-            ),
-            reverse=True,
-        )
-
-        latest = rows[0]
-        scores = [_safe_float(r.get("grokAlphaPriorityScore")) for r in rows]
-        avg_score = sum(scores) / len(scores) if scores else 0
-
-        sessions = sorted(list({r.get("session_type") for r in rows if r.get("session_type")}))
-        catalysts = []
-        seen_catalysts = set()
-
-        for r in rows:
-            raw = str(r.get("primaryCatalysts") or "")
-            for c in raw.replace(",", "|").split("|"):
-                clean = c.strip()
-                key = clean.lower()
-                if clean and key not in seen_catalysts:
-                    seen_catalysts.add(key)
-                    catalysts.append(clean)
-
-        logo_url = _logo_url_for_symbol(db, sym)
-
-        alpha_items.append({
-            "symbol": sym,
-            "companyName": latest.get("companyName") or latest.get("company_name") or sym,
-            "logoUrl": logo_url,
-            "sector": latest.get("sector"),
-            "moverQuality": latest.get("moverQuality"),
-            "primaryCatalysts": catalysts[:4],
-            "reason": latest.get("reason"),
-            "riskLevel": latest.get("riskLevel"),
-            "alphaAppearances": len(rows),
-            "sessions": sessions,
-            "lookbackSnapshots": lookback_snapshots,
-            "avgAlphaScore": _round(avg_score, 1),
-            "latestAlphaScore": _round(latest.get("grokAlphaPriorityScore"), 1),
-            "lastSession": latest.get("session_type"),
-            "lastSeenDate": latest.get("date"),
-            "source": "daily_alpha_intelligence",
-        })
-
-    alpha_items.sort(
-        key=lambda x: (
-            x.get("alphaAppearances", 0),
-            _recency_rank(x.get("lastSeenDate")),
-            _safe_float(x.get("avgAlphaScore")),
-            _safe_float(x.get("latestAlphaScore")),
-        ),
-        reverse=True,
-    )
-
-    return {
-        "historicalAlphaMomentum": alpha_items[:20],
-        "alphaBySymbol": {x["symbol"]: x for x in alpha_items},
-        "topSector": sector_counter.most_common(1)[0][0] if sector_counter else "Mixed",
-        "topCatalyst": catalyst_counter.most_common(1)[0][0] if catalyst_counter else "Mixed",
-        "sessionCount": sum(session_counter.values()),
-    }
-
-
-def _score_confirmed(mover: Dict[str, Any], alpha: Dict[str, Any]) -> float:
-    return min(
-        100,
-        round(
-            _safe_float(mover.get("momentumScore")) * 0.55
-            + min(_safe_float(alpha.get("alphaAppearances")) * 8, 30)
-            + _safe_float(alpha.get("avgAlphaScore")) * 0.15,
-            1,
-        ),
-    )
-
-
-def _build_confirmed_momentum(momentum_movers: List[Dict[str, Any]], alpha_by_symbol: Dict[str, Any]):
-    out = []
-
-    for mover in momentum_movers:
-        sym = _clean_symbol(mover.get("symbol"))
-        alpha = alpha_by_symbol.get(sym)
-
-        if not alpha:
-            continue
-
-        out.append({
-            "symbol": sym,
-            "companyName": mover.get("companyName") or alpha.get("companyName") or sym,
-            "price": mover.get("price"),
-            "change": mover.get("change"),
-            "changePct": mover.get("changePct"),
-            "direction": mover.get("direction"),
-            "momentumScore": _score_confirmed(mover, alpha),
-            "momentumLabel": "Confirmed Momentum",
-            "appearances": {
-                "dailyMovers": mover.get("appearances", 0),
-                "alphaSessions": alpha.get("alphaAppearances", 0),
-            },
-            "avgMovePct": mover.get("avgMovePct"),
-            "sparkline": mover.get("sparkline") or [],
-            "sector": alpha.get("sector"),
-            "moverQuality": alpha.get("moverQuality"),
-            "primaryCatalysts": alpha.get("primaryCatalysts") or [],
-            "reason": alpha.get("reason"),
-            "riskLevel": alpha.get("riskLevel"),
-            "lastSession": alpha.get("lastSession"),
-            "source": "daily_movers+daily_alpha_intelligence",
-        })
-
-    out.sort(key=lambda x: x.get("momentumScore", 0), reverse=True)
-    return out[:12]
-
 
 def _score_alpha_watch_item(item: Dict[str, Any]) -> float:
     fs = item.get("factorScores") or {}
@@ -697,6 +536,128 @@ def _build_top_ai_setup(alpha_watch: Dict[str, Any]) -> Dict[str, Any]:
 
     return ranked[0] if ranked else {}
 
+def _build_ai_setups(alpha_watch: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Internal AI setups only.
+    Source: alpha_watch generated from Alphaclara internal intelligence.
+    """
+    items = alpha_watch.get("items") or []
+
+    setups = []
+
+    for item in items:
+        fs = item.get("factorScores") or {}
+
+        setups.append({
+            "symbol": _clean_symbol(item.get("symbol")),
+            "companyName": item.get("companyName") or item.get("symbol"),
+            "logoUrl": item.get("logoUrl"),
+            "price": _round(item.get("price")),
+            "change": _round(item.get("change")),
+            "changePct": _round(item.get("changePct"), 2),
+            "signal": item.get("signal") or "HOLD",
+            "confidence": _round(item.get("confidence"), 2),
+            "probUp": _round(item.get("probUp"), 4),
+            "opportunityScore": _round(item.get("opportunityScore"), 2),
+            "alphaScore": _round(item.get("score"), 2),
+            "setupLabel": item.get("setupLabel") or item.get("pattern") or "AI Setup",
+            "pattern": item.get("pattern"),
+            "riskLevel": item.get("riskLevel"),
+            "riskFlags": item.get("riskFlags") or [],
+            "marketRegime": item.get("marketRegime"),
+            "theme": item.get("theme"),
+            "reason": item.get("reason"),
+            "whyNow": item.get("whyNow") or [],
+            "factorScores": {
+                "momentum": _round(fs.get("momentum"), 1),
+                "trend": _round(fs.get("trend"), 1),
+                "volume": _round(fs.get("volume"), 1),
+                "pattern": _round(fs.get("pattern"), 1),
+                "bullbrain": _round(fs.get("bullbrain"), 1),
+                "early_expansion": _round(fs.get("early_expansion"), 1),
+            },
+            "momentumScore": _score_alpha_watch_item(item),
+            "computed_at": item.get("computed_at"),
+            "quote_updated_at": item.get("quote_updated_at"),
+            "source": "alpha_watch",
+        })
+
+    setups = [x for x in setups if x.get("symbol")]
+
+    setups.sort(
+        key=lambda x: (
+            _safe_float(x.get("momentumScore")),
+            _safe_float(x.get("opportunityScore")),
+            _safe_float(x.get("confidence")),
+            max(_safe_float(x.get("changePct")), 0),
+        ),
+        reverse=True,
+    )
+
+    return setups[:20]
+
+def _build_internal_confirmed_momentum(
+    momentum_movers: List[Dict[str, Any]],
+    ai_setups: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Confirmed Momentum = internal quote momentum + internal AI setup.
+    No spreadsheet/Grok memory dependency.
+    """
+    ai_by_symbol = {
+        _clean_symbol(x.get("symbol")): x
+        for x in ai_setups
+        if _clean_symbol(x.get("symbol"))
+    }
+
+    out = []
+
+    for mover in momentum_movers:
+        sym = _clean_symbol(mover.get("symbol"))
+        ai = ai_by_symbol.get(sym)
+
+        if not ai:
+            continue
+
+        score = min(
+            100,
+            round(
+                _safe_float(mover.get("momentumScore")) * 0.55
+                + _safe_float(ai.get("momentumScore")) * 0.30
+                + _safe_float(ai.get("confidence")) * 0.15,
+                1,
+            ),
+        )
+
+        out.append({
+            "symbol": sym,
+            "companyName": mover.get("companyName") or ai.get("companyName") or sym,
+            "logoUrl": ai.get("logoUrl") or mover.get("logoUrl"),
+            "price": mover.get("price") or ai.get("price"),
+            "change": mover.get("change") or ai.get("change"),
+            "changePct": mover.get("changePct") or ai.get("changePct"),
+            "direction": mover.get("direction"),
+            "momentumScore": score,
+            "momentumLabel": "Confirmed Internal Momentum",
+            "appearances": {
+                "dailyMovers": mover.get("appearances", 0),
+                "aiSetup": 1,
+            },
+            "avgMovePct": mover.get("avgMovePct"),
+            "sparkline": mover.get("sparkline") or [],
+            "sector": ai.get("theme"),
+            "setupLabel": ai.get("setupLabel"),
+            "pattern": ai.get("pattern"),
+            "signal": ai.get("signal"),
+            "confidence": ai.get("confidence"),
+            "reason": ai.get("reason") or mover.get("reason"),
+            "riskLevel": ai.get("riskLevel") or mover.get("riskLevel"),
+            "primaryCatalysts": mover.get("primaryCatalysts"),
+            "source": "daily_movers+alpha_watch",
+        })
+
+    out.sort(key=lambda x: x.get("momentumScore", 0), reverse=True)
+    return out[:12]
 
 def _enrich_latest_quotes(db, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
@@ -727,25 +688,19 @@ def build_market_momentum_payload(
     db = get_db()
 
     daily_docs = _read_daily_movers(db, lookback_snapshots)
-    alpha_memory_docs = _read_daily_alpha_intelligence(db, lookback_snapshots)
     alpha_watch = _read_alpha_watch_current(db)
 
     momentum_movers, pullback_watch = _build_continuous_movers(
     daily_docs,
     lookback_snapshots,
     )
-    alpha_memory = _build_alpha_memory(
-        db,
-        alpha_memory_docs,
-        lookback_snapshots,
-    )
-
-    confirmed = _build_confirmed_momentum(
-        momentum_movers,
-        alpha_memory.get("alphaBySymbol") or {},
-    )
-
     top_ai_setup = _build_top_ai_setup(alpha_watch)
+    ai_setups = _build_ai_setups(alpha_watch)
+
+    confirmed = _build_internal_confirmed_momentum(
+        momentum_movers,
+        ai_setups,
+    )
 
     momentum_movers = _enrich_latest_quotes(db, momentum_movers[:20])
     pullback_watch = _enrich_latest_quotes(db, pullback_watch[:12])
@@ -755,7 +710,7 @@ def build_market_momentum_payload(
 
     positive_count = len(momentum_movers)
     pullback_count = len(pullback_watch)
-    repeated_alpha = len(alpha_memory.get("historicalAlphaMomentum") or [])
+    repeated_alpha = len(ai_setups)
 
     all_avg = [abs(_safe_float(x.get("avgMovePct"))) for x in momentum_movers]
     avg_upside = sum(all_avg) / len(all_avg) if all_avg else 0
@@ -777,12 +732,8 @@ def build_market_momentum_payload(
     )
 
     ai_theme = str(top_ai_setup.get("theme") or "").strip()
-    memory_theme = str(alpha_memory.get("topSector") or "").strip()
-
     if ai_theme and ai_theme.lower() not in {"other", "unknown", "general", "mixed"}:
         top_theme = ai_theme
-    elif memory_theme and memory_theme.lower() not in {"other", "unknown", "general", "mixed"}:
-        top_theme = memory_theme
     else:
         top_theme = "Mixed"
 
@@ -805,7 +756,7 @@ def build_market_momentum_payload(
             "confirmedMomentumCount": len(confirmed),
             "avgUpsideMovePct": _round(avg_upside, 2),
             "topTheme": top_theme,
-            "topCatalyst": alpha_memory.get("topCatalyst") or "Mixed",
+            "topCatalyst": "Internal AI Setup",
             "summary": (
                 "Repeated market movers and AI opportunity memory are aligning."
                 if confirmed
@@ -817,11 +768,12 @@ def build_market_momentum_payload(
         "topLeader": top_leader,
         "confirmedMomentum": confirmed,
         "continuousMovers": momentum_movers,
-        "historicalAlphaMomentum": alpha_memory.get("historicalAlphaMomentum") or [],
+        "historicalAlphaMomentum": [],
+        "aiSetups": ai_setups,
         "pullbackWatch": pullback_watch,
 
         "momentumMovers": momentum_movers,
-        "aiWatchlistMomentum": alpha_memory.get("historicalAlphaMomentum") or [],
+        "aiWatchlistMomentum": ai_setups,
     }
 
     return payload
