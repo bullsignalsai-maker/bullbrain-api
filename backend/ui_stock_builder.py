@@ -779,16 +779,22 @@ def build_stockdetail_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
         "computed_at": stock.get("computed_at"),
     }
 
+
 def build_stockdetail_ui_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
     full = build_stockdetail_v1(stock)
 
+    sparkline = full.get("sparkline") or {}
+    range_stats = sparkline.get("rangeStats") or {}
+
     return {
         "signal": full.get("signal"),
+
         "probability": {
             "up": (full.get("probability") or {}).get("up"),
             "down": (full.get("probability") or {}).get("down"),
             "bias": (full.get("probability") or {}).get("bias"),
         },
+
         "pattern": {
             "name": (full.get("pattern") or {}).get("name"),
             "bias": (full.get("pattern") or {}).get("bias"),
@@ -796,15 +802,52 @@ def build_stockdetail_ui_v1(stock: Dict[str, Any]) -> Dict[str, Any]:
             "patternState": (full.get("pattern") or {}).get("patternState"),
             "edgeState": (full.get("pattern") or {}).get("edgeState"),
             "sampleState": (full.get("pattern") or {}).get("sampleState"),
-            "stats": (full.get("pattern") or {}).get("stats"),
+
+            "stats": {
+                "avg5d": (((full.get("pattern") or {}).get("stats") or {}).get("avg5d")),
+                "best5d": (((full.get("pattern") or {}).get("stats") or {}).get("best5d")),
+                "worst5d": (((full.get("pattern") or {}).get("stats") or {}).get("worst5d")),
+                "count5d": (((full.get("pattern") or {}).get("stats") or {}).get("count5d")),
+            },
         },
+
         "technicalSnapshot": full.get("technicalSnapshot"),
+
         "outlook": {
             "shortTerm": (full.get("outlook") or {}).get("shortTerm"),
             "mediumTerm": (full.get("outlook") or {}).get("mediumTerm"),
             "longTerm": (full.get("outlook") or {}).get("longTerm"),
         },
+
         "risksOpportunities": full.get("risksOpportunities"),
-        "news": full.get("news") or [],
+
+        "news": [
+            {
+                "headline": n.get("headline"),
+                "summary": n.get("summary"),
+                "source": n.get("source"),
+                "datetime": n.get("datetime"),
+                "url": n.get("url"),
+            }
+            for n in (full.get("news") or [])
+            if isinstance(n, dict)
+        ],
+
         "computed_at": full.get("computed_at"),
+
+        "sparkline": {
+            "path": sparkline.get("path"),
+            "min": sparkline.get("min"),
+            "max": sparkline.get("max"),
+            "direction": sparkline.get("direction"),
+            "range": sparkline.get("range"),
+            "basis": sparkline.get("basis"),
+
+            "rangeStats": {
+                "closeLow": range_stats.get("closeLow"),
+                "closeHigh": range_stats.get("closeHigh"),
+                "returnPct": range_stats.get("returnPct"),
+                "candleCount": range_stats.get("candleCount"),
+            },
+        } if sparkline.get("path") else None,
     }

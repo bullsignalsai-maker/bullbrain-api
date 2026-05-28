@@ -3826,6 +3826,29 @@ def homescreen_data():
         "schema_version": cache.get("schema_version"),
         "alpha_watch": safe_alpha_watch,
     }
+
+def slim_sparkline_payload(sparkline):
+    if not isinstance(sparkline, dict) or not sparkline.get("path"):
+        return None
+
+    range_stats = sparkline.get("rangeStats") or {}
+
+    return {
+        "path": sparkline.get("path"),
+        "min": sparkline.get("min"),
+        "max": sparkline.get("max"),
+        "direction": sparkline.get("direction"),
+        "range": sparkline.get("range"),
+        "basis": sparkline.get("basis"),
+        "rangeStats": {
+            "closeLow": range_stats.get("closeLow"),
+            "closeHigh": range_stats.get("closeHigh"),
+            "returnPct": range_stats.get("returnPct"),
+            "candleCount": range_stats.get("candleCount"),
+        },
+    }
+
+
 # ---------------------------------------------------------
 # Stock Detail API — Canonical v1.0
 # Narrative + Explanation driven
@@ -3863,17 +3886,16 @@ def stock_detail(symbol: str, source: str | None = None):
         }
 
     stock = doc.to_dict() or {}
-    stock["symbol"] = sym  # defensive
+    stock["symbol"] = sym
 
     # ---------------------------------------------------------
-    # 2️⃣ Header (shared across screens)
+    # 2️⃣ Header
     # ---------------------------------------------------------
     from backend.header_builder import build_stock_header
     header = build_stock_header(stock)
 
     # ---------------------------------------------------------
-    # 3️⃣ Sparkline (optional, UI friendly)
-    # Firestore has stock["sparkline"] as price array
+    # 3️⃣ Sparkline
     # ---------------------------------------------------------
     sparkline = None
 
@@ -3886,11 +3908,9 @@ def stock_detail(symbol: str, source: str | None = None):
         existing_prices = stock.get("sparkline")
         chart_meta = stock.get("chart") or {}
 
-        # Priority 1: Firestore sparkline array
         if isinstance(existing_prices, list) and len(existing_prices) >= 2:
             sparkline = build_sparkline_from_prices(existing_prices, meta=chart_meta)
 
-        # Priority 2: candles if available later
         if not sparkline:
             candles_block = stock.get("candles")
 
@@ -3907,8 +3927,9 @@ def stock_detail(symbol: str, source: str | None = None):
     except Exception as e:
         print("⚠️ stockdetail sparkline build failed:", str(e))
         sparkline = None
+
     # ---------------------------------------------------------
-    # 4️⃣ Company News (external I/O — endpoint responsibility)
+    # 4️⃣ Company News
     # ---------------------------------------------------------
     try:
         from backend.news_repo import fetch_symbol_news
@@ -3921,27 +3942,33 @@ def stock_detail(symbol: str, source: str | None = None):
         stock["news"] = []
 
     # ---------------------------------------------------------
-    # 5️⃣ FULL Stock Detail Report (v1.0 — deterministic)
+    # 5️⃣ Stock Detail Content
     # ---------------------------------------------------------
-    from backend.ui_stock_builder import build_stockdetail_v1, build_stockdetail_ui_v1
+    from backend.ui_stock_builder import (
+        build_stockdetail_v1,
+        build_stockdetail_ui_v1,
+    )
 
     if source == "ui":
         content = build_stockdetail_ui_v1(stock) or {}
     else:
         content = build_stockdetail_v1(stock) or {}
 
-    # Ensure sparkline is available at top-level for UI
+    # Keep full sparkline for non-UI, slim sparkline for UI
     if sparkline:
-        content["sparkline"] = sparkline
+        content["sparkline"] = (
+            slim_sparkline_payload(sparkline)
+            if source == "ui"
+            else sparkline
+        )
 
     # ---------------------------------------------------------
-    # 6️⃣ Final Response (Clean & Stable)
+    # 6️⃣ Final Response
     # ---------------------------------------------------------
     return {
         "header": header,
         "content": content,
     }
-
 # ---------------------------------------------------------
 # Stock Pattern Detail API — FULL PATTERN VIEW
 # ---------------------------------------------------------
