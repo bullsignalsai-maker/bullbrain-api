@@ -4348,36 +4348,24 @@ def get_market_movers(mode: str = "preview"):
 @app.get("/verified-alpha")
 def get_verified_alpha():
     """
-    Backward-compatible endpoint.
+    AI-curated opportunity endpoint.
 
-    NOW POWERED ENTIRELY BY:
-    - internal market movers
-    - alpha_watch AI setups
+    Powered only by:
+    - alpha_watch internal AI setups
 
     No Grok pipeline.
     No verified_alpha_opportunities dependency.
+    No duplicated market movers.
     """
 
     try:
-        movers_snap = (
-            db.collection("bullsignals_ai")
-            .document("market_movers")
-            .get()
-        )
-
         alpha_snap = (
             db.collection("bullsignals_ai")
             .document("alpha_watch")
             .get()
         )
 
-        movers_data = movers_snap.to_dict() if movers_snap.exists else {}
         alpha_data = alpha_snap.to_dict() if alpha_snap.exists else {}
-
-        movers = movers_data.get("movers", []) or []
-        gainers = [x for x in movers if x.get("direction") == "up"][:10]
-        losers = [x for x in movers if x.get("direction") == "down"][:10]
-
         ai_items = alpha_data.get("items", []) or []
 
         alpha_opportunities = []
@@ -4392,32 +4380,35 @@ def get_verified_alpha():
                 "changePct": item.get("changePct"),
                 "signal": item.get("signal"),
                 "confidence": item.get("confidence"),
+                "probUp": item.get("probUp"),
+                "score": item.get("score"),
                 "opportunityScore": item.get("opportunityScore"),
+                "marketMomentumBonus": item.get("marketMomentumBonus"),
                 "setupLabel": item.get("setupLabel"),
                 "pattern": item.get("pattern"),
                 "reason": item.get("reason"),
+                "whyNow": item.get("whyNow") or [],
                 "riskLevel": item.get("riskLevel"),
+                "riskFlags": item.get("riskFlags") or [],
                 "theme": item.get("theme"),
+                "marketRegime": item.get("marketRegime"),
+                "factorScores": item.get("factorScores") or {},
+                "quote_updated_at": item.get("quote_updated_at"),
+                "computed_at": item.get("computed_at"),
                 "source": "alpha_watch",
             })
 
         return {
             "status": "ok",
-            "source": "internal_alpha_watch_and_market_movers",
-            "updated_at": alpha_data.get("updated_at")
-                or movers_data.get("updated_at"),
-
+            "source": "internal_alpha_watch",
+            "updated_at": alpha_data.get("updated_at"),
+            "market_regime": alpha_data.get("market_regime"),
+            "title": "AI Opportunity Watch",
             "counts": {
-                "premarket_gainers": len(gainers),
-                "premarket_losers": len(losers),
                 "alpha_opportunities": len(alpha_opportunities),
             },
-
-            "premarket_gainers": gainers,
-            "premarket_losers": losers,
             "alpha_opportunities": alpha_opportunities,
-
-            "schema_version": "verified_alpha_internal_v2",
+            "schema_version": "verified_alpha_internal_v3",
             "fallback_used": False,
         }
 
@@ -4426,10 +4417,13 @@ def get_verified_alpha():
 
         return {
             "status": "error",
+            "source": "internal_alpha_watch",
             "error": str(e),
-            "premarket_gainers": [],
-            "premarket_losers": [],
+            "counts": {
+                "alpha_opportunities": 0,
+            },
             "alpha_opportunities": [],
+            "schema_version": "verified_alpha_internal_v3",
         }        
 # -----------------------------
 # 5) Market News

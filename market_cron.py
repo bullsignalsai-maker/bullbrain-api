@@ -1326,7 +1326,7 @@ def persist_homescreen_core_signals():
     db = get_db()
     now_iso = utc_now_iso()
 
-    symbols = build_homescreen_universe()   # Top 20
+    symbols = build_homescreen_universe()
     ranked: List[Dict[str, Any]] = []
 
     for sym in symbols:
@@ -1342,14 +1342,50 @@ def persist_homescreen_core_signals():
                 continue
 
             data = snap.to_dict() or {}
-            quote = data.get("quote") or {}
-            bullbrain = data.get("bullbrain") or {}
-            decision = data.get("decision") or {}
-            pattern = data.get("pattern") or {}
-            market_awareness = data.get("marketAwareness") or {}
-            raw_signal = decision.get("finalSignal") or bullbrain.get("signal", "HOLD")
+
+            quote = data.get("quote")
+            if not isinstance(quote, dict):
+                quote = {}
+
+            bullbrain = data.get("bullbrain")
+            if not isinstance(bullbrain, dict):
+                bullbrain = {}
+
+            decision = data.get("decision")
+            if not isinstance(decision, dict):
+                decision = {}
+
+            pattern = data.get("pattern")
+            if not isinstance(pattern, dict):
+                pattern = {}
+
+            market_awareness = data.get("marketAwareness")
+            if not isinstance(market_awareness, dict):
+                market_awareness = {}
+
+            profile = data.get("profile")
+            if not isinstance(profile, dict):
+                profile = {}
+
+            pattern_history = data.get("patternHistory")
+            if not isinstance(pattern_history, dict):
+                pattern_history = {}
+
+            forward_returns = pattern_history.get("forwardReturns")
+            if not isinstance(forward_returns, dict):
+                forward_returns = {}
+
+            days5 = forward_returns.get("days5")
+            if not isinstance(days5, dict):
+                days5 = {}
+
+            raw_signal = (
+                decision.get("finalSignal")
+                or bullbrain.get("signal")
+                or "HOLD"
+            )
+
             change_pct = quote.get("changePct")
-            profile = data.get("profile") or {}
             logo_url = profile.get("logoUrl")
 
             display_signal = raw_signal
@@ -1357,14 +1393,13 @@ def persist_homescreen_core_signals():
             try:
                 cp = float(change_pct or 0)
 
-                # HomeScreen is daily-move focused.
-                # Avoid showing Bullish on hard red days or Bearish on strong green days.
                 if cp <= -2.0 and raw_signal == "BUY":
                     display_signal = "HOLD"
                 elif cp >= 2.0 and raw_signal == "SELL":
                     display_signal = "HOLD"
             except Exception:
                 pass
+
             ranked.append({
                 "symbol": sym,
                 "companyName": data.get("company_name") or COMPANY_NAMES.get(sym, sym),
@@ -1376,13 +1411,8 @@ def persist_homescreen_core_signals():
                 "rawSignal": raw_signal,
                 "confidence": bullbrain.get("confidence", 0),
                 "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
-                "logoUrl": logo_url or None,   
-                "patternWinRate": (
-                    ((data.get("patternHistory") or {})
-                     .get("forwardReturns") or {})
-                     .get("days5", {})
-                     .get("winRate")
-                ),
+                "logoUrl": logo_url or None,
+                "patternWinRate": days5.get("winRate"),
                 "summary": (
                     market_awareness.get("oneLiner")
                     or market_awareness.get("summary")
@@ -1392,7 +1422,6 @@ def persist_homescreen_core_signals():
         except Exception as e:
             log(f"⚠️ homescreen core signal failed for {sym}: {e}")
 
-    # === FINAL SORT (Momentum First) ===
     ranked.sort(
         key=lambda x: (
             abs(float(x.get("changePct") or 0)) * 1.4,
@@ -1416,6 +1445,7 @@ def persist_homescreen_core_signals():
 
     top5 = [item["symbol"] for item in ranked[:5]]
     log(f"🏠 homescreen updated | count={len(ranked[:10])} | top5={top5}")
+    
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
