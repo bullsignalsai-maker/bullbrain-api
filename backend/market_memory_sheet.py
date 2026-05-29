@@ -41,9 +41,10 @@ def latest_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
     session_rank = {
-        "PREMARKET": 1,
-        "MIDDAY": 2,
-        "END_OF_DAY": 3,
+        "OVERNIGHT": 1,
+        "PREMARKET": 2,
+        "MIDDAY": 3,
+        "END_OF_DAY": 4,
     }
 
     valid_sessions = [
@@ -99,31 +100,24 @@ def read_tab(tab_name: str) -> List[Dict[str, Any]]:
     return worksheet.get_all_records()
 
 
-def get_premarket_gainers() -> List[Dict[str, Any]]:
-    return read_tab("PremarketGainers")
-
-
-def get_premarket_losers() -> List[Dict[str, Any]]:
-    return read_tab("PremarketLosers")
-
-
-def get_alpha_opportunities() -> List[Dict[str, Any]]:
-    return read_tab("AlphaOpportunities")
-
+def get_mover_candidates() -> List[Dict[str, Any]]:
+    return read_tab("MoverCandidates")
 
 def get_all_market_memory_candidates() -> Dict[str, List[Dict[str, Any]]]:
+    rows = latest_rows(get_mover_candidates())
+
     return {
-        "premarket_gainers": latest_rows(get_premarket_gainers()),
-        "premarket_losers": latest_rows(get_premarket_losers()),
-        "alpha_opportunities": latest_rows(get_alpha_opportunities()),
+        "mover_candidates": rows,
     }
 
 if __name__ == "__main__":
     data = get_all_market_memory_candidates()
 
-    print("Premarket gainers:", len(data["premarket_gainers"]))
-    print("Premarket losers:", len(data["premarket_losers"]))
-    print("Alpha opportunities:", len(data["alpha_opportunities"]))
+    print("Mover candidates:", len(data["mover_candidates"]))
 
-    print("\nSample gainer:")
-    print(data["premarket_gainers"][0] if data["premarket_gainers"] else "None")
+    print("\nSample candidate:")
+    print(
+        data["mover_candidates"][0]
+        if data["mover_candidates"]
+        else "None"
+    )

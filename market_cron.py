@@ -69,6 +69,7 @@ try:
 except Exception:
     ZoneInfo = None  # type: ignore
 from backend.firestore_utils import utc_now_iso
+from backend.market_memory_sheet import get_all_market_memory_candidates
 
 # =========================================================
 # CONSTANTS
@@ -435,53 +436,44 @@ def load_daily_mover_symbols(limit: int = 40) -> List[str]:
 
 def load_spreadsheet_discovery_metadata(limit: int = 80) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     """
-    Reads latest spreadsheet symbols + catalyst metadata as discovery seeds.
+    Reads latest MoverCandidates sheet rows as lightweight discovery seeds.
     No quote enrichment.
     No Firestore write.
     Cron discovery validates real movement later.
     """
     try:
-        db = get_db()
-        snap = db.collection(COL_ROOT).document("grok_market_memory").get()
-
-        if not snap.exists:
-            return [], {}
-
-        data = snap.to_dict() or {}
-        latest = data.get("premarket_latest") or {}
-
-        buckets = [
-            latest.get("alpha_opportunities") or [],
-            latest.get("premarket_gainers") or [],
-            latest.get("premarket_losers") or [],
-        ]
+        latest = get_all_market_memory_candidates()
+        rows = latest.get("mover_candidates") or []
 
         symbols = []
         metadata_by_symbol: Dict[str, Dict[str, Any]] = {}
 
-        for bucket in buckets:
-            for item in bucket:
-                if not isinstance(item, dict):
-                    continue
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
 
-                sym = str(item.get("symbol") or "").upper().strip()
-                if not sym:
-                    continue
+            sym = str(item.get("symbol") or "").upper().strip()
+            if not sym:
+                continue
 
-                if sym not in symbols:
-                    symbols.append(sym)
+            if sym not in symbols:
+                symbols.append(sym)
 
-                metadata_by_symbol[sym] = {
-                    "spreadsheetSource": item.get("source"),
-                    "spreadsheetSector": item.get("sector"),
-                    "primaryCatalysts": item.get("primary_catalysts"),
-                    "reason": item.get("reason"),
-                    "moverQuality": item.get("mover_quality"),
-                    "riskLevel": item.get("risk_level"),
-                    "marketDay": item.get("market_day"),
-                    "sessionType": item.get("session_type"),
-                    "generatedAt": item.get("generated_at"),
-                }
+            metadata_by_symbol[sym] = {
+                "spreadsheetSource": "mover_candidates",
+                "candidateType": item.get("candidate_type"),
+                "spreadsheetSector": item.get("sector"),
+                "primaryCatalysts": item.get("primary_catalysts"),
+                "reason": item.get("reason"),
+                "riskLevel": item.get("risk_level"),
+                "marketDay": item.get("market_day"),
+                "sessionType": item.get("session_type"),
+                "generatedAt": item.get("generated_at"),
+                "marketSentiment": item.get("market_sentiment"),
+                "dominantTheme": item.get("dominant_theme"),
+                "topSectors": item.get("top_sectors"),
+                "weakestSectors": item.get("weakest_sectors"),
+            }
 
         symbols = symbols[:limit]
         metadata_by_symbol = {
@@ -495,32 +487,25 @@ def load_spreadsheet_discovery_metadata(limit: int = 80) -> Tuple[List[str], Dic
     except Exception as e:
         log(f"⚠️ spreadsheet discovery metadata unavailable: {e}")
         return [], {}
-      
+       
 def get_discovery_phase() -> Optional[str]:
-    """
-    Returns the full-scan phase name if current ET time is inside a scan window.
-    """
     now_et = datetime.datetime.now(ET)
     hhmm = now_et.hour * 100 + now_et.minute
 
-    # 9:20–9:29 warm cache before open
-    if 915 <= hhmm <= 929:
-        return "premarket_warm"
+    # Match Make.com Grok discovery schedules
+    if 700 <= hhmm <= 714:
+        return "premarket_discovery"
 
-    # 9:32–9:44 true opening discovery
-    if 932 <= hhmm <= 944:
-        return "morning_discovery"
-
-    # 12:00–12:14 midday correction
     if 1200 <= hhmm <= 1214:
-        return "midday_correction"
+        return "midday_discovery"
 
-    # 3:30–3:44 closing correction
-    if 1530 <= hhmm <= 1544:
-        return "closing_correction"
+    if 1615 <= hhmm <= 1629:
+        return "end_of_day_discovery"
+
+    if 2030 <= hhmm <= 2044:
+        return "overnight_discovery"
 
     return None
-
 
 def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
     """
@@ -1271,6 +1256,11 @@ def persist_internal_market_movers():
                 "riskLevel": sheet_meta.get("riskLevel"),
                 "spreadsheetSource": sheet_meta.get("spreadsheetSource"),
                 "spreadsheetSector": sheet_meta.get("spreadsheetSector"),
+                "candidateType": sheet_meta.get("candidateType"),
+                "marketSentiment": sheet_meta.get("marketSentiment"),
+                "dominantTheme": sheet_meta.get("dominantTheme"),
+                "topSectors": sheet_meta.get("topSectors"),
+                "weakestSectors": sheet_meta.get("weakestSectors"),
             })
 
     # ✅ Separate gainers and losers
@@ -1580,7 +1570,17 @@ def get_cron_mode() -> str:
 
     if 930 <= hhmm <= 944:
         return "quote_discovery_plus_intelligence"
+    if 700 <= hhmm <= 714:
+        return "quote_discovery_only"
 
+    if 1200 <= hhmm <= 1214:
+        return "quote_discovery_only"
+
+    if 1615 <= hhmm <= 1629:
+        return "quote_discovery_only"
+
+    if 2030 <= hhmm <= 2044:
+        return "quote_discovery_only"
     if 945 <= hhmm <= 1600:
         return "market_open_intelligence"
 
