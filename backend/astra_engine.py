@@ -13,6 +13,7 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
     portfolio = context.get("portfolio") or {}
 
     cards = []
+
     if context.get("contextType") == "momentum_movers":
         momentum = context.get("momentum") or {}
         selected = momentum.get("selectedMover") or {}
@@ -29,7 +30,7 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
             "type": "score",
             "title": "Momentum Score",
             "value": str(round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0)),
-            "subtitle": f"{selected.get('appearances', 0)} sessions observed",
+            "subtitle": f"{selected.get('appearances') or selected.get('dailyMoverAppearances') or 0} sessions observed",
         })
 
         cards.append({
@@ -39,7 +40,8 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
             "subtitle": pulse.get("topTheme") or "Theme unavailable",
         })
 
-        return cards[:4]    
+        return cards[:4]
+        
     if context.get("contextType") == "market" or intent == "market_pulse":
         market = context.get("market") or {}
         overview = market.get("marketOverview") or {}
@@ -234,20 +236,85 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
         selected = momentum.get("selectedMover") or {}
         pulse = momentum.get("pulse") or {}
 
+        symbols = context.get("symbols") or []
+        stock_ctx = symbols[0] if symbols else {}
+        tech = stock_ctx.get("technical") or {}
+        pattern = stock_ctx.get("pattern") or {}
+        sig = stock_ctx.get("aiSignal") or {}
+
+        volume = tech.get("volume") or {}
+        trend = tech.get("trend") or {}
+        volatility = tech.get("volatility") or {}
+
         sym = selected.get("symbol") or "This mover"
-        reason = selected.get("reason") or selected.get("primaryCatalysts") or "the move is being detected by momentum signals"
+        reason = (
+            selected.get("reason")
+            or selected.get("momentumLabel")
+            or "momentum signals are strengthening"
+        ).rstrip(".")
+
         score = round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0, 1)
-        appearances = selected.get("appearances") or 0
+        appearances = selected.get("appearances") or selected.get("dailyMoverAppearances") or 0
         lookback = selected.get("lookbackSnapshots") or momentum.get("lookbackSnapshots") or 0
         move = selected.get("netMovePct") or selected.get("changePct")
+        theme = pulse.get("topTheme") or selected.get("sector") or "mixed"
 
-        return (
-            f"{sym} is standing out because {reason}. "
-            f"Its momentum score is {score}/100, with appearances in {appearances} of {lookback} recent snapshots. "
-            f"The current move is about {move}% if available, and the broader momentum theme is {pulse.get('topTheme') or 'mixed'}. "
-            "Treat this as educational momentum intelligence, not financial advice."
+        move_text = f"{round(move, 2)}%" if isinstance(move, (int, float)) else "not available"
+
+        signal = sig.get("signal")
+        confidence = sig.get("confidence")
+        pattern_name = pattern.get("name")
+        volume_label = volume.get("label")
+        volume_vs_ma20 = tech.get("volume_vs_ma20_pct")
+        trend_label = trend.get("label")
+        volatility_label = volatility.get("label")
+        rsi = tech.get("rsi14")
+
+        extra_parts = []
+
+        if signal:
+            extra_parts.append(
+                f"AI signal is {signal}"
+                + (f" with {round(confidence, 1)}% confidence" if isinstance(confidence, (int, float)) else "")
+            )
+
+        if pattern_name:
+            extra_parts.append(f"pattern is {pattern_name}")
+
+        if trend_label:
+            extra_parts.append(f"trend is {trend_label}")
+
+        if isinstance(volume_vs_ma20, (int, float)):
+            extra_parts.append(f"volume is {round(volume_vs_ma20)}% above its 20-day average")
+        elif volume_label:
+            extra_parts.append(f"volume is {volume_label.lower()}")
+
+        risk_parts = []
+
+        if isinstance(rsi, (int, float)) and rsi >= 70:
+            risk_parts.append(f"RSI is elevated near {round(rsi, 1)}")
+
+        if volatility_label:
+            risk_parts.append(f"volatility is {volatility_label.lower()}")
+
+        if selected.get("riskLevel"):
+            risk_parts.append(f"risk level is {selected.get('riskLevel')}")
+
+        intelligence = ". ".join(extra_parts)
+        risk_text = ". ".join(risk_parts)
+
+        answer = (
+            f"{sym} is moving because {reason}. "
+            f"The move is {move_text}, with a {score}/100 momentum score and {appearances} appearances across {lookback} recent snapshots. "
         )
-    
+
+        if intelligence:
+            answer += f"Clara also sees {intelligence}. "
+
+        if risk_text:
+            answer += f"The main caution is that {risk_text}."
+
+        return answer
     if not symbols:
         return (
             "I could not find enough stock intelligence yet. Add holdings or refresh the portfolio, "
@@ -363,7 +430,36 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
 
         return c in asked_text
 
-        # ✅ Market mode: only market-pulse follow-ups
+    # ✅ Momentum Movers mode: only momentum-specific follow-ups
+    if context_type == "momentum_movers":
+        momentum = context.get("momentum") or {}
+        selected = momentum.get("selectedMover") or {}
+        movers = momentum.get("movers") or []
+        ai_setups = momentum.get("aiSetups") or []
+
+        symbol = selected.get("symbol") or first_symbol or "this mover"
+
+        compare_symbol = None
+        for m in movers:
+            s = m.get("symbol")
+            if s and s != symbol:
+                compare_symbol = s
+                break
+
+        momentum_pool = [
+            f"Is {symbol}'s move real?",
+            f"What are the risks with {symbol}?",
+            f"Can {symbol}'s momentum continue?",
+            f"Compare {symbol} with {compare_symbol}" if compare_symbol else "Compare top movers",
+            "Which mover has the strongest momentum?",
+            "Which AI setup looks strongest?",
+            "What is the market momentum theme?",
+        ]
+
+        fresh = [q for q in momentum_pool if not already_asked(q)]
+        return fresh[:5]
+    
+    # ✅ Market mode: only market-pulse follow-ups
     if context_type == "market":
         market_pool = [
             "Explain today’s market pulse",
@@ -518,7 +614,7 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     mentioned_symbols = re.findall(r"\b[A-Z]{1,5}\b", question_upper)
 
     for sym in mentioned_symbols:
-        if sym not in available_symbols and sym not in ["WHY", "WHAT", "WITH", "THIS", "THAT", "HOLD", "BUY", "SELL"]:
+        if sym not in available_symbols and sym not in ["WHY", "WHAT", "WITH", "THIS", "THAT", "HOLD", "BUY", "SELL", "IS"]:
             available_symbols.append(sym)
 
     # ✅ Resolve follow-up pronouns like "it", "that", "this stock"
@@ -548,10 +644,27 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     # Momentum Movers already has structured internal data.
     # Use deterministic answer first to avoid vague LLM responses.
     if getattr(req, "contextType", None) == "momentum_movers":
+        system_prompt = (
+            "You are Clara, a premium market intelligence assistant. "
+            "Rewrite the provided market facts into a natural, concise answer. "
+            "Do not invent facts, prices, catalysts, ratings, or predictions. "
+            "Do not sound robotic or templated. "
+            "No markdown. No bullets. Maximum 3 short sentences. "
+            "Educational wording only, no financial advice."
+        )
+
+        user_prompt = (
+            f"User question: {resolved_question}\n\n"
+            f"Facts:\n{fallback_answer}\n\n"
+            "Write a natural answer that sounds like a thoughtful market analyst."
+        )
+
+        llm_answer = astra_llm_answer_fn(system_prompt, user_prompt)
+
         return {
-            "answer": fallback_answer,
-            "usedLLM": False,
-            "used_llm": False,
+            "answer": llm_answer or fallback_answer,
+            "usedLLM": llm_answer is not None,
+            "used_llm": llm_answer is not None,
             "intent": intent_payload,
             "cards": build_astra_cards(context),
             "contextSummary": {
@@ -562,7 +675,6 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
             "suggestedFollowups": build_suggested_followups(context),
             "analysis": context,
         }
-
     system_prompt, user_prompt = build_astra_prompt(context)
 
     llm_answer = astra_llm_answer_fn(system_prompt, user_prompt)
