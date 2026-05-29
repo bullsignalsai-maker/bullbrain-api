@@ -236,7 +236,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
 
         sym = selected.get("symbol") or "This mover"
         reason = selected.get("reason") or selected.get("primaryCatalysts") or "the move is being detected by momentum signals"
-        score = round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0)
+        score = round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0, 1)
         appearances = selected.get("appearances") or 0
         lookback = selected.get("lookbackSnapshots") or momentum.get("lookbackSnapshots") or 0
         move = selected.get("netMovePct") or selected.get("changePct")
@@ -544,7 +544,24 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     context["chat_history"] = getattr(req, "chat_history", []) or []
 
     fallback_answer = build_fast_astra_answer(context)
-    
+
+    # Momentum Movers already has structured internal data.
+    # Use deterministic answer first to avoid vague LLM responses.
+    if getattr(req, "contextType", None) == "momentum_movers":
+        return {
+            "answer": fallback_answer,
+            "usedLLM": False,
+            "used_llm": False,
+            "intent": intent_payload,
+            "cards": build_astra_cards(context),
+            "contextSummary": {
+                "symbols_used": [s.get("symbol") for s in context.get("symbols", [])],
+                "portfolio_value": context.get("portfolio", {}).get("total_value"),
+                "position_count": context.get("portfolio", {}).get("position_count"),
+            },
+            "suggestedFollowups": build_suggested_followups(context),
+            "analysis": context,
+        }
 
     system_prompt, user_prompt = build_astra_prompt(context)
 
