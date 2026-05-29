@@ -3363,13 +3363,20 @@ class AstraChatRequest(BaseModel):
     contextType: Optional[str] = "portfolio"
     symbol: Optional[str] = None
     companyName: Optional[str] = None
-
+    selectedMover: Optional[Dict[str, Any]] = None
+    movers: List[Dict[str, Any]] = []
+    aiSetups: List[Dict[str, Any]] = []
+    pullbacks: List[Dict[str, Any]] = []
+    pulse: Dict[str, Any] = {}
+    updatedAt: Optional[str] = None
+    lookbackSnapshots: Optional[int] = None
+    chat_history: List[Dict[str, Any]] = []
     total_value: float = 0.0
     total_gain: float = 0.0
     today_gain: float = 0.0
 
     positions: List[AstraPosition] = []
-    # ✅ NEW — short session memory from frontend
+    
     chat_history: List[Dict[str, str]] = []
 
 
