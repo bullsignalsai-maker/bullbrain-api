@@ -16,6 +16,11 @@ KNOWN_INTENTS = {
     "top3_explain": "portfolio_top_holdings",
     "compare_top3": "compare_symbols",
     "leader": "portfolio_leader",
+    "mover_why": "mover_why",
+    "mover_quality": "mover_quality",
+    "mover_risk": "mover_risk",
+    "momentum_summary": "momentum_summary",
+    "mover_compare": "mover_compare",
 }
 
 
@@ -42,6 +47,14 @@ def detect_astra_intent(
         intent = KNOWN_INTENTS[question_id]
     elif any(w in q_lower for w in ["compare", "vs", "versus"]):
         intent = "compare_symbols"
+    elif any(w in q_lower for w in ["why moving", "why is", "running", "moving"]):
+        intent = "mover_why"
+    elif any(w in q_lower for w in ["real", "quality", "sustainable", "valid"]):
+        intent = "mover_quality"
+    elif any(w in q_lower for w in ["risk", "danger", "downside"]):
+        intent = "mover_risk"
+    elif any(w in q_lower for w in ["momentum movers", "summarize momentum", "top movers"]):
+        intent = "momentum_summary"    
     elif any(w in q_lower for w in ["risk", "exposure", "danger"]):
         intent = "portfolio_risk"
     elif any(w in q_lower for w in ["worst", "attention", "problem", "drag"]):

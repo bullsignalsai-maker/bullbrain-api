@@ -35,7 +35,6 @@ class AstraPosition(BaseModel):
 
 
 class AstraChatRequest(BaseModel):
-    # Either a free-form question or a predefined question_id from the app
     question: Optional[str] = ""
     question_id: Optional[str] = None
 
@@ -45,6 +44,21 @@ class AstraChatRequest(BaseModel):
 
     positions: List[AstraPosition] = []
 
+    # App-wide Clara contexts
+    contextType: Optional[str] = None
+    symbol: Optional[str] = None
+
+    # Momentum Movers context
+    selectedMover: Optional[Dict[str, Any]] = None
+    movers: List[Dict[str, Any]] = []
+    aiSetups: List[Dict[str, Any]] = []
+    pullbacks: List[Dict[str, Any]] = []
+    pulse: Dict[str, Any] = {}
+    updatedAt: Optional[str] = None
+    lookbackSnapshots: Optional[int] = None
+
+    # Chat memory from mobile app
+    chat_history: List[Dict[str, Any]] = []
 
 # ---------------------------------------------------------------
 # Helper: lightweight market sentiment for a symbol

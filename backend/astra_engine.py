@@ -13,6 +13,33 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
     portfolio = context.get("portfolio") or {}
 
     cards = []
+    if context.get("contextType") == "momentum_movers":
+        momentum = context.get("momentum") or {}
+        selected = momentum.get("selectedMover") or {}
+        pulse = momentum.get("pulse") or {}
+
+        cards.append({
+            "type": "mover",
+            "title": "Selected Mover",
+            "value": selected.get("symbol") or "N/A",
+            "subtitle": selected.get("reason") or selected.get("momentumLabel") or "Momentum context",
+        })
+
+        cards.append({
+            "type": "score",
+            "title": "Momentum Score",
+            "value": str(round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0)),
+            "subtitle": f"{selected.get('appearances', 0)} sessions observed",
+        })
+
+        cards.append({
+            "type": "market",
+            "title": "Market Bias",
+            "value": pulse.get("marketBias") or "N/A",
+            "subtitle": pulse.get("topTheme") or "Theme unavailable",
+        })
+
+        return cards[:4]    
     if context.get("contextType") == "market" or intent == "market_pulse":
         market = context.get("market") or {}
         overview = market.get("marketOverview") or {}
@@ -202,7 +229,25 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
     intent = context.get("intent", {}).get("intent")
     portfolio = context.get("portfolio") or {}
     symbols = context.get("symbols") or []
+    if context.get("contextType") == "momentum_movers":
+        momentum = context.get("momentum") or {}
+        selected = momentum.get("selectedMover") or {}
+        pulse = momentum.get("pulse") or {}
 
+        sym = selected.get("symbol") or "This mover"
+        reason = selected.get("reason") or selected.get("primaryCatalysts") or "the move is being detected by momentum signals"
+        score = round(selected.get("momentumScore") or selected.get("avgAlphaScore") or 0)
+        appearances = selected.get("appearances") or 0
+        lookback = selected.get("lookbackSnapshots") or momentum.get("lookbackSnapshots") or 0
+        move = selected.get("netMovePct") or selected.get("changePct")
+
+        return (
+            f"{sym} is standing out because {reason}. "
+            f"Its momentum score is {score}/100, with appearances in {appearances} of {lookback} recent snapshots. "
+            f"The current move is about {move}% if available, and the broader momentum theme is {pulse.get('topTheme') or 'mixed'}. "
+            "Treat this as educational momentum intelligence, not financial advice."
+        )
+    
     if not symbols:
         return (
             "I could not find enough stock intelligence yet. Add holdings or refresh the portfolio, "

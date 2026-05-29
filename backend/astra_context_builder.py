@@ -197,6 +197,44 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
 
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
+    # Momentum Movers mode: no portfolio required
+    if getattr(req, "contextType", None) == "momentum_movers":
+        selected = getattr(req, "selectedMover", None) or {}
+        movers = getattr(req, "movers", None) or []
+        ai_setups = getattr(req, "aiSetups", None) or []
+        pullbacks = getattr(req, "pullbacks", None) or []
+        pulse = getattr(req, "pulse", None) or {}
+
+        selected_symbol = str(selected.get("symbol") or "").upper() if isinstance(selected, dict) else ""
+
+        return {
+            "intent": {
+                **intent_payload,
+                "intent": intent_payload.get("intent") or "mover_why",
+            },
+            "contextType": "momentum_movers",
+            "portfolio": {
+                "total_value": None,
+                "total_gain": None,
+                "today_gain": None,
+                "position_count": 0,
+                "top_holding": None,
+                "best_position": None,
+                "worst_position": None,
+            },
+            "momentum": {
+                "selectedMover": selected,
+                "movers": movers[:12] if isinstance(movers, list) else [],
+                "aiSetups": ai_setups[:8] if isinstance(ai_setups, list) else [],
+                "pullbacks": pullbacks[:8] if isinstance(pullbacks, list) else [],
+                "pulse": pulse,
+                "updatedAt": getattr(req, "updatedAt", None),
+                "lookbackSnapshots": getattr(req, "lookbackSnapshots", None),
+            },
+            "symbols": [
+                build_symbol_context(selected_symbol, None)
+            ] if selected_symbol else [],
+        }
         # Market Pulse mode: no portfolio required
     if getattr(req, "contextType", None) == "market":
         return {

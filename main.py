@@ -3068,7 +3068,7 @@ def search(q: str, limit: int = 5):
         print("SEARCH error:", e)
         return {"data": []}
     
-    
+
 @app.get("/watchlist-item/{symbol}")
 def watchlist_item(symbol: str):
     try:
@@ -3549,7 +3549,7 @@ def astra_symbol_sentiment(symbol: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------
 @app.post("/astra-chat")
 def astra_chat(req: AstraChatRequest):
-    if req.contextType not in ("stock_detail", "market"):
+    if req.contextType not in ("stock_detail", "market", "momentum_movers"):
         if not req.positions or req.total_value <= 0:
             return {
                 "answer": (
