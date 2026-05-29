@@ -3025,20 +3025,50 @@ def search(q: str, limit: int = 5):
     try:
         if not FINNHUB_KEY:
             return {"data": []}
+
         url = f"https://finnhub.io/api/v1/search?q={q}&token={FINNHUB_KEY}"
         data = requests.get(url, timeout=8).json()
+
         out = []
+
         for item in data.get("result", [])[:limit]:
             sym = item.get("symbol")
             desc = item.get("description")
-            if sym and desc:
-                out.append({"symbol": sym, "description": desc})
+
+            if not sym or not desc:
+                continue
+
+            logo_url = None
+
+            try:
+                stock_doc = (
+                    db.collection("bullsignals_ai")
+                    .document("stocks")
+                    .collection("symbols")
+                    .document(sym.upper())
+                    .get()
+                )
+
+                if stock_doc.exists:
+                    stock = stock_doc.to_dict() or {}
+                    profile = stock.get("profile") or {}
+                    logo_url = profile.get("logoUrl")
+            except Exception:
+                pass
+
+            out.append({
+                "symbol": sym,
+                "description": desc,
+                "logoUrl": logo_url,
+            })
+
         return {"data": out}
+
     except Exception as e:
         print("SEARCH error:", e)
         return {"data": []}
-
-
+    
+    
 @app.get("/watchlist-item/{symbol}")
 def watchlist_item(symbol: str):
     try:
