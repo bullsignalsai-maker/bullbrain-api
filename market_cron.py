@@ -107,8 +107,8 @@ DOC_ACTIVE = "active_symbols"
 DOC_HOMESCREEN = "homescreen_snapshot"
 
 SP500_DISCOVERY_LIMIT = 540
-DAILY_MOVER_GAINERS_LIMIT = 25
-DAILY_MOVER_LOSERS_LIMIT = 25
+DAILY_MOVER_GAINERS_LIMIT = 35
+DAILY_MOVER_LOSERS_LIMIT = 35
 
 DISCOVERY_FULL_SCAN_MAX_AGE_SECONDS = 60
 DISCOVERY_FETCH_DELAY_SECONDS = 0.15
@@ -146,7 +146,7 @@ def get_db():
 # PHASE 0 — MARKET GAINERS / LOSERS (INTERNAL)
 # =========================================================
 
-def get_internal_market_movers(limit: int = 20) -> List[str]:
+def get_internal_market_movers(limit: int = 35) -> List[str]:
     """
     Computes market movers from existing stock docs.
     Uses intraday % change from quotes.
@@ -379,7 +379,7 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
 # SCAN UNIVERSE
 # =========================================================
 
-def load_persisted_market_movers(limit: int = 20) -> List[str]:
+def load_persisted_market_movers(limit: int = 35) -> List[str]:
     db = get_db()
     snap = db.collection(COL_ROOT).document("market_movers").get()
     if not snap.exists:
@@ -492,8 +492,7 @@ def get_discovery_phase() -> Optional[str]:
     now_et = datetime.datetime.now(ET)
     hhmm = now_et.hour * 100 + now_et.minute
 
-    # Match Make.com Grok discovery schedules
-    if 700 <= hhmm <= 714:
+    if 815 <= hhmm <= 829:
         return "premarket_discovery"
 
     if 1200 <= hhmm <= 1214:
@@ -506,6 +505,7 @@ def get_discovery_phase() -> Optional[str]:
         return "overnight_discovery"
 
     return None
+
 
 def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
     """
@@ -701,9 +701,117 @@ def refresh_daily_movers_from_sp500() -> List[str]:
 
     return mover_symbols
 
+
+
+def persist_quote_discovery_market_movers():
+    """
+    Lightweight pre-intelligence movers preview.
+    Runs after quote_discovery_only.
+    Uses daily_movers gainers/losers already quote-validated.
+    Lets UI show premarket/midday/EOD/overnight movers immediately,
+    before BullBrain full intelligence runs.
+    """
+    try:
+        db = get_db()
+        snap = _daily_movers_doc_ref(db).get()
+
+        if not snap.exists:
+            log("⚠️ no daily_movers doc found for preview write")
+            return
+
+        data = snap.to_dict() or {}
+        gainers = data.get("gainers") or []
+        losers = data.get("losers") or []
+        spreadsheet_metadata = data.get("spreadsheet_metadata") or {}
+
+        preview_gainers = []
+        preview_losers = []
+
+        def enrich(item):
+            if not isinstance(item, dict):
+                return None
+
+            sym = str(item.get("symbol") or "").upper().strip()
+            if not sym:
+                return None
+
+            sheet_meta = spreadsheet_metadata.get(sym) or {}
+
+            return {
+                "symbol": sym,
+                "company": item.get("company_name") or COMPANY_NAMES.get(sym, sym),
+                "price": item.get("price"),
+                "change": item.get("change"),
+                "changePct": item.get("changePct"),
+                "direction": item.get("direction"),
+                "quote_updated_at": item.get("quote_updated_at"),
+                "source": "quote_discovery_preview",
+
+                # Catalyst metadata from MoverCandidates sheet
+                "primaryCatalysts": sheet_meta.get("primaryCatalysts"),
+                "reason": sheet_meta.get("reason"),
+                "riskLevel": sheet_meta.get("riskLevel"),
+                "spreadsheetSource": sheet_meta.get("spreadsheetSource"),
+                "spreadsheetSector": sheet_meta.get("spreadsheetSector"),
+                "candidateType": sheet_meta.get("candidateType"),
+                "marketSentiment": sheet_meta.get("marketSentiment"),
+                "dominantTheme": sheet_meta.get("dominantTheme"),
+                "topSectors": sheet_meta.get("topSectors"),
+                "weakestSectors": sheet_meta.get("weakestSectors"),
+                "sessionType": sheet_meta.get("sessionType"),
+                "generatedAt": sheet_meta.get("generatedAt"),
+            }
+
+        for item in gainers[:35]:
+            row = enrich(item)
+            if row:
+                preview_gainers.append(row)
+
+        for item in losers[:35]:
+            row = enrich(item)
+            if row:
+                preview_losers.append(row)
+
+        final_movers = preview_gainers[:35] + preview_losers[:35]
+
+        db.collection(COL_ROOT).document("market_movers").set(
+            {
+                "as_of": datetime.datetime.now(ET).date().isoformat(),
+                "updated_at": utc_now_iso(),
+                "source": "quote_discovery_preview",
+                "preview": True,
+                "limit": {
+                    "home_rising": 5,
+                    "preview_rising": 4,
+                    "preview_falling": 4,
+                    "gainers": 35,
+                    "losers": 35,
+                    "total": 70,
+                },
+                "home_rising": preview_gainers[:5],
+                "preview_rising": preview_gainers[:4],
+                "preview_falling": preview_losers[:4],
+                "gainers_count": len(preview_gainers[:35]),
+                "losers_count": len(preview_losers[:35]),
+                "movers": final_movers,
+                "schema_version": "market_movers_preview_v1",
+            },
+            merge=True,
+        )
+
+        log(
+            f"⚡ quote discovery preview market_movers saved | "
+            f"gainers={len(preview_gainers[:35])} "
+            f"losers={len(preview_losers[:35])} "
+            f"total={len(final_movers)}"
+        )
+
+    except Exception as e:
+        log_exc("quote discovery preview market_movers failed", e)
+
 def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     # Existing internal movers from previous stock docs
-    phase0 = load_persisted_market_movers(limit=20)
+    phase0 = load_persisted_market_movers(limit=35)
 
     # New daily movers from lightweight S&P/REAL_TICKERS discovery
     daily_movers = refresh_daily_movers_from_sp500()
@@ -1277,7 +1385,7 @@ def persist_internal_market_movers():
     home_rising = gainers[:5]
     preview_rising = gainers[:4]
     preview_falling = losers[:4]
-    final_movers = gainers[:25] + losers[:25]
+    final_movers = gainers[:35] + losers[:35]
 
     db.collection(COL_ROOT).document("market_movers").set(
         {
@@ -1288,15 +1396,15 @@ def persist_internal_market_movers():
                 "home_rising": 5,
                 "preview_rising": 4,
                 "preview_falling": 4,
-                "gainers": 25,
-                "losers": 25,
-                "total": 50,
+                "gainers": 35,
+                "losers": 35,
+                "total": 70,
             },
             "home_rising": home_rising,
             "preview_rising": preview_rising,
             "preview_falling": preview_falling,
-            "gainers_count": len(gainers[:25]),
-            "losers_count": len(losers[:25]),
+            "gainers_count": len(gainers[:35]),
+            "losers_count": len(losers[:35]),
             "movers": final_movers,
             "schema_version": "market_movers_v4",
         },
@@ -1304,8 +1412,8 @@ def persist_internal_market_movers():
     )
     log(
         f"🔥 market_movers updated | "
-        f"gainers={len(gainers[:25])} "
-        f"losers={len(losers[:25])} "
+        f"gainers={len(gainers[:35])} "
+        f"losers={len(losers[:35])} "
         f"total={len(final_movers)}"
     )
 
@@ -1562,29 +1670,42 @@ def get_cron_mode() -> str:
     now_et = now_utc.astimezone(ET)
     hhmm = now_et.hour * 100 + now_et.minute
 
-    if now_et.weekday() >= 5 or is_us_market_holiday(now_utc):
+    is_sunday_overnight = now_et.weekday() == 6 and 2030 <= hhmm <= 2044
+
+    if is_us_market_holiday(now_utc):
         return "skip"
 
-    if 915 <= hhmm <= 929:
+    if now_et.weekday() == 5:
+        return "skip"
+
+    if now_et.weekday() == 6 and not is_sunday_overnight:
+        return "skip"
+    # Sheet-driven quote discovery windows
+    # Make.com runs 08:10 ET, cron catches 08:15
+    if 815 <= hhmm <= 829:
         return "quote_discovery_only"
 
-    if 930 <= hhmm <= 944:
-        return "quote_discovery_plus_intelligence"
-    if 700 <= hhmm <= 714:
-        return "quote_discovery_only"
-
+    # Make.com runs 11:55 ET, cron catches 12:00
     if 1200 <= hhmm <= 1214:
         return "quote_discovery_only"
 
+    # Make.com runs 16:10 ET, cron catches 16:15
     if 1615 <= hhmm <= 1629:
         return "quote_discovery_only"
 
+    # Make.com runs 20:25 ET, cron catches 20:30
     if 2030 <= hhmm <= 2044:
         return "quote_discovery_only"
+
+    # Market open intelligence
+    if 930 <= hhmm <= 944:
+        return "quote_discovery_plus_intelligence"
+
     if 945 <= hhmm <= 1600:
         return "market_open_intelligence"
 
-    if 1601 <= hhmm <= 1630:
+    # Final post-close intelligence, after EOD quote discovery
+    if 1630 <= hhmm <= 1645:
         return "final_close_intelligence"
 
     return "skip"
@@ -1617,6 +1738,9 @@ def main():
     # 9:15 warm scan: quote-only, no BullBrain
     if mode == "quote_discovery_only":
         refresh_daily_movers_from_sp500()
+
+        # Immediately expose quote-validated movers to UI before BullBrain runs
+        persist_quote_discovery_market_movers()
 
         # Build and save Momentum Movers screen cache after pre-market discovery
         try:
