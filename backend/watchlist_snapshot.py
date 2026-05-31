@@ -92,6 +92,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         )
 
         market_awareness = stock.get("marketAwareness") or {}
+        display_intelligence = stock.get("displayIntelligence") or {}
         profile = stock.get("profile") or {}
         logo_url = profile.get("logoUrl")
 
@@ -111,7 +112,8 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         # -------------------------------------------------
 
         watchlist_summary = (
-            market_awareness.get("displayLine")
+            display_intelligence.get("headline")
+            or market_awareness.get("displayLine")
             or market_awareness.get("oneLiner")
             or market_awareness.get("summary")
             or resolve_watchlist_summary(stock)
@@ -165,6 +167,11 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
                 "signal": bullbrain.get("signal", "HOLD"),
                 "confidence": bullbrain.get("confidence", 0),
             },
+            "displayIntelligence": display_intelligence,
+            "signal": display_intelligence.get("signal") or bullbrain.get("signal", "HOLD"),
+            "displayLabel": display_intelligence.get("label"),
+            "displayScore": display_intelligence.get("score"),
+            "displayHeadline": display_intelligence.get("headline"),
 
             "pattern": {
                 "name": pattern.get("pattern") or pattern.get("patternLabel"),

@@ -3990,7 +3990,7 @@ def stock_detail(symbol: str, source: str | None = None):
         content = build_stockdetail_ui_v1(stock) or {}
     else:
         content = build_stockdetail_v1(stock) or {}
-
+    
     # Keep full sparkline for non-UI, slim sparkline for UI
     if sparkline:
         content["sparkline"] = (

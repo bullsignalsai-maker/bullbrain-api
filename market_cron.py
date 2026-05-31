@@ -70,7 +70,7 @@ except Exception:
     ZoneInfo = None  # type: ignore
 from backend.firestore_utils import utc_now_iso
 from backend.market_memory_sheet import get_all_market_memory_candidates
-
+from backend.stock_display_intelligence import build_display_intelligence
 # =========================================================
 # CONSTANTS
 # =========================================================
@@ -1190,7 +1190,20 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         decision=core.get("decision"),
         news_items=news_items,
     )
+    spreadsheet_metadata = load_today_spreadsheet_mover_metadata()
+    sheet_meta = spreadsheet_metadata.get(symbol) or {}
 
+    display_intelligence = build_display_intelligence(
+        symbol=symbol,
+        stock={
+            "quote": quote,
+            "technical": technical,
+            "bullbrain": core.get("bullbrain"),
+            "decision": core.get("decision"),
+            "marketAwareness": market_awareness,
+        },
+        spreadsheet_meta=sheet_meta,
+    )
     # ---------------------------------------------------------
     # 8) Preserve existing profile/logo metadata
     # ---------------------------------------------------------
@@ -1229,6 +1242,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "indicator_states": indicator_state_bundle["states"],
         "narratives": narratives,   
         "marketAwareness": market_awareness,
+        "displayIntelligence": display_intelligence,
         "computed_at": utc_now_iso(),
         "schema_version": "v2",
     }
@@ -1343,7 +1357,8 @@ def persist_internal_market_movers():
         # 20 minutes is safe because cron runs every 15 minutes.
         if age_seconds > 20 * 60:
             continue
-        sheet_meta = spreadsheet_metadata.get(sym) or {}    
+        sheet_meta = spreadsheet_metadata.get(sym) or {}   
+        display_intelligence = data.get("displayIntelligence") or {} 
         if isinstance(chg, (int, float)):
             movers.append({
                 "symbol": sym,
@@ -1369,6 +1384,11 @@ def persist_internal_market_movers():
                 "dominantTheme": sheet_meta.get("dominantTheme"),
                 "topSectors": sheet_meta.get("topSectors"),
                 "weakestSectors": sheet_meta.get("weakestSectors"),
+                "displayIntelligence": display_intelligence,
+                "signal": display_intelligence.get("signal") or (data.get("bullbrain") or {}).get("signal"),
+                "displayLabel": display_intelligence.get("label"),
+                "displayScore": display_intelligence.get("score"),
+                "displayHeadline": display_intelligence.get("headline"),
             })
 
     # ✅ Separate gainers and losers
@@ -1460,7 +1480,7 @@ def persist_homescreen_core_signals():
             market_awareness = data.get("marketAwareness")
             if not isinstance(market_awareness, dict):
                 market_awareness = {}
-
+            display_intelligence = data.get("displayIntelligence") or {}
             profile = data.get("profile")
             if not isinstance(profile, dict):
                 profile = {}
@@ -1486,7 +1506,9 @@ def persist_homescreen_core_signals():
             change_pct = quote.get("changePct")
             logo_url = profile.get("logoUrl")
 
-            display_signal = raw_signal
+            display_signal = display_intelligence.get("signal") or raw_signal
+            display_score = display_intelligence.get("score") or bullbrain.get("confidence", 0)
+            display_headline = display_intelligence.get("headline")
 
             try:
                 cp = float(change_pct or 0)
@@ -1507,12 +1529,14 @@ def persist_homescreen_core_signals():
                 "lastUpdated": quote.get("updated_at") or data.get("computed_at"),
                 "signal": display_signal,
                 "rawSignal": raw_signal,
-                "confidence": bullbrain.get("confidence", 0),
+                "confidence": display_score,
+                "displayIntelligence": display_intelligence,
                 "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
                 "logoUrl": logo_url or None,
                 "patternWinRate": days5.get("winRate"),
                 "summary": (
-                    market_awareness.get("oneLiner")
+                    display_headline
+                    or market_awareness.get("oneLiner")
                     or market_awareness.get("summary")
                 ),
             })
