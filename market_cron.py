@@ -498,14 +498,35 @@ def get_discovery_phase() -> Optional[str]:
     if 1200 <= hhmm <= 1214:
         return "midday_discovery"
 
-    if 1615 <= hhmm <= 1629:
+    if 1615 <= hhmm <= 1619:
         return "end_of_day_discovery"
+
+    if 1620 <= hhmm <= 1629:
+        return "after_hours_discovery"
 
     if 2030 <= hhmm <= 2044:
         return "overnight_discovery"
-
     return None
 
+def get_current_discovery_session_type() -> Optional[str]:
+    phase = get_discovery_phase()
+
+    if phase == "premarket_discovery":
+        return "PREMARKET"
+
+    if phase == "midday_discovery":
+        return "MIDDAY"
+
+    if phase == "end_of_day_discovery":
+        return "END_OF_DAY"
+
+    if phase == "after_hours_discovery":
+        return "AFTER_HOURS"
+
+    if phase == "overnight_discovery":
+        return "OVERNIGHT"
+
+    return None
 
 def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
     """
@@ -723,6 +744,7 @@ def persist_quote_discovery_market_movers():
         gainers = data.get("gainers") or []
         losers = data.get("losers") or []
         spreadsheet_metadata = data.get("spreadsheet_metadata") or {}
+        current_session_type = get_current_discovery_session_type()
 
         preview_gainers = []
         preview_losers = []
@@ -736,7 +758,7 @@ def persist_quote_discovery_market_movers():
                 return None
 
             sheet_meta = spreadsheet_metadata.get(sym) or {}
-
+            
             return {
                 "symbol": sym,
                 "company": item.get("company_name") or COMPANY_NAMES.get(sym, sym),
@@ -745,7 +767,11 @@ def persist_quote_discovery_market_movers():
                 "changePct": item.get("changePct"),
                 "direction": item.get("direction"),
                 "quote_updated_at": item.get("quote_updated_at"),
-                "source": "quote_discovery_preview",
+                "source": (
+                    "after_hours_quote_discovery_preview"
+                    if current_session_type == "AFTER_HOURS"
+                    else "quote_discovery_preview"
+                ),
 
                 # Catalyst metadata from MoverCandidates sheet
                 "primaryCatalysts": sheet_meta.get("primaryCatalysts"),
@@ -758,7 +784,7 @@ def persist_quote_discovery_market_movers():
                 "dominantTheme": sheet_meta.get("dominantTheme"),
                 "topSectors": sheet_meta.get("topSectors"),
                 "weakestSectors": sheet_meta.get("weakestSectors"),
-                "sessionType": sheet_meta.get("sessionType"),
+                "sessionType": sheet_meta.get("sessionType") or current_session_type,
                 "generatedAt": sheet_meta.get("generatedAt"),
             }
 
@@ -778,7 +804,11 @@ def persist_quote_discovery_market_movers():
             {
                 "as_of": datetime.datetime.now(ET).date().isoformat(),
                 "updated_at": utc_now_iso(),
-                "source": "quote_discovery_preview",
+                "source": (
+                    "after_hours_quote_discovery_preview"
+                    if current_session_type == "AFTER_HOURS"
+                    else "quote_discovery_preview"
+                ),
                 "preview": True,
                 "limit": {
                     "home_rising": 5,
@@ -1714,13 +1744,15 @@ def get_cron_mode() -> str:
         return "quote_discovery_only"
 
     # Make.com runs 16:10 ET, cron catches 16:15
-    if 1615 <= hhmm <= 1629:
+    if 1615 <= hhmm <= 1619:
         return "quote_discovery_only"
 
-    # Make.com runs 20:25 ET, cron catches 20:30
+    # Backend-only after-hours quote scan for earnings/news explosions
+    if 1620 <= hhmm <= 1629:
+        return "quote_discovery_only"
+
     if 2030 <= hhmm <= 2044:
         return "quote_discovery_only"
-
     # Market open intelligence
     if 930 <= hhmm <= 944:
         return "quote_discovery_plus_intelligence"
