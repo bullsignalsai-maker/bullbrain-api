@@ -20,13 +20,13 @@ def _score_label(score: int, change_pct: float, risk_level: str):
     risk = str(risk_level or "").lower()
 
     if change_pct >= 6 and risk == "high":
-        return "HIGH_RISK_MOMENTUM", "High-Risk Momentum", "warning"
+        return "HIGH_RISK_MOMENTUM", "Momentum Surge", "positive"
     if score >= 82:
         return "STRONG_BULLISH", "Strong Bullish", "positive"
     if score >= 68:
         return "BULLISH_WATCH", "Bullish Watch", "positive"
     if score >= 58:
-        return "MOMENTUM_WATCH", "Momentum Watch", "positive"
+        return "MOMENTUM_WATCH", "Momentum Building", "positive"
     if score <= 35:
         return "BEARISH_WATCH", "Bearish Watch", "negative"
     if score <= 45:
