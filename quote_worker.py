@@ -668,7 +668,7 @@ def update_market_overview(db) -> None:
     # -----------------------------
     # 3) Top Sectors update (MARKET HOURS ONLY)
     # -----------------------------
-    if not is_market_open(now_utc):
+    if True:
         log("⏸️ Market closed — skipping sector refresh")
     else:
         sectors = fetch_sector_snapshot()
@@ -738,7 +738,7 @@ def collect_home_visible_symbols(db) -> Set[str]:
             for key in ["core_signals"]:
                 arr = d.get(key, [])
                 if isinstance(arr, list):
-                    for item in arr[:10]:
+                    for item in arr[:7]:
                         if isinstance(item, dict) and item.get("symbol"):
                             out.add(str(item["symbol"]).upper().strip())
 
@@ -752,7 +752,7 @@ def collect_home_visible_symbols(db) -> Set[str]:
             ad = alpha.to_dict() or {}
             items = ad.get("items", [])
             if isinstance(items, list):
-                for item in items[:8]:
+                for item in items[:6]:
                     if isinstance(item, dict) and item.get("symbol"):
                         out.add(str(item["symbol"]).upper().strip())
 
@@ -852,7 +852,7 @@ def main() -> None:
                     log(f"⚠️ Failed to read active_symbols: {e}")
                     active = set()
 
-                active = set(list(active)[:20])
+                active = set(list(active)[:10])
                 all_tickers |= active
 
                 LAST_WATCHLIST_REFRESH = time.time()
@@ -863,7 +863,7 @@ def main() -> None:
             # -------------------------------------------------
             if should_refresh(LAST_MOVERS_REFRESH, 300):
                 daily_movers = collect_daily_movers(db)
-                daily_movers = set(list(daily_movers)[:30])
+                daily_movers = set(list(daily_movers)[:15])
 
                 all_tickers |= daily_movers
 
