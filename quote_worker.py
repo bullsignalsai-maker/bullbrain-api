@@ -197,7 +197,7 @@ def choose_sleep_seconds(now_utc: datetime.datetime) -> int:
     if is_weekend(now_utc):
         return 6 * 3600
     if is_market_open(now_utc):
-        return 30
+        return 120
     if is_night_et(now_utc):
         return 3600
     return 5 * 60
@@ -753,6 +753,7 @@ def main() -> None:
             tickers = collect_tickers(db)
             on_demand = collect_on_demand_quotes(db)
             daily_movers = collect_daily_movers(db)
+            daily_movers = set(list(daily_movers)[:40])
             all_tickers: Set[str] = set()
             # OPTIONAL but strongly recommended if you have this collection:
             # - active_symbols keeps system scalable and guarantees new adds get picked up
@@ -781,7 +782,7 @@ def main() -> None:
             except Exception as e:
                 log(f"⚠️ Failed to read active_symbols: {e}")
                 active = set()
-
+            active = set(list(active)[:25])
             all_tickers |= tickers
             all_tickers |= set(CORE_UNIVERSE)
             all_tickers |= on_demand
