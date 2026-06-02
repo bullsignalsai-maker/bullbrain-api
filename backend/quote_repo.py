@@ -172,7 +172,7 @@ def get_quote_safe(symbol: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------
 # Pending quotes for worker
 # ---------------------------------------------------------
-def get_pending_quotes(limit: int = 15) -> List[str]:
+def get_pending_quotes(limit: int = 5) -> List[str]:
     """
     Quotes needing refresh:
       - needs_refresh == True

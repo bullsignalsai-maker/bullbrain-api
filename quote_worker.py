@@ -54,12 +54,10 @@ from backend.quote_repo import (
 # -----------------------------
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
 SECTOR_MIN_REFRESH_SECONDS = 300   # 5 minutes (market hours only)
-CORE_UNIVERSE = [
-    "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA",
-    "AMD", "AVGO", "TSM", "ARM", "SMCI",
-    "PLTR", "NFLX", "COIN", "MSTR", "SOFI",
-]
-
+LAST_HOME_REFRESH = None
+LAST_WATCHLIST_REFRESH = None
+LAST_MOVERS_REFRESH = None
+LAST_MARKET_REFRESH = None
 # ---------------------------------------------------------
 # Firebase Init
 # ---------------------------------------------------------
@@ -197,7 +195,7 @@ def choose_sleep_seconds(now_utc: datetime.datetime) -> int:
     if is_weekend(now_utc):
         return 6 * 3600
     if is_market_open(now_utc):
-        return 120
+        return 60
     if is_night_et(now_utc):
         return 3600
     return 5 * 60
@@ -720,6 +718,59 @@ def update_market_overview(db) -> None:
         merge=True,
     )
 
+def should_refresh(last_run, interval_seconds):
+    now = time.time()
+
+    if last_run is None:
+        return True
+
+    return (now - last_run) >= interval_seconds
+
+def collect_home_visible_symbols(db) -> Set[str]:
+    out: Set[str] = set()
+
+    try:
+        # homescreen_snapshot → core_signals / core_universe if present
+        snap = db.collection("bullsignals_ai").document("homescreen_snapshot").get()
+        if snap.exists:
+            d = snap.to_dict() or {}
+
+            for key in ["core_signals"]:
+                arr = d.get(key, [])
+                if isinstance(arr, list):
+                    for item in arr[:10]:
+                        if isinstance(item, dict) and item.get("symbol"):
+                            out.add(str(item["symbol"]).upper().strip())
+
+            # carousel market symbols like SPY/QQQ/GLD/USO/SLV
+            for sym in collect_tickers(db):
+                out.add(sym)
+
+        # alpha_watch → Top Alpha + AI Setups
+        alpha = db.collection("bullsignals_ai").document("alpha_watch").get()
+        if alpha.exists:
+            ad = alpha.to_dict() or {}
+            items = ad.get("items", [])
+            if isinstance(items, list):
+                for item in items[:8]:
+                    if isinstance(item, dict) and item.get("symbol"):
+                        out.add(str(item["symbol"]).upper().strip())
+
+        # market_movers → Home movers only
+        movers = db.collection("bullsignals_ai").document("market_movers").get()
+        if movers.exists:
+            md = movers.to_dict() or {}
+            home_rising = md.get("home_rising", [])
+            if isinstance(home_rising, list):
+                for item in home_rising[:5]:
+                    if isinstance(item, dict) and item.get("symbol"):
+                        out.add(str(item["symbol"]).upper().strip())
+
+    except Exception as e:
+        log(f"⚠️ Failed to collect home visible symbols: {e}")
+
+    return out
+
 # ---------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------
@@ -750,44 +801,92 @@ def main() -> None:
             #   3) on-demand pending (needs_refresh == True)
             #   4) active symbols (recent watchlist adds)
             # -------------------------------------------------
-            tickers = collect_tickers(db)
-            on_demand = collect_on_demand_quotes(db)
-            daily_movers = collect_daily_movers(db)
-            daily_movers = set(list(daily_movers)[:40])
-            all_tickers: Set[str] = set()
-            # OPTIONAL but strongly recommended if you have this collection:
-            # - active_symbols keeps system scalable and guarantees new adds get picked up
-            active = set()
-            try:
-                s = db.collection("bullsignals_ai").document("active_symbols").get()
-                if s.exists:
-                    d = s.to_dict() or {}
-                    # expect: { "symbols": ["OPEN","NBIS",...], "updated_at": ... }
-                    syms = d.get("symbols", {})
+            global LAST_HOME_REFRESH
+            global LAST_WATCHLIST_REFRESH
+            global LAST_MOVERS_REFRESH
+            global LAST_MARKET_REFRESH
 
-                    if isinstance(syms, dict):
-                        active = {
-                            str(sym).upper().strip()
-                            for sym in syms.keys()
-                            if sym
-                        }
-                    elif isinstance(syms, list):
-                        active = {
-                            str(sym).upper().strip()
-                            for sym in syms
-                            if sym
-                        }
-                    else:
-                        active = set()
-            except Exception as e:
-                log(f"⚠️ Failed to read active_symbols: {e}")
-                active = set()
-            active = set(list(active)[:25])
-            all_tickers |= tickers
-            all_tickers |= set(CORE_UNIVERSE)
+            all_tickers: Set[str] = set()
+
+            tickers = set()
+            active = set()
+            daily_movers = set()
+            on_demand = set()
+
+            # -------------------------------------------------
+            # FAST TIER — every 60 sec
+            # Home + core visible symbols
+            # -------------------------------------------------
+            if should_refresh(LAST_HOME_REFRESH, 60):
+                tickers = collect_home_visible_symbols(db)
+                all_tickers |= tickers
+
+                LAST_HOME_REFRESH = time.time()
+
+            # -------------------------------------------------
+            # MEDIUM TIER — every 180 sec
+            # Active / recently viewed symbols
+            # -------------------------------------------------
+            if should_refresh(LAST_WATCHLIST_REFRESH, 180):
+                try:
+                    s = db.collection("bullsignals_ai").document("active_symbols").get()
+
+                    if s.exists:
+                        d = s.to_dict() or {}
+                        syms = d.get("symbols", {})
+
+                        if isinstance(syms, dict):
+                            active = {
+                                str(sym).upper().strip()
+                                for sym in syms.keys()
+                                if sym
+                            }
+                        elif isinstance(syms, list):
+                            active = {
+                                str(sym).upper().strip()
+                                for sym in syms
+                                if sym
+                            }
+
+                except Exception as e:
+                    log(f"⚠️ Failed to read active_symbols: {e}")
+                    active = set()
+
+                active = set(list(active)[:20])
+                all_tickers |= active
+
+                LAST_WATCHLIST_REFRESH = time.time()
+
+            # -------------------------------------------------
+            # SLOW TIER — every 300 sec
+            # Daily movers / momentum universe
+            # -------------------------------------------------
+            if should_refresh(LAST_MOVERS_REFRESH, 300):
+                daily_movers = collect_daily_movers(db)
+                daily_movers = set(list(daily_movers)[:30])
+
+                all_tickers |= daily_movers
+
+                LAST_MOVERS_REFRESH = time.time()
+
+            # -------------------------------------------------
+            # MARKET CONTEXT — every 300 sec
+            # Market tab symbols
+            # -------------------------------------------------
+            if should_refresh(LAST_MARKET_REFRESH, 300):
+                all_tickers |= {"SPY", "QQQ", "GLD", "USO", "SLV"}
+
+                LAST_MARKET_REFRESH = time.time()
+
+            # -------------------------------------------------
+            # ON-DEMAND — always small capped set
+            # -------------------------------------------------
+            on_demand = collect_on_demand_quotes(db)
             all_tickers |= on_demand
-            all_tickers |= active
-            all_tickers |= daily_movers
+
+            # -------------------------------------------------
+            # Final validation
+            # -------------------------------------------------
             all_tickers = {
                 s for s in all_tickers
                 if s in REAL_TICKERS or s in {"SPY", "QQQ", "GLD", "USO", "SLV"}
@@ -795,7 +894,7 @@ def main() -> None:
             log(
                 f"Refreshing quotes | "
                 f"homescreen={len(tickers)} "
-                f"core={len(CORE_UNIVERSE)} "
+                f"core=dynamic "
                 f"pending={len(on_demand)} "
                 f"active={len(active)} "
                 f"daily_movers={len(daily_movers)} "
