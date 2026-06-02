@@ -833,7 +833,7 @@ def main() -> None:
             # -------------------------------------------------
             if should_refresh(LAST_MOVERS_REFRESH, 300):
                 daily_movers = collect_daily_movers(db)
-                daily_movers = set(list(daily_movers)[:15])
+                daily_movers = set(list(daily_movers)[:25])
 
                 all_tickers |= daily_movers
 
