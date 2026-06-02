@@ -45,11 +45,8 @@ def _safe_json(resp: requests.Response) -> Any:
         return None
 
 def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
-    """
-    Finnhub equity quote
-    Full payload normalized for Firestore
-    """
     if not FINNHUB_KEY:
+        print("[quote-provider] FINNHUB_KEY missing", flush=True)
         return {}
 
     try:
@@ -58,7 +55,23 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
             params={"symbol": symbol, "token": FINNHUB_KEY},
             timeout=10,
         )
+
         data = _safe_json(resp)
+
+        if resp.status_code != 200:
+            print(
+                f"[quote-provider] Finnhub HTTP {resp.status_code} for {symbol}: {data}",
+                flush=True,
+            )
+            return {}
+
+        if isinstance(data, dict) and data.get("error"):
+            print(
+                f"[quote-provider] Finnhub error for {symbol}: {data.get('error')}",
+                flush=True,
+            )
+            return {}
+
         if not isinstance(data, dict):
             return {}
 
@@ -66,26 +79,20 @@ def fetch_equity_quote(symbol: str) -> Dict[str, Any]:
             return float(v) if isinstance(v, (int, float)) else None
 
         return {
-            # --- existing (DO NOT BREAK UI)
             "price": num(data.get("c")),
             "changePct": num(data.get("dp")),
-
-            # --- NEW: full market context
             "change": num(data.get("d")),
             "open": num(data.get("o")),
             "high": num(data.get("h")),
             "low": num(data.get("l")),
             "prevClose": num(data.get("pc")),
             "timestamp": int(data.get("t")) if isinstance(data.get("t"), int) else None,
-
-            # metadata
             "source": "finnhub",
         }
 
     except Exception as e:
         print(f"[quote-provider] Finnhub failed for {symbol}: {e}", flush=True)
         return {}
-
 # ---------------------------------------------------------
 # CRYPTO SNAPSHOT — CoinGecko SIMPLE PRICE (LOW RATE)
 # ---------------------------------------------------------

@@ -27,7 +27,7 @@ import json
 import time
 import datetime
 from typing import Dict, Any, Set, List
-
+from symbols_clean import REAL_TICKERS
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -267,15 +267,17 @@ def collect_on_demand_quotes(db) -> Set[str]:
         return set()
 
 def collect_daily_movers(db) -> Set[str]:
-    """
-    Reads today's /bullsignals_ai/daily_movers_YYYY-MM-DD doc.
-    Keeps today's discovered mover quotes fresh.
-    """
     try:
         today = datetime.datetime.now(ET).date().isoformat()
-        doc_id = f"daily_movers_{today}"
 
-        snap = db.collection("bullsignals_ai").document(doc_id).get()
+        snap = (
+            db.collection("bullsignals_ai")
+              .document("market_memory")
+              .collection("daily_movers")
+              .document(today)
+              .get()
+        )
+
         if not snap.exists:
             return set()
 
@@ -293,8 +295,7 @@ def collect_daily_movers(db) -> Set[str]:
 
     except Exception as e:
         log(f"⚠️ Failed to read daily movers: {e}")
-        return set()
-    
+        return set()  
 # ---------------------------------------------------------
 # Update Firestore Quotes (NO BREAKING CHANGES)
 # ---------------------------------------------------------
@@ -786,7 +787,10 @@ def main() -> None:
             all_tickers |= on_demand
             all_tickers |= active
             all_tickers |= daily_movers
-
+            all_tickers = {
+                s for s in all_tickers
+                if s in REAL_TICKERS or s in {"SPY", "QQQ", "GLD", "USO", "SLV"}
+            }
             log(
                 f"Refreshing quotes | "
                 f"homescreen={len(tickers)} "
