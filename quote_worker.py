@@ -39,7 +39,7 @@ except Exception:
 from quote_provider import (
     fetch_equity_quote,
     fetch_crypto_simple_snapshot,
-    fetch_sector_snapshot,
+    
 )
 from backend.quote_repo import (
     get_pending_quotes,
@@ -53,7 +53,7 @@ from backend.quote_repo import (
 # Refresh policies
 # -----------------------------
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
-SECTOR_MIN_REFRESH_SECONDS = 300   # 5 minutes (market hours only)
+
 LAST_HOME_REFRESH = None
 LAST_WATCHLIST_REFRESH = None
 LAST_MOVERS_REFRESH = None
@@ -665,37 +665,7 @@ def update_market_overview(db) -> None:
                 card["items"] = [{"label": "Mood", "value": f"{label} ({value})"}]
                 card["updated_at"] = now_iso
 
-    # -----------------------------
-    # 3) Top Sectors update (MARKET HOURS ONLY)
-    # -----------------------------
-    if True:
-        log("⏸️ Market closed — skipping sector refresh")
-    else:
-        sectors = fetch_sector_snapshot()
-
-        has_valid_sectors = any(
-            isinstance(v, (int, float)) for v in sectors.values()
-        )
-
-        if not has_valid_sectors:
-            log("⚠️ Sector snapshot empty — preserving existing carousel values")
-        else:
-            for card in carousel:
-                if isinstance(card, dict) and card.get("id") == "sectors":
-                    items = []
-                    for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
-                        chg = sectors.get(name)
-                        items.append(
-                            {
-                                "label": name,
-                                "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
-                                "quote_updated_at": now_iso,
-                            }
-                        )
-
-                    card["items"] = items
-                    card["updated_at"] = now_iso
-
+    
     # -----------------------------
     # 4) Market Closed badge on us_market card
     # -----------------------------
@@ -790,7 +760,7 @@ def main() -> None:
                 log(f"⏸️ Market closed ({reason}) — light refresh then sleep={sleep_seconds}s")
 
                 # still safe to run (badge + crypto + sectors)
-                update_market_overview(db)
+                # update_market_overview(db)
                 time.sleep(sleep_seconds)
                 continue
 

@@ -3,7 +3,6 @@
 # Central Quote Provider
 # - Stocks / ETFs via Finnhub
 # - Crypto via CoinGecko (coins/markets endpoint - like your HomeScreen.js)
-# - Sector snapshot via ETF proxies
 # ---------------------------------------------------------
 
 import os
@@ -147,30 +146,3 @@ def fetch_crypto_simple_snapshot() -> Dict[str, Dict[str, Optional[float]]]:
         return {}
 
 
-# ---------------------------------------------------------
-# SECTOR SNAPSHOT (ETF proxies)
-# ---------------------------------------------------------
-def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
-    """
-    Returns:
-      {
-        "Technology": +x.xx,
-        "Financials": +x.xx,
-        ...
-      }
-    """
-    sectors = {
-        "Technology": "XLK",
-        "Financials": "XLF",
-        "Energy": "XLE",
-        "Healthcare": "XLV",
-        "Consumer": "XLY",
-    }
-
-    out: Dict[str, Optional[float]] = {}
-    for name, etf in sectors.items():
-        q = fetch_equity_quote(etf)
-        chg = q.get("changePct")
-        out[name] = chg if isinstance(chg, (int, float)) else None
-
-    return out
