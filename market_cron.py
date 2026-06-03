@@ -100,7 +100,7 @@ CORE_UNIVERSE = [
 ]
 
 ACTIVE_SYMBOL_LIMIT = 60
-TOTAL_SCAN_LIMIT = 80
+TOTAL_SCAN_LIMIT = 60
 COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
@@ -312,22 +312,17 @@ def get_canonical_quote(symbol: str, fallback_price: float | None = None) -> Dic
     }
 def _get_best_quote(symbol: str) -> Dict[str, Any]:
     """
-    Prefer cached quote if fresh.
-    Fall back to live Finnhub quote if missing or stale.
-    Never writes to quote_repo.
+    Market cron should only read cached quotes.
+    quote_worker is responsible for live Finnhub refresh.
     """
     cached = get_quote_safe(symbol)
 
-    if isinstance(cached, dict) and is_quote_fresh(cached):
-        # cached quote repo doc contains top-level fields
+    if isinstance(cached, dict):
         log(f"📦 {symbol} using cached quote")
         return dict(cached)
 
-    # fallback: live fetch
-    log(f"🌐 {symbol} fetching live quote")
-    live = fetch_equity_quote(symbol)
-    return live if isinstance(live, dict) else {}
-
+    log(f"⚠️ {symbol} no cached quote available")
+    return {}
 # =========================================================
 # MODEL LOADER
 # =========================================================
@@ -495,6 +490,9 @@ def get_discovery_phase() -> Optional[str]:
     if 815 <= hhmm <= 829:
         return "premarket_discovery"
 
+    if 930 <= hhmm <= 944:
+        return "market_open_discovery"
+
     if 1200 <= hhmm <= 1214:
         return "midday_discovery"
 
@@ -506,8 +504,9 @@ def get_discovery_phase() -> Optional[str]:
 
     if 2030 <= hhmm <= 2044:
         return "overnight_discovery"
-    return None
 
+    return None
+   
 def get_current_discovery_session_type() -> Optional[str]:
     phase = get_discovery_phase()
 
@@ -525,7 +524,10 @@ def get_current_discovery_session_type() -> Optional[str]:
 
     if phase == "overnight_discovery":
         return "OVERNIGHT"
-
+    
+    if phase == "market_open_discovery":
+        return "MARKET_OPEN"
+    
     return None
 
 def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
@@ -866,32 +868,8 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     return universe[:TOTAL_SCAN_LIMIT], meta
 
 def build_homescreen_universe() -> List[str]:
-    """
-    Curated Top 20 high-signal universe for Homescreen.
-    Then we rank + boost momentum inside persist_homescreen_core_signals()
-    """
-    return [
-       "NVDA",   # NVIDIA
-    "GOOGL",  # Alphabet (Google)
-    "AAPL",   # Apple
-    "MSFT",   # Microsoft
-    "AMZN",   # Amazon
-    "AVGO",   # Broadcom
-    "META",   # Meta Platforms
-    "TSLA",   # Tesla
-    "LLY",    # Eli Lilly
-    "WMT",    # Walmart
-    "BRK.B",  # Berkshire Hathaway
-    "JPM",    # JPMorgan Chase
-    "V",      # Visa
-    "MA",     # Mastercard
-    "XOM",    # Exxon Mobil
-    "UNH",    # UnitedHealth Group
-    "PG",     # Procter & Gamble
-    "HD",     # Home Depot
-    "COST",   # Costco
-    "MRK"     # Merck
-    ]
+    return CORE_UNIVERSE
+
 # =========================================================
 # VALIDATION HELPERS
 # =========================================================
