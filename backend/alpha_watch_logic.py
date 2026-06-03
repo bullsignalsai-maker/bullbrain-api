@@ -23,7 +23,7 @@ HISTORY_ROOT = "alpha_watch_history"
 MIN_PRICE = 5.0
 MIN_AVG_VOLUME_20D = 1_200_000
 MAX_FRESHNESS_HOURS = 18
-MIN_FINAL_SCORE = 62.0
+MIN_FINAL_SCORE = 55.0
 NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
 MAX_EARLY_EXPANSION_DEFAULT = 85.0
 MAX_ITEMS = 12
@@ -859,7 +859,11 @@ def persist_alpha_watch(db: firestore.Client, stock_docs: List[Dict[str, Any]]) 
         stock_docs,
         mover_stats_by_symbol=mover_stats_by_symbol,
     )
-
+    print(
+        "[alpha-watch] quality:",
+        payload.get("quality"),
+        flush=True,
+    )
     db.collection(COL_ROOT).document(DOC_ALPHA_WATCH).set(payload, merge=True)
 
     date_key = datetime.datetime.utcnow().date().isoformat()
