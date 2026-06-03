@@ -3787,7 +3787,40 @@ def read_market_cache(doc_id: str):
         print("read_market_cache error:", e)
         return None
 
+def get_crypto_logo_url(symbol: str):
+    try:
+        sym = str(symbol or "").upper().strip()
+        if not sym:
+            return None
 
+        snap = (
+            db.collection("bullsignals_ai")
+              .document("logos")
+              .collection("crypto")
+              .document(sym)
+              .get()
+        )
+
+        if snap.exists:
+            data = snap.to_dict() or {}
+            return data.get("logoUrl")
+    except Exception:
+        pass
+
+    return None
+
+
+def extract_context_symbol(label: str):
+    label = str(label or "").strip()
+
+    # Handles "Bitcoin (BTC)" or "S&P 500 (SPY)"
+    if "(" in label and ")" in label:
+        try:
+            return label.split("(")[-1].split(")")[0].strip().upper()
+        except Exception:
+            pass
+
+    return label.upper()
 
 
 # ---------------------------------------------------------
@@ -3811,12 +3844,40 @@ def homescreen_context():
 
     data = doc.to_dict() or {}
 
+    carousel = data.get("carousel", []) or []
+
+    enriched_carousel = []
+
+    for card in carousel:
+        new_card = dict(card)
+        items = card.get("items", []) or []
+        new_items = []
+
+        for item in items:
+            new_item = dict(item)
+            symbol = (
+                new_item.get("symbol")
+                or extract_context_symbol(new_item.get("label"))
+            )
+
+            symbol = str(symbol or "").upper().strip()
+
+            if symbol in {"BTC", "ETH", "SOL", "XRP", "DOGE"}:
+                new_item["symbol"] = symbol
+                new_item["logoUrl"] = get_crypto_logo_url(symbol)
+
+            new_items.append(new_item)
+
+        new_card["items"] = new_items
+        enriched_carousel.append(new_card)
+
     return {
         "market": data.get("market_overview"),
-        "carousel": data.get("carousel", []),
+        "carousel": enriched_carousel,
         "updated_at": data.get("updated_at"),
         "version": data.get("version", "v2"),
     }
+
 
 @app.get("/homescreen-data")
 def homescreen_data():
