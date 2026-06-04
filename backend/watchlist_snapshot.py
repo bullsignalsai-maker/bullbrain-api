@@ -169,6 +169,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
             },
             "displayIntelligence": display_intelligence,
             "signal": display_intelligence.get("signal") or bullbrain.get("signal", "HOLD"),
+            "hybridSignal": display_intelligence.get("signal") or bullbrain.get("signal", "HOLD"),
             "displayLabel": display_intelligence.get("label"),
             "displayScore": display_intelligence.get("score"),
             "displayHeadline": display_intelligence.get("headline"),

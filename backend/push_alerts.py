@@ -161,7 +161,8 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
 
             bull = item.get("bullbrain") or {}
             new_signal = (
-                item.get("hybridSignal")
+                item.get("signal")
+                or item.get("hybridSignal")
                 or bull.get("signal")
                 or "HOLD"
             )

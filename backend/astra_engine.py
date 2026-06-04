@@ -7,6 +7,18 @@ from typing import Dict, Any
 from backend.astra_intent_router import detect_astra_intent
 from backend.astra_context_builder import build_astra_context
 
+def clara_signal_label(signal: str | None) -> str:
+    signal = (signal or "").upper()
+
+    if signal == "BUY":
+        return "Bullish Setup"
+    if signal == "SELL":
+        return "Risk Alert"
+    if signal == "HOLD":
+        return "Neutral Setup"
+
+    return "Market Setup"
+
 def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
     intent = (context.get("intent") or {}).get("intent")
     symbols = context.get("symbols") or []
@@ -92,8 +104,8 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
 
             cards.append({
                 "type": "signal",
-                "title": "AI Signal",
-                "value": sig.get("signal") or "N/A",
+                "title": "Market View",
+                "value": clara_signal_label(sig.get("signal")),
                 "subtitle": f"{sig.get('confidence')}% confidence" if sig.get("confidence") is not None else "Confidence unavailable",
             })
 
@@ -153,6 +165,8 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
             })
 
     return cards[:4]
+
+
 def resolve_followup_symbols(req, available_symbols: list[str]) -> tuple[str, list[str]]:
     """
     Resolves follow-up language like:
@@ -274,7 +288,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
 
         if signal:
             extra_parts.append(
-                f"AI signal is {signal}"
+                f"market view is {clara_signal_label(signal)}"
                 + (f" with {round(confidence, 1)}% confidence" if isinstance(confidence, (int, float)) else "")
             )
 
@@ -341,8 +355,10 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
         tech = s.get("technical") or {}
         port = s.get("portfolio") or {}
 
+        market_view = clara_signal_label(sig.get("signal"))
+
         return (
-            f"{s.get('symbol')} is currently rated {sig.get('signal')} with "
+            f"{s.get('symbol')} currently shows a {market_view} with "
             f"{sig.get('confidence')}% confidence. "
             f"The model shows {sig.get('prob_up')} upside probability and {sig.get('prob_down')} downside probability. "
             f"The current pattern is {pat.get('name')} with a 5-day win rate of {pat.get('winRate5d')}. "
@@ -361,7 +377,7 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
             pat = s.get("pattern") or {}
 
             lines.append(
-                f"{s.get('symbol')}: {sig.get('signal')} at {sig.get('confidence')}% confidence, "
+                f"{s.get('symbol')}: {clara_signal_label(sig.get('signal'))} at {sig.get('confidence')}% confidence, "
                 f"{port.get('allocation_pct')}% allocation, {port.get('gain_pct')}% gain/loss, "
                 f"pattern {pat.get('name')}."
             )
