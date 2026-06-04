@@ -19,6 +19,30 @@ def clara_signal_label(signal: str | None) -> str:
 
     return "Market Setup"
 
+def sanitize_clara_answer(text: str | None) -> str:
+    if not text:
+        return ""
+
+    out = str(text)
+
+    replacements = {
+        r"\bBUY\b": "Bullish Setup",
+        r"\bSELL\b": "Risk Alert",
+        r"\bHOLD\b": "Neutral Setup",
+        r"\bbuy\b": "bullish setup",
+        r"\bsell\b": "risk alert",
+        r"\bhold\b": "neutral setup",
+    }
+
+    for raw, clean in replacements.items():
+        out = re.sub(raw, clean, out)
+
+    out = out.replace("rated Neutral Setup", "showing a Neutral Setup")
+    out = out.replace("rated Bullish Setup", "showing a Bullish Setup")
+    out = out.replace("rated Risk Alert", "showing a Risk Alert")
+
+    return out
+
 def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
     intent = (context.get("intent") or {}).get("intent")
     symbols = context.get("symbols") or []
@@ -131,7 +155,7 @@ def build_astra_cards(context: Dict[str, Any]) -> list[Dict[str, Any]]:
             cards.append({
                 "type": "compare",
                 "title": s.get("symbol"),
-                "value": sig.get("signal") or "N/A",
+                "value": clara_signal_label(sig.get("signal")),
                 "subtitle": f"{sig.get('confidence')}% conf • {pat.get('name') or 'No pattern'}",
             })
 
@@ -590,7 +614,7 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
                 history_text += f"{role}: {text}\n"
 
     system_prompt = (
-        "You are Astra, the AI intelligence engine inside BullSignalsAI. "
+        "You are Clara, a calm premium AI market assistant inside Alphaclara. "
         "Answer ONLY the user's question. Do not provide a full portfolio report unless asked. "
         "Use only the provided JSON data. Do not invent numbers. "
         "If the context contains multiple symbols, compare them directly and do not say another symbol's data is unavailable."
@@ -601,6 +625,8 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
         "Do not give financial advice. Use educational wording only. "
         "Maximum answer length: 4 short sentences. "
         "If the question asks for one thing, answer that one thing first."
+        "Never say raw BUY, HOLD, or SELL. Use Bullish Setup, Neutral Setup, or Risk Alert instead. "
+        "Explain in simple non-technical language. "
     )
 
     user_prompt = (
@@ -678,7 +704,7 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
         llm_answer = astra_llm_answer_fn(system_prompt, user_prompt)
 
         return {
-            "answer": llm_answer or fallback_answer,
+            "answer": sanitize_clara_answer(llm_answer or fallback_answer),
             "usedLLM": llm_answer is not None,
             "used_llm": llm_answer is not None,
             "intent": intent_payload,
@@ -696,7 +722,7 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     llm_answer = astra_llm_answer_fn(system_prompt, user_prompt)
 
     return {
-        "answer": llm_answer or fallback_answer,
+        "answer": sanitize_clara_answer(llm_answer or fallback_answer),
         "used_llm": llm_answer is not None,
         "intent": intent_payload,
         "cards": build_astra_cards(context),
