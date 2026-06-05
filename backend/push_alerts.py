@@ -75,6 +75,17 @@ def _confidence_text(confidence):
     except Exception:
         return "N/A"
 
+def _display_signal(signal):
+    value = str(signal or "").upper().strip()
+
+    if value == "BUY":
+        return "Bullish Setup"
+    if value == "SELL":
+        return "Risk Alert"
+    if value == "HOLD":
+        return "Neutral Setup"
+
+    return str(signal or "Updated Setup")
 
 def _get_notification_prefs(db, user_id: str) -> Dict[str, bool]:
     """
@@ -214,8 +225,12 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 continue
 
             if _is_meaningful_signal_change(old_signal, new_signal):
-                title = "Alphaclara Signal Alert"
-                body = f"{symbol} changed from {old_signal} → {new_signal}. Confidence: {_confidence_text(confidence)}."
+                title = "Alphaclara Market Alert"
+                body = (
+                    f"{symbol} setup changed from "
+                    f"{_display_signal(old_signal)} to {_display_signal(new_signal)}. "
+                    f"Confidence: {_confidence_text(confidence)}."
+                )
 
                 result = _send_expo_push(
                     token=token,
