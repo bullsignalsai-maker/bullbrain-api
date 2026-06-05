@@ -591,7 +591,8 @@ COMPANY_NAMES = {
     "ELF": "e.l.f. Beauty, Inc.",
     "DUOL": "Duolingo, Inc.",
     "SYM": "Symbotic Inc.",
-    "RUM": "Rumble Inc."
+    "RUM": "Rumble Inc.",
+    "XOM": "Exxon Mobil Corp"
 }
 
 # ---------------------------------------------------------
