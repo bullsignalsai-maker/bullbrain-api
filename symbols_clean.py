@@ -43,7 +43,7 @@ REAL_TICKERS = [
     "TERN","MARA","RIOT","CLSK","IREN","OKLO","SMR","NNE","LUNR","TEM","GTLB",
     "ZS","NET","SNOW","DDOG","MDB","ESTC","AI","IONQ","PINS","SPOT","BABA","JD",
     "PDD","XOM","MS","HUT","BITB","SPCE","KTOS","DKNG","CHWY","SQ","MELI","ASML",
-    "TEAM","WDAY","SE","BNTX","CELH","ELF","DUOL","SYM","RUM"
+    "TEAM","WDAY","SE","BNTX","CELH","ELF","DUOL","SYM","RUM","SPCX",
 ]
 
 
@@ -592,7 +592,8 @@ COMPANY_NAMES = {
     "DUOL": "Duolingo, Inc.",
     "SYM": "Symbotic Inc.",
     "RUM": "Rumble Inc.",
-    "XOM": "Exxon Mobil Corp"
+    "XOM": "Exxon Mobil Corp",
+    "SPCX": "Space Exploration Technologies Corp.",
 }
 
 # ---------------------------------------------------------
