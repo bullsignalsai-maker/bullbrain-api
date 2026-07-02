@@ -191,7 +191,7 @@ def build_watchlist_snapshot(user_id: str) -> Dict[str, Any]:
         "items": items,
         "generated_at": utc_now_iso(),
         "ttl_seconds": 30,
-        "version": "v7",
+        "version": "v8",
     }
 
     db.collection(COL_SNAPSHOTS) \

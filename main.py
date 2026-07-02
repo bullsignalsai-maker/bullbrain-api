@@ -4254,7 +4254,7 @@ def get_watchlist(user_id: str):
     snapshot = get_watchlist_snapshot(user_id)
 
     # ✅ REQUIRED: invalidate old logic snapshots
-    SNAPSHOT_VERSION = "v6"
+    SNAPSHOT_VERSION = "v8"
 
     if (
         snapshot
@@ -4580,37 +4580,43 @@ def quotes_bulk(
     quotes = {}
 
     # ---------------------------------------------------------
-    # 2️⃣ Firestore reads (quotes ONLY)
+    # 2️⃣ Ensure quote docs exist / mark stale for refresh
+    #    - No external API call here
+    #    - Worker refreshes in background
     # ---------------------------------------------------------
     for sym in symbol_list:
-        doc = (
-            db.collection("bullsignals_ai")
-              .document("quotes")
-              .collection("symbols")
-              .document(sym)
-              .get()
-        )
+        try:
+            data = ensure_quote(sym) or {}
 
-        if not doc.exists:
-            continue
+            quotes[sym] = {
+                "symbol": data.get("symbol", sym),
+                "price": data.get("price"),
+                "change": data.get("change"),
+                "changePct": data.get("changePct"),
+                "open": data.get("open"),
+                "high": data.get("high"),
+                "low": data.get("low"),
+                "prevClose": data.get("prevClose"),
+                "timestamp": data.get("timestamp"),
+                "updated_at": data.get("updated_at"),
+                "needs_refresh": data.get("needs_refresh", False),
+                "ttl_seconds": data.get("ttl_seconds", 30),
+                "source": data.get("source"),
+            }
 
-        data = doc.to_dict() or {}
+        except Exception as e:
+            print(f"[quotes-bulk] failed for {sym}: {e}")
 
-        quotes[sym] = {
-            "symbol": data.get("symbol", sym),
-            "price": data.get("price"),
-            "change": data.get("change"),
-            "changePct": data.get("changePct"),
-            "open": data.get("open"),
-            "high": data.get("high"),
-            "low": data.get("low"),
-            "prevClose": data.get("prevClose"),
-            "timestamp": data.get("timestamp"),
-            "updated_at": data.get("updated_at"),
-            "needs_refresh": data.get("needs_refresh", False),
-            "ttl_seconds": data.get("ttl_seconds", 30),
-            "source": data.get("source"),
-        }
+            quotes[sym] = {
+                "symbol": sym,
+                "price": None,
+                "change": None,
+                "changePct": None,
+                "updated_at": None,
+                "needs_refresh": True,
+                "ttl_seconds": 30,
+                "source": "error",
+            }
 
     return {
         "scope": scope,
