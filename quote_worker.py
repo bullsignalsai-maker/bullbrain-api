@@ -940,9 +940,8 @@ def main() -> None:
                     quotes[sym] = q
                     save_quote(sym, q)
 
-                    # clear refresh flag ONLY on success
-                    if sym in on_demand:
-                        clear_needs_refresh(sym)
+                    # clear refresh flag on any successful fetch, regardless of which tier sourced it
+                    clear_needs_refresh(sym)
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
