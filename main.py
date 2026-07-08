@@ -4290,6 +4290,7 @@ from backend.active_symbols import touch_active_symbol
 # -----------------------------
 from backend.active_symbols import touch_active_symbol
 from backend.watchlist_snapshot import build_watchlist_snapshot
+from backend.watchlist_symbols import increment_watchlist_symbol, decrement_watchlist_symbol
 
 @app.post("/watchlist/{user_id}/add/{symbol}")
 def add_watchlist_symbol(user_id: str, symbol: str):
@@ -4297,11 +4298,22 @@ def add_watchlist_symbol(user_id: str, symbol: str):
     if not sym.isalnum():
         return {"status": "error", "error": "Invalid symbol"}
 
+    # 0️⃣ Was this symbol already on the user's watchlist?
+    watchlist_doc_ref = _watchlist_col(user_id).document(sym)
+    already_watched = watchlist_doc_ref.get().exists
+
     # 1️⃣ Save user intent
-    _watchlist_col(user_id).document(sym).set(
+    watchlist_doc_ref.set(
         {"symbol": sym, "added_at": firestore.SERVER_TIMESTAMP},
         merge=True
     )
+
+    # 1️⃣.5 Update global watchlist aggregate (skip if already watched)
+    if not already_watched:
+        try:
+            increment_watchlist_symbol(sym)
+        except Exception as e:
+            print(f"[watchlist] aggregate increment failed for {sym}: {e}")
 
     # 2️⃣ Mark symbol as active (global relevance)
     try:
@@ -4369,8 +4381,19 @@ from backend.watchlist_snapshot import build_watchlist_snapshot
 def remove_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
 
+    # 0️⃣ Was this symbol actually on the user's watchlist?
+    watchlist_doc_ref = _watchlist_col(user_id).document(sym)
+    was_watched = watchlist_doc_ref.get().exists
+
     # 1️⃣ Remove from watchlist
-    _watchlist_col(user_id).document(sym).delete()
+    watchlist_doc_ref.delete()
+
+    # 1️⃣.5 Update global watchlist aggregate (skip if it wasn't actually watched)
+    if was_watched:
+        try:
+            decrement_watchlist_symbol(sym)
+        except Exception as e:
+            print(f"[watchlist] aggregate decrement failed for {sym}: {e}")
 
     # 2️⃣ 🔥 FORCE snapshot rebuild
     try:

@@ -55,7 +55,8 @@ from backend.quote_repo import (
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
 
 LAST_HOME_REFRESH = None
-LAST_WATCHLIST_REFRESH = None
+LAST_ACTIVE_SYMBOLS_REFRESH = None
+LAST_WATCHLIST_AGG_REFRESH = None
 LAST_MOVERS_REFRESH = None
 LAST_MARKET_REFRESH = None
 # ---------------------------------------------------------
@@ -772,7 +773,8 @@ def main() -> None:
             #   4) active symbols (recent watchlist adds)
             # -------------------------------------------------
             global LAST_HOME_REFRESH
-            global LAST_WATCHLIST_REFRESH
+            global LAST_ACTIVE_SYMBOLS_REFRESH
+            global LAST_WATCHLIST_AGG_REFRESH
             global LAST_MOVERS_REFRESH
             global LAST_MARKET_REFRESH
 
@@ -794,10 +796,44 @@ def main() -> None:
                 LAST_HOME_REFRESH = time.time()
 
             # -------------------------------------------------
+            # WATCHLIST TIER — every 90 sec
+            # Symbols on any user's watchlist (global aggregate)
+            # -------------------------------------------------
+            watchlisted = set()
+
+            if should_refresh(LAST_WATCHLIST_AGG_REFRESH, 90):
+                try:
+                    w = db.collection("bullsignals_ai").document("watchlist_symbols").get()
+
+                    if w.exists:
+                        wd = w.to_dict() or {}
+                        wsyms = wd.get("symbols", {})
+
+                        if isinstance(wsyms, dict):
+                            ranked = sorted(
+                                wsyms.items(),
+                                key=lambda kv: (kv[1] or {}).get("count", 0),
+                                reverse=True,
+                            )
+                            watchlisted = {
+                                str(sym).upper().strip()
+                                for sym, _ in ranked[:40]
+                                if sym
+                            }
+
+                except Exception as e:
+                    log(f"⚠️ Failed to read watchlist_symbols: {e}")
+                    watchlisted = set()
+
+                all_tickers |= watchlisted
+
+                LAST_WATCHLIST_AGG_REFRESH = time.time()
+
+            # -------------------------------------------------
             # MEDIUM TIER — every 180 sec
             # Active / recently viewed symbols
             # -------------------------------------------------
-            if should_refresh(LAST_WATCHLIST_REFRESH, 180):
+            if should_refresh(LAST_ACTIVE_SYMBOLS_REFRESH, 180):
                 try:
                     s = db.collection("bullsignals_ai").document("active_symbols").get()
 
@@ -825,7 +861,7 @@ def main() -> None:
                 active = set(list(active)[:10])
                 all_tickers |= active
 
-                LAST_WATCHLIST_REFRESH = time.time()
+                LAST_ACTIVE_SYMBOLS_REFRESH = time.time()
 
             # -------------------------------------------------
             # SLOW TIER — every 300 sec
@@ -866,6 +902,7 @@ def main() -> None:
                 f"homescreen={len(tickers)} "
                 f"core=dynamic "
                 f"pending={len(on_demand)} "
+                f"watchlisted={len(watchlisted)} "
                 f"active={len(active)} "
                 f"daily_movers={len(daily_movers)} "
                 f"total={len(all_tickers)} | "
