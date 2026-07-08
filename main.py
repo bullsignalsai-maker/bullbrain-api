@@ -4237,6 +4237,9 @@ def _db():
 def _norm_symbol(symbol: str) -> str:
     return (symbol or "").upper().strip().replace(".", "-")
 
+MARKET_WATCHLIST_SYMBOLS = {"SPY", "QQQ", "GLD", "USO", "SLV"}
+VALID_WATCHLIST_SYMBOLS = set(REAL_TICKERS) | MARKET_WATCHLIST_SYMBOLS
+
 def _watchlist_col(user_id: str):
     return (
         _db()
@@ -4297,6 +4300,12 @@ def add_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
     if not sym.isalnum():
         return {"status": "error", "error": "Invalid symbol"}
+
+    if sym not in VALID_WATCHLIST_SYMBOLS:
+        return {
+            "status": "error",
+            "error": f"'{sym}' is not a recognized ticker symbol and can't be added to your watchlist",
+        }
 
     # 0️⃣ Was this symbol already on the user's watchlist?
     watchlist_doc_ref = _watchlist_col(user_id).document(sym)
