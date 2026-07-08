@@ -1,7 +1,7 @@
 REAL_TICKERS = [
     "A","AAPL","ABBV","ABNB","ABT","ACGL","ACN","ADBE","ADI","ADM","ADP","ADSK",
     "AEE","AEP","AES","AFL","AIG","AIZ","AJG","AKAM","ALB","ALGN","ALL","ALLE",
-    "AMAT","AMCR","AMD","AME","AMGN","AMP","AMT","AMZN","ANET","AON","AOS","APA",
+    "AMAT","AMC","AMCR","AMD","AME","AMGN","AMP","AMT","AMZN","ANET","AON","AOS","APA",
     "APD","APH","APO","APTV","ARE","ATO","AVB","AVGO","AVY","AWK","AXON","AXP",
     "AZO","BA","BAC","BALL","BAX","BBY","BDX","BEN","BF.B","BG","BIIB","BK",
     "BKNG","BKR","BLDR","BLK","BMY","BR","BRK.B","BRO","BSX","BX","BXP","C","CAG",
@@ -38,7 +38,7 @@ REAL_TICKERS = [
     "VLO","VLTO","VMC","VRSK","VRSN","VRTX","VST","VTR","VTRS","VZ","WAB","WAT",
     "WBD","WDC","WEC","WELL","WFC","WM","WMB","WMT","WRB","WST","WTW","WY","XEL",
     "XYL","YUM","ZBH","ZBRA","ZTS","DELL","ARM","SNAP","SOFI","RIVN","LCID","HOOD","COIN","MSTR",
-    "CRWD","APP","VRT","FIX","SNDK","CIEN","TTD","SHOP","UBER","PLTR","RKLB","SOUN",
+    "APP","VRT","FIX","SNDK","CIEN","TTD","SHOP","UBER","RKLB","SOUN",
     "ASTS","HIMS","UPST","CVNA","RBLX","RDDT","PATH","AFRM","LITE","COHR","SATS",
     "TERN","MARA","RIOT","CLSK","IREN","OKLO","SMR","NNE","LUNR","TEM","GTLB",
     "ZS","NET","SNOW","DDOG","MDB","ESTC","AI","IONQ","PINS","SPOT","BABA","JD",
@@ -73,6 +73,7 @@ COMPANY_NAMES = {
     "ALL": "The Allstate Corporation",
     "ALLE": "Allegion plc",
     "AMAT": "Applied Materials, Inc.",
+    "AMC": "AMC Entertainment Holdings, Inc.",
     "AMCR": "Amcor plc",
     "AMD": "Advanced Micro Devices, Inc.",
     "AME": "AMETEK, Inc.",
@@ -594,6 +595,7 @@ COMPANY_NAMES = {
     "RUM": "Rumble Inc.",
     "XOM": "Exxon Mobil Corp",
     "SPCX": "Space Exploration Technologies Corp.",
+    "SNDK": "SanDisk Corporation",
 }
 
 # ---------------------------------------------------------
