@@ -89,59 +89,80 @@ def build_display_intelligence(
     volume_label = volume.get("label") or ""
 
     score = 50
+    factors: Dict[str, float] = {}
 
     raw = str(base_signal).upper()
     if raw in ("BUY", "BULLISH"):
-        score += 12
+        factors["baseSignal"] = 12
     elif raw in ("SELL", "BEARISH"):
-        score -= 12
+        factors["baseSignal"] = -12
+    else:
+        factors["baseSignal"] = 0
+    score += factors["baseSignal"]
 
-    score += max(-8, min(10, (base_conf - 50) / 5))
+    factors["confidence"] = max(-8, min(10, (base_conf - 50) / 5))
+    score += factors["confidence"]
 
     if change_pct >= 6:
-        score += 18
+        factors["priceMove"] = 18
     elif change_pct >= 3:
-        score += 13
+        factors["priceMove"] = 13
     elif change_pct >= 1.5:
-        score += 7
+        factors["priceMove"] = 7
     elif change_pct <= -6:
-        score -= 18
+        factors["priceMove"] = -18
     elif change_pct <= -3:
-        score -= 13
+        factors["priceMove"] = -13
     elif change_pct <= -1.5:
-        score -= 7
+        factors["priceMove"] = -7
+    else:
+        factors["priceMove"] = 0
+    score += factors["priceMove"]
 
-    if reason:
-        score += 6
-    if catalysts:
-        score += 5
+    factors["catalyst"] = 6 if reason else 0
+    score += factors["catalyst"]
+
+    factors["catalystDetail"] = 5 if catalysts else 0
+    score += factors["catalystDetail"]
 
     ct = str(candidate_type).lower()
     if ct in ("institutional_setup", "earnings_reaction", "analyst_action", "unusual_attention"):
-        score += 7
+        factors["candidateType"] = 7
     elif ct == "speculative_momentum":
-        score += 3
+        factors["candidateType"] = 3
+    else:
+        factors["candidateType"] = 0
+    score += factors["candidateType"]
 
     tl = trend_label.lower()
     if "strong uptrend" in tl:
-        score += 8
+        factors["trend"] = 8
     elif "uptrend" in tl:
-        score += 5
+        factors["trend"] = 5
     elif "strong downtrend" in tl:
-        score -= 8
+        factors["trend"] = -8
     elif "downtrend" in tl:
-        score -= 5
+        factors["trend"] = -5
+    else:
+        factors["trend"] = 0
+    score += factors["trend"]
 
-    if "high" in volume_label.lower():
-        score += 4
+    factors["volume"] = 4 if "high" in volume_label.lower() else 0
+    score += factors["volume"]
 
     risk = str(risk_level).lower()
     if risk == "high":
-        score -= 6
+        factors["risk"] = -6
     elif risk == "low":
-        score += 3
+        factors["risk"] = 3
+    else:
+        factors["risk"] = 0
+    score += factors["risk"]
 
+    raw_total = int(round(score))
     score = int(max(0, min(100, round(score))))
+    clamped_by = score - raw_total
+
     signal, label, tone = _score_label(score, change_pct, risk_level)
 
     why_now: List[str] = []
@@ -180,6 +201,12 @@ def build_display_intelligence(
         "label": label,
         "tone": tone,
         "score": score,
+        "scoreBreakdown": {
+            "base": 50,
+            "factors": factors,
+            "rawTotal": raw_total,
+            "clampedBy": clamped_by,
+        },
         "baseSignal": base_signal,
         "baseConfidence": base_conf,
         "headline": headline,
