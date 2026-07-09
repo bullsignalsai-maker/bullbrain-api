@@ -1,3 +1,7 @@
+import re
+import datetime
+import pytz
+
 from typing import Dict, Any, List
 
 
@@ -14,6 +18,88 @@ def _clean(v):
     if not isinstance(v, str):
         return ""
     return " ".join(v.replace(",", " • ").split()).strip()
+
+
+_ET = pytz.timezone("America/New_York")
+_SPREADSHEET_REASON_MAX_AGE_HOURS = 4
+
+
+def _spreadsheet_reason_is_fresh(spreadsheet_meta: Dict[str, Any]) -> bool:
+    """
+    True if spreadsheet_meta's Grok-generated reason was produced within the
+    last _SPREADSHEET_REASON_MAX_AGE_HOURS. generatedAt is a naive
+    'YYYY-MM-DD HH:MM:SS' string in ET (matches the sessionType labels
+    PREMARKET/MIDDAY/END_OF_DAY) — not the ISO-8601/Z format used elsewhere
+    in this codebase, so it needs its own parser.
+    """
+    generated_at = spreadsheet_meta.get("generatedAt")
+    if not generated_at:
+        return False
+
+    try:
+        naive = datetime.datetime.strptime(generated_at, "%Y-%m-%d %H:%M:%S")
+        generated = _ET.localize(naive)
+    except Exception:
+        return False
+
+    now = datetime.datetime.now(_ET)
+    age_hours = (now - generated).total_seconds() / 3600.0
+
+    if age_hours < 0:
+        # Clock skew or bad data — don't trust a timestamp claiming to be
+        # from the future.
+        return False
+
+    return age_hours <= _SPREADSHEET_REASON_MAX_AGE_HOURS
+
+
+_UP_WORDS = [
+    "rally", "rallying", "surge", "surging", "breakout", "upgrade", "upgraded",
+    "outperform", "beat", "beats", "record high", "accelerating", "accelerates",
+    "strength", "strong", "bullish", "rebound", "rebounding",
+]
+
+_DOWN_WORDS = [
+    "sell-off", "selloff", "plunge", "plunging", "downgrade", "downgraded",
+    "miss", "misses", "weakness", "bearish", "pullback", "pulling back",
+    "collapse", "slump", "slumping", "under pressure",
+]
+
+_UP_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _UP_WORDS) + r")\b", re.IGNORECASE
+)
+_DOWN_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _DOWN_WORDS) + r")\b", re.IGNORECASE
+)
+
+_REASON_DEAD_ZONE_PCT = 0.4
+
+
+def _reason_direction_conflicts(reason: str, change_pct: float | None) -> bool:
+    """
+    True only when `reason` contains an unambiguous directional word AND that
+    direction contradicts today's actual price move. Absence of a directional
+    word is NOT a conflict — this only rejects on a detected contradiction,
+    not on lack of confirmation, so terse Grok phrasing outside this word
+    list still passes through untouched.
+    """
+    if not reason or change_pct is None:
+        return False
+
+    if abs(change_pct) < _REASON_DEAD_ZONE_PCT:
+        return False  # today's move is noise-level; nothing to contradict
+
+    has_up = bool(_UP_PATTERN.search(reason))
+    has_down = bool(_DOWN_PATTERN.search(reason))
+
+    if has_up and has_down:
+        return False  # mixed/ambiguous language — don't reject on ambiguity
+    if has_up and change_pct < 0:
+        return True
+    if has_down and change_pct > 0:
+        return True
+
+    return False
 
 
 def _score_label(score: int, change_pct: float, risk_level: str):
@@ -70,13 +156,22 @@ def build_display_intelligence(
     change_pct = _num(quote.get("changePct"), 0)
     price = _num(quote.get("price"), None)
 
-    reason = (
-        spreadsheet_meta.get("reason")
-        or market_awareness.get("displayLine")
+    spreadsheet_reason = spreadsheet_meta.get("reason")
+    fallback_reason = (
+        market_awareness.get("displayLine")
         or market_awareness.get("oneLiner")
         or market_awareness.get("summary")
         or ""
     )
+
+    if (
+        spreadsheet_reason
+        and _spreadsheet_reason_is_fresh(spreadsheet_meta)
+        and not _reason_direction_conflicts(spreadsheet_reason, change_pct)
+    ):
+        reason = spreadsheet_reason
+    else:
+        reason = fallback_reason
 
     catalysts = spreadsheet_meta.get("primaryCatalysts") or ""
     candidate_type = spreadsheet_meta.get("candidateType") or ""
