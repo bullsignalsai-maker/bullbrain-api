@@ -65,6 +65,22 @@ def _get_confidence(stock: Dict[str, Any]):
         return float(val)
 
     return None
+
+
+def _probability_bias(up, down) -> str:
+    """
+    Shared threshold for probability-derived bias, used by both the signal
+    block and the probability block so they can't disagree with each other
+    on the same stock. Requires a 5-point edge before calling a direction —
+    a razor-thin split (e.g. 50.1%/49.9%) isn't a meaningful lean.
+    """
+    if not isinstance(up, float) or not isinstance(down, float):
+        return "Neutral"
+
+    if abs(up - down) < 0.05:
+        return "Neutral"
+
+    return "Bullish" if up > down else "Bearish"
 def build_sparkline_from_prices(
     prices: List[float],
     meta: Dict[str, Any] | None = None,
@@ -147,10 +163,7 @@ def build_signal_block(stock: Dict[str, Any]) -> Dict[str, Any]:
         tier = "Low"
 
     up, down = _get_probabilities(stock)
-    if isinstance(up, float) and isinstance(down, float):
-        bias = "Bullish" if up > down else "Bearish" if down > up else "Neutral"
-    else:
-        bias = "Neutral"
+    probability_bias = _probability_bias(up, down)
 
     expl = []
     if narratives.get("summary"):
@@ -169,7 +182,7 @@ def build_signal_block(stock: Dict[str, Any]) -> Dict[str, Any]:
         "label": label,
         "confidence": confidence,
         "confidenceTier": tier,
-        "bias": bias,
+        "probabilityBias": probability_bias,
         "explanation": _sentences(expl, 2),
     }
 
@@ -189,7 +202,7 @@ def build_probability_block(stock: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     diff = abs(up - down)
-    bias = "Neutral" if diff < 0.05 else "Bullish" if up > down else "Bearish"
+    bias = _probability_bias(up, down)
 
     expl = []
     if narratives.get("probability"):
