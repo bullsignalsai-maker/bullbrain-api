@@ -13,8 +13,15 @@ def build_stock_header(stock: Dict[str, Any]) -> Dict[str, Any]:
     profile = stock.get("profile") or {}
     logo_url = profile.get("logoUrl") or stock.get("logoUrl")
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
+    display_intelligence = stock.get("displayIntelligence") or {}
 
-    final_signal = decision.get("finalSignal") or bull.get("signal")
+    # displayIntelligence (System B) is the single source of truth for the
+    # user-facing signal everywhere else in the app; mirror that here instead
+    # of the raw model call, so the header can't disagree with the rest of
+    # the Stock Detail payload for the same stock at the same moment.
+    raw_signal = decision.get("finalSignal") or bull.get("signal")
+    final_signal = display_intelligence.get("signal") or raw_signal
+    final_label = display_intelligence.get("label")
 
     return {
         # -------------------------------------------------
@@ -45,14 +52,16 @@ def build_stock_header(stock: Dict[str, Any]) -> Dict[str, Any]:
         # -------------------------------------------------
         "signal": {
             "final": final_signal,
+            "label": final_label,
             "confidence": bull.get("confidence"),
         },
 
         # -------------------------------------------------
-        # Badges (small, composable)
+        # Badges (small, composable) — human-readable text, so use the
+        # display label here rather than the raw enum/signal value.
         # -------------------------------------------------
         "badges": [
-            final_signal,
+            final_label or final_signal,
             (technical.get("trend") or {}).get("label"),
             pattern.get("pattern") or pattern.get("patternLabel"),
         ],
