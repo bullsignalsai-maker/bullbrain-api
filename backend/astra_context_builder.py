@@ -135,6 +135,7 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
     indicators = stock.get("indicator_states") or {}
     decision = stock.get("decision") or {}
     narratives = stock.get("narratives") or {}
+    display_intelligence = stock.get("displayIntelligence") or {}
 
     days5 = ((history.get("forwardReturns") or {}).get("days5") or {})
 
@@ -152,7 +153,16 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
         },
 
         "aiSignal": {
-            "signal": decision.get("final") or decision.get("finalSignal") or bull.get("signal") or "HOLD",
+            # displayIntelligence (System B) is the app-wide source of truth
+            # for the user-facing signal; fall back to the raw model call
+            # only when it hasn't been computed for this symbol yet.
+            "signal": (
+                display_intelligence.get("signal")
+                or decision.get("final")
+                or decision.get("finalSignal")
+                or bull.get("signal")
+                or "HOLD"
+            ),
             "confidence": decision.get("confidence") or bull.get("confidence"),
             "prob_up": raw.get("prob_up"),
             "prob_down": raw.get("prob_down"),

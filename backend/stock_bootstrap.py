@@ -19,6 +19,7 @@ from backend.stock_repo import (
 
 from symbols_clean import COMPANY_NAMES
 from backend.bull_insights import generate_bull_insights
+from backend.stock_display_intelligence import build_display_intelligence
 
 
 # ---------------------------------------------------------
@@ -120,6 +121,29 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
         print(f"[bull_insights] failed for {symbol}: {e}")
         insights = None
 
+    # ---------------------------------------------------------
+    # 6.6️⃣ Display Intelligence (single source of truth for
+    # user-facing signal labels — mirrors market_cron.py so the
+    # on-demand path stays in sync with the batch path)
+    # ---------------------------------------------------------
+    try:
+        display_intelligence = build_display_intelligence(
+            symbol=symbol,
+            stock={
+                "quote": {
+                    "price": quote.get("price") or quote.get("close"),
+                    "changePct": quote.get("changePct"),
+                },
+                "technical": {},
+                "bullbrain": {"signal": signal, "confidence": confidence},
+                "decision": {},
+                "marketAwareness": {},
+            },
+        )
+    except Exception as e:
+        print(f"[display_intelligence] failed for {symbol}: {e}")
+        display_intelligence = None
+
     # 7️⃣ Build document
     doc = {
         "symbol": symbol,
@@ -139,6 +163,7 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
             "prob_up": round(prob_up, 4),
             "prob_down": round(prob_down, 4),
         },
+        "displayIntelligence": display_intelligence,
 
         "features_meta": {
             "feature_version": "bb48",

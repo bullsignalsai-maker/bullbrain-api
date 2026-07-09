@@ -7,14 +7,21 @@ from typing import Dict, Any
 from backend.astra_intent_router import detect_astra_intent
 from backend.astra_context_builder import build_astra_context
 
+# displayIntelligence (System B) buckets, collapsed into Clara's three
+# conversational phrases. Raw BUY/SELL/HOLD are also recognized so the
+# fallback path (a symbol without displayIntelligence yet) still translates.
+_BULLISH_SIGNALS = {"STRONG_BULLISH", "BULLISH_WATCH", "MOMENTUM_WATCH", "BUY"}
+_NEUTRAL_SIGNALS = {"HOLD", "CAUTION"}
+_BEARISH_SIGNALS = {"BEARISH_WATCH", "HIGH_RISK_MOMENTUM", "SELL"}
+
 def clara_signal_label(signal: str | None) -> str:
     signal = (signal or "").upper()
 
-    if signal == "BUY":
+    if signal in _BULLISH_SIGNALS:
         return "Bullish Setup"
-    if signal == "SELL":
+    if signal in _BEARISH_SIGNALS:
         return "Risk Alert"
-    if signal == "HOLD":
+    if signal in _NEUTRAL_SIGNALS:
         return "Neutral Setup"
 
     return "Market Setup"
@@ -32,6 +39,14 @@ def sanitize_clara_answer(text: str | None) -> str:
         r"\bbuy\b": "bullish setup",
         r"\bsell\b": "risk alert",
         r"\bhold\b": "neutral setup",
+        # Defense-in-depth: scrub raw displayIntelligence enum tokens in case
+        # the LLM echoes one verbatim from the JSON context it was given.
+        r"\bSTRONG_BULLISH\b": "Bullish Setup",
+        r"\bBULLISH_WATCH\b": "Bullish Setup",
+        r"\bMOMENTUM_WATCH\b": "Bullish Setup",
+        r"\bCAUTION\b": "Neutral Setup",
+        r"\bBEARISH_WATCH\b": "Risk Alert",
+        r"\bHIGH_RISK_MOMENTUM\b": "Risk Alert",
     }
 
     for raw, clean in replacements.items():
@@ -625,7 +640,9 @@ def build_astra_prompt(context: Dict[str, Any]) -> tuple[str, str]:
         "Do not give financial advice. Use educational wording only. "
         "Maximum answer length: 4 short sentences. "
         "If the question asks for one thing, answer that one thing first."
-        "Never say raw BUY, HOLD, or SELL. Use Bullish Setup, Neutral Setup, or Risk Alert instead. "
+        "Never say raw internal signal codes (e.g. BUY, HOLD, SELL, BULLISH_WATCH, BEARISH_WATCH, "
+        "STRONG_BULLISH, CAUTION, HIGH_RISK_MOMENTUM). Use plain language instead: Bullish Setup, "
+        "Neutral Setup, or Risk Alert. "
         "Explain in simple non-technical language. "
     )
 

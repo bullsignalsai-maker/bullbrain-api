@@ -132,8 +132,13 @@ def build_sparkline(
 def build_signal_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     decision = stock.get("decision") or {}
     narratives = stock.get("narratives") or {}
+    display_intelligence = stock.get("displayIntelligence") or {}
 
-    signal = decision.get("final") or "HOLD"
+    # displayIntelligence (System B) is the single source of truth for the
+    # user-facing signal everywhere else in the app (Watchlist, Home,
+    # Momentum) — mirror that here instead of showing the raw model call.
+    signal = display_intelligence.get("signal") or decision.get("final") or "HOLD"
+    label = display_intelligence.get("label")
     confidence = _get_confidence(stock)
 
     if isinstance(confidence, (int, float)):
@@ -161,6 +166,7 @@ def build_signal_block(stock: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "value": signal,
+        "label": label,
         "confidence": confidence,
         "confidenceTier": tier,
         "bias": bias,
@@ -722,7 +728,15 @@ def build_trade_idea_block(stock: Dict[str, Any]) -> Dict[str, Any]:
 def build_final_recommendation_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     decision = stock.get("decision") or {}
     narratives = stock.get("narratives") or {}
-    signal = decision.get("final") or "HOLD"
+    display_intelligence = stock.get("displayIntelligence") or {}
+
+    # raw_signal drives the narrative sentence below (describing the model's
+    # own directional call); the returned "signal"/"label" fields mirror
+    # displayIntelligence (System B), the app-wide source of truth for the
+    # user-facing signal.
+    raw_signal = decision.get("final") or "HOLD"
+    signal = display_intelligence.get("signal") or raw_signal
+    label = display_intelligence.get("label")
     confidence = _get_confidence(stock)
 
     expl = []
@@ -730,11 +744,12 @@ def build_final_recommendation_block(stock: Dict[str, Any]) -> Dict[str, Any]:
         expl.append(narratives["summary"])
     else:
         expl.append(
-            f"The model maintains a {signal.lower()} stance based on current conditions."
+            f"The model maintains a {raw_signal.lower()} stance based on current conditions."
         )
 
     return {
         "signal": signal,
+        "label": label,
         "confidence": confidence,
         "text": _sentences(expl, 2),
     }

@@ -637,7 +637,11 @@ def score_stock(
     logo_url = profile.get("logoUrl")
 
     prob_up = _prob_up(stock)
-    signal = _signal(stock)
+    # raw_signal drives the internal quality/score heuristics below — it stays
+    # tied to the model's own BUY/SELL/HOLD call. The "signal" field returned
+    # to callers is a separate, display-facing value sourced from
+    # displayIntelligence (see bottom of this function).
+    raw_signal = _signal(stock)
     change_pct = _num(quote.get("changePct"), 0.0) or 0.0
 
     # Strong upside opportunity must have at least reasonable upside probability.
@@ -720,7 +724,7 @@ def score_stock(
 
     if prob_up < 0.40:
         setup_label = "Developing Momentum Watch"
-    elif prob_up < 0.46 and signal != "BUY":
+    elif prob_up < 0.46 and raw_signal != "BUY":
         setup_label = "Momentum Watch"
 
     if pullback_setup:
@@ -728,6 +732,13 @@ def score_stock(
             setup_label = "High Quality Pullback"
         else:
             setup_label = "Constructive Pullback Watch"
+
+    # Display-facing signal: displayIntelligence (System B) is the single
+    # source of truth for user-facing signal labels app-wide. It's computed
+    # in the same pass as this stock doc (market_cron.py / stock_bootstrap.py),
+    # so it's expected to be present; raw_signal is only a fallback.
+    display_signal = (stock.get("displayIntelligence") or {}).get("signal") or raw_signal
+
     return {
         "symbol": symbol,
         "companyName": stock.get("company_name") or symbol,
@@ -740,7 +751,7 @@ def score_stock(
         "stabilityMultiplier": stability["multiplier"],
         "confidence": round(_clamp(_confidence(stock)), 2),
         "probUp": round(prob_up, 4),
-        "signal": signal,
+        "signal": display_signal,
         "price": quote.get("price"),
         "change": quote.get("change"),
         "changePct": quote.get("changePct"),

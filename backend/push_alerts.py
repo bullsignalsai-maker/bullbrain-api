@@ -7,6 +7,7 @@ from typing import Dict, Any
 from firebase_admin import firestore
 
 from backend.watchlist_snapshot import build_watchlist_snapshot
+from backend.astra_engine import clara_signal_label
 
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
@@ -46,27 +47,40 @@ def _send_expo_push(token: str, title: str, body: str, data: Dict[str, Any] | No
         return {"success": False, "error": str(e)}
 
 
-def _is_meaningful_signal_change(old_signal: str | None, new_signal: str | None) -> bool:
-    old_signal = (old_signal or "").upper()
-    new_signal = (new_signal or "").upper()
+# Fallback tone map for the rare case a watchlisted symbol doesn't have
+# displayIntelligence yet. Keyed on the raw model signal.
+_RAW_SIGNAL_TONE = {"BUY": "positive", "SELL": "negative", "HOLD": "neutral"}
 
-    if not old_signal or not new_signal:
+
+def _tone_and_label(item: Dict[str, Any]) -> tuple[str | None, str]:
+    """
+    Returns (tone, label) for a watchlist snapshot item, sourced from
+    displayIntelligence (System B) — the app-wide source of truth for the
+    user-facing signal. Falls back to the raw bullbrain signal, translated
+    via Clara's shared label table, only when displayIntelligence hasn't
+    been computed for this symbol yet.
+    """
+    display_intelligence = item.get("displayIntelligence") or {}
+    tone = display_intelligence.get("tone")
+    label = display_intelligence.get("label")
+
+    if tone and label:
+        return tone, label
+
+    bull = item.get("bullbrain") or {}
+    raw_signal = str(bull.get("signal") or "HOLD").upper()
+
+    return (
+        tone or _RAW_SIGNAL_TONE.get(raw_signal, "neutral"),
+        label or clara_signal_label(raw_signal),
+    )
+
+
+def _is_meaningful_tone_change(old_tone: str | None, new_tone: str | None) -> bool:
+    if not old_tone or not new_tone:
         return False
 
-    if old_signal == new_signal:
-        return False
-
-    # Only alert for meaningful signal movement
-    meaningful = {
-        ("HOLD", "BUY"),
-        ("HOLD", "SELL"),
-        ("BUY", "HOLD"),
-        ("SELL", "HOLD"),
-        ("BUY", "SELL"),
-        ("SELL", "BUY"),
-    }
-
-    return (old_signal, new_signal) in meaningful
+    return old_tone != new_tone
 
 
 def _confidence_text(confidence):
@@ -75,17 +89,6 @@ def _confidence_text(confidence):
     except Exception:
         return "N/A"
 
-def _display_signal(signal):
-    value = str(signal or "").upper().strip()
-
-    if value == "BUY":
-        return "Bullish Setup"
-    if value == "SELL":
-        return "Risk Alert"
-    if value == "HOLD":
-        return "Neutral Setup"
-
-    return str(signal or "Updated Setup")
 
 def _get_notification_prefs(db, user_id: str) -> Dict[str, bool]:
     """
@@ -171,6 +174,7 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             checked_symbols += 1
 
             bull = item.get("bullbrain") or {}
+            new_tone, new_label = _tone_and_label(item)
             new_signal = (
                 item.get("signal")
                 or item.get("hybridSignal")
@@ -206,14 +210,19 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
             state_doc = state_ref.get()
             previous = state_doc.to_dict() if state_doc.exists else {}
 
-            old_signal = previous.get("lastSignal")
+            old_tone = previous.get("lastTone")
+            old_label = previous.get("lastLabel") or "Updated Setup"
 
-            # First time: baseline only, do not notify
-            if not old_signal:
+            # First time seeing this symbol, OR an existing alert_state doc
+            # from before this field existed (deploy-day case): baseline
+            # tone silently, do not notify.
+            if not old_tone:
                 state_ref.set(
                     {
                         "symbol": symbol,
                         "lastSignal": new_signal,
+                        "lastTone": new_tone,
+                        "lastLabel": new_label,
                         "lastConfidence": confidence,
                         "lastPattern": pattern_name,
                         "lastCheckedAt": _now_iso(),
@@ -224,11 +233,11 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                 baselined += 1
                 continue
 
-            if _is_meaningful_signal_change(old_signal, new_signal):
+            if _is_meaningful_tone_change(old_tone, new_tone):
                 title = "Alphaclara Market Alert"
                 body = (
                     f"{symbol} setup changed from "
-                    f"{_display_signal(old_signal)} to {_display_signal(new_signal)}. "
+                    f"{old_label} to {new_label}. "
                     f"Confidence: {_confidence_text(confidence)}."
                 )
 
@@ -239,8 +248,8 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                     data={
                         "type": "watchlist_signal_change",
                         "symbol": symbol,
-                        "oldSignal": old_signal,
-                        "newSignal": new_signal,
+                        "oldSignal": old_tone,
+                        "newSignal": new_tone,
                         "confidence": confidence,
                     },
                 )
@@ -263,11 +272,13 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                     {
                         "symbol": symbol,
                         "lastSignal": new_signal,
+                        "lastTone": new_tone,
+                        "lastLabel": new_label,
                         "lastConfidence": confidence,
                         "lastPattern": pattern_name,
                         "lastCheckedAt": _now_iso(),
                         "lastAlertedAt": last_alerted_at,
-                        "previousSignal": old_signal,
+                        "previousTone": old_tone,
                     },
                     merge=True,
                 )
@@ -276,6 +287,8 @@ def run_watchlist_push_alerts(max_users: int = 200) -> Dict[str, Any]:
                     {
                         "symbol": symbol,
                         "lastSignal": new_signal,
+                        "lastTone": new_tone,
+                        "lastLabel": new_label,
                         "lastConfidence": confidence,
                         "lastPattern": pattern_name,
                         "lastCheckedAt": _now_iso(),

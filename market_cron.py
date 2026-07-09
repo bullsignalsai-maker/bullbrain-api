@@ -1514,19 +1514,14 @@ def persist_homescreen_core_signals():
             change_pct = quote.get("changePct")
             logo_url = profile.get("logoUrl")
 
+            # displayIntelligence (System B) is the single source of truth for
+            # the user-facing signal — its own scoring already factors in
+            # today's price move (see factors["priceMove"] in
+            # build_display_intelligence), so no separate override is needed
+            # here to catch a raw signal disagreeing with an adverse move.
             display_signal = display_intelligence.get("signal") or raw_signal
             display_score = display_intelligence.get("score") or bullbrain.get("confidence", 0)
             display_headline = display_intelligence.get("headline")
-
-            try:
-                cp = float(change_pct or 0)
-
-                if cp <= -2.0 and raw_signal == "BUY":
-                    display_signal = "HOLD"
-                elif cp >= 2.0 and raw_signal == "SELL":
-                    display_signal = "HOLD"
-            except Exception:
-                pass
 
             ranked.append({
                 "symbol": sym,
