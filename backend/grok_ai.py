@@ -20,7 +20,6 @@ Other modules (astra_chat.py, stockdetail_logic.py, etc.) should import and call
 - grok_prob_up(...)
 - get_stockdetail_grok(...)
 - grok_watchlist_sentiment(...)
-- compute_hybrid_signal(...)
 
 Env vars expected:
 - XAI_API_KEY
@@ -395,72 +394,6 @@ def grok_prob_up(
         return p
     except Exception:
         return None
-
-
-# -------------------------------------------------------------------
-# Public: Hybrid signal computation
-# -------------------------------------------------------------------
-def compute_hybrid_signal(
-    bull_conf: float,
-    grok_prob: float,
-    *,
-    bull_weight: float = 0.65,
-    grok_weight: float = 0.35,
-) -> dict:
-    """
-    Combine BullBrain confidence (0..1) with Grok probability_up (0..1).
-    Returns a stable structure your UI can rely on.
-
-    Note:
-    - bull_conf: model probability_up (0..1)
-    - grok_prob: grok probability_up (0..1)
-    """
-    try:
-        b = _clamp(float(bull_conf), 0.0, 1.0)
-    except Exception:
-        b = 0.5
-
-    try:
-        g = _clamp(float(grok_prob), 0.0, 1.0)
-    except Exception:
-        g = 0.5
-
-    bw = float(bull_weight)
-    gw = float(grok_weight)
-    if bw < 0 or gw < 0 or (bw + gw) <= 0:
-        bw, gw = 0.65, 0.35
-
-    hybrid = (b * bw) + (g * gw)
-    hybrid = _clamp(hybrid, 0.0, 1.0)
-
-    def _signal(p: float) -> str:
-        # keep consistent with your app’s expectations
-        if p >= 0.60:
-            return "BUY"
-        if p <= 0.40:
-            return "SELL"
-        return "NEUTRAL"
-
-    bull_signal = _signal(b)
-    grok_signal = _signal(g)
-    hybrid_signal = _signal(hybrid)
-
-    agreement = (
-        "agree" if bull_signal == grok_signal else
-        "partial" if hybrid_signal in (bull_signal, grok_signal) else
-        "conflict"
-    )
-
-    return {
-        "bullProbUp": round(b, 4),
-        "grokProbUp": round(g, 4),
-        "hybridProbUp": round(hybrid, 4),
-        "bullSignal": bull_signal,
-        "grokSignal": grok_signal,
-        "hybridSignal": hybrid_signal,
-        "agreement": agreement,
-        "weights": {"bull": round(bw, 3), "grok": round(gw, 3)},
-    }
 
 
 # -------------------------------------------------------------------

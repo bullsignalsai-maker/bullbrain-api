@@ -1045,82 +1045,6 @@ def backend_fetch_quote(symbol: str):
         return None
 
 
-# --------------------------------------------------------------------
-# GROK PROBABILITY + HYBRID
-# --------------------------------------------------------------------
-def grok_prob_up(symbol: str):
-    symbol = symbol.upper()
-    if not XAI_API_KEY:
-        return 50.0, "Neutral sentiment (no Grok API key configured)."
-
-    now = datetime.datetime.utcnow()
-    cache_key = f"grok_prob_{symbol}"
-    item = cache.get(cache_key)
-    if item:
-        age_hours = (now - item["time"]).total_seconds() / 3600
-        if age_hours < GROK_STOCK_CACHE_HOURS:
-            return item["prob"], item["summary"]
-
-    prompt = (
-        f"Based on all available information, including market sentiment, news, "
-        f"and macro context, estimate the probability (0-100) that {symbol} "
-        f"will CLOSE higher tomorrow than today.\n"
-        f"Respond ONLY in this format:\n"
-        f"Probability: <number>\n"
-        f"Summary: <short explanation>"
-    )
-    try:
-        res = requests.post(
-            "https://api.x.ai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {XAI_API_KEY}"},
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 40,
-                "temperature": 0.4,
-            },
-            timeout=12,
-        )
-        j = res.json()
-        text_out = (
-            j.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
-        )
-        prob_val = 50.0
-        summary = ""
-        for line in text_out.splitlines():
-            lower = line.lower()
-            if "prob" in lower:
-                try:
-                    prob_val = float(line.split(":", 1)[1].strip())
-                except Exception:
-                    pass
-            elif "summary" in lower:
-                summary = line.split(":", 1)[1].strip()
-        prob_val = max(0.0, min(100.0, prob_val))
-        if not summary:
-            summary = "Sentiment analysis not available; treating as neutral."
-        cache[cache_key] = {"prob": prob_val, "summary": summary, "time": now}
-        return prob_val, summary
-    except Exception as e:
-        print("grok_prob_up error:", e)
-        return 50.0, "Neutral sentiment (Grok unavailable)."
-
-
-def compute_hybrid_signal(bull_conf: float, grok_prob: float):
-    bull_conf = max(0.0, min(100.0, float(bull_conf or 0.0)))
-    grok_prob = max(0.0, min(100.0, float(grok_prob or 0.0)))
-    hybrid_score = 0.7 * bull_conf + 0.3 * grok_prob
-    if hybrid_score >= 66.0:
-        hybrid_signal = "BUY"
-    elif hybrid_score <= 33.0:
-        hybrid_signal = "SELL"
-    else:
-        hybrid_signal = "HOLD"
-    return round(hybrid_score, 2), hybrid_signal
-
 def run_bullbrain_from_inputs(
     symbol: str,
     *,
@@ -1297,18 +1221,7 @@ def _run_bullbrain_for_symbol(symbol: str):
     signal_strength = derive_signal_strength(final_signal, bull_conf)
 
     # -------------------------------------------------
-    # 5️⃣ Grok hybrid (informational, not authoritative)
-    # -------------------------------------------------
-    try:
-        grok_p, grok_summary = grok_prob_up(symbol)
-    except Exception as e:
-        print("grok_prob_up fatal:", e)
-        grok_p, grok_summary = 50.0, "Neutral sentiment (error while calling Grok)."
-
-    hybrid_score, hybrid_signal = compute_hybrid_signal(bull_conf, grok_p)
-
-    # -------------------------------------------------
-    # 6️⃣ Final payload
+    # 5️⃣ Final payload
     # -------------------------------------------------
     core = {
         "symbol": symbol,
@@ -1344,11 +1257,6 @@ def _run_bullbrain_for_symbol(symbol: str):
         "signalExpiryHours": SIGNAL_MAX_AGE_HOURS,
 
         "model": inference,
-
-        "grokProbUp": float(grok_p),
-        "grokSummary": grok_summary,
-        "hybridScore": float(hybrid_score),
-        "hybridSignal": hybrid_signal,
     }
 
     return core, None
@@ -2579,29 +2487,6 @@ def astra_llm_answer(system_prompt: str, user_prompt: str) -> Optional[str]:
         return None
 
 
-def _hybrid_from_probs(bull_prob_up: float | None, grok_prob_up: float | None):
-    if bull_prob_up is None and grok_prob_up is None:
-        p = 0.5
-    elif bull_prob_up is None:
-        p = float(grok_prob_up)
-    elif grok_prob_up is None:
-        p = float(bull_prob_up)
-    else:
-        p = 0.7 * float(bull_prob_up) + 0.3 * float(grok_prob_up)
-    if p < 0.0:
-        p = 0.0
-    if p > 1.0:
-        p = 1.0
-    if p >= 0.55:
-        signal = "BUY"
-    elif p <= 0.45:
-        signal = "SELL"
-    else:
-        signal = "HOLD"
-    confidence = round(max(p, 1 - p) * 100.0, 2)
-    return p, signal, confidence
-
-
 # --------------------------------------------------------------------
 # STARTUP
 # --------------------------------------------------------------------
@@ -3074,90 +2959,6 @@ def watchlist_item(symbol: str):
     try:
         return build_watchlist_item(symbol)
     except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/watchlist-batch")
-def watchlist_batch(symbols: str = Query(..., description="Comma-separated tickers in Firebase order")):
-    try:
-        raw_syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-        seen = set()
-        sym_list = []
-        for s in raw_syms:
-            if s not in seen:
-                sym_list.append(s)
-                seen.add(s)
-        if not sym_list:
-            return {"data": []}
-        quotes = {}
-        for s in sym_list:
-            q = backend_fetch_quote(s)
-            quotes[s] = q or {}
-        bull_map = {}
-        if bullbrain_model is not None:
-            for s in sym_list:
-                try:
-                    core, err = _run_bullbrain_for_symbol(s)
-                    if not err and core and core.get("bullbrain"):
-                        bull_map[s] = core
-                except Exception as e:
-                    print(f"BullBrain error for {s}:", e)
-        grok_map = {}
-        for s in sym_list:
-            q = quotes.get(s, {})
-            change_pct = q.get("changePct", 0.0)
-            try:
-                g = grok_watchlist_sentiment(s, change_pct)
-            except Exception as e:
-                print(f"grok_watchlist_sentiment error for {s}:", e)
-                g = {"summary": "Sentiment unavailable.", "prob_up": 0.5}
-            grok_map[s] = g
-        items = []
-        for s in sym_list:
-            q = quotes.get(s, {})
-            price = q.get("current") or q.get("price") or 0.0
-            change_pct = q.get("changePct") or 0.0
-            g = grok_map.get(s, {})
-            grok_summary = g.get("summary")
-            grok_prob_up = g.get("prob_up")
-            core = bull_map.get(s)
-            bull_signal = None
-            bull_confidence = None
-            bull_prob_up = None
-            bull_probabilities = None
-            bull_features = None
-            bullbrain_block = None
-            if core:
-                bb = core.get("bullbrain") or {}
-                bull_signal = bb.get("signal")
-                bull_confidence = bb.get("confidence")
-                raw = bb.get("raw") or {}
-                bull_prob_up = raw.get("prob_up")
-                bull_probabilities = bb.get("probabilities")
-                bull_features = core.get("features")
-                bullbrain_block = bb
-            hybrid_p, hybrid_signal, hybrid_conf = _hybrid_from_probs(
-                bull_prob_up, grok_prob_up
-            )
-            item = {
-                "symbol": s,
-                "price": round(float(price or 0.0), 2),
-                "changePct": round(float(change_pct or 0.0), 2),
-                "hybridSignal": hybrid_signal,
-                "hybridScore": hybrid_conf,
-                "hybridProbUp": hybrid_p,
-                "grokSummary": grok_summary,
-                "grokProbUp": grok_prob_up,
-                "bullSignal": bull_signal,
-                "bullConfidence": bull_confidence,
-                "bullProbabilities": bull_probabilities,
-                "features": bull_features,
-                "bullbrain": bullbrain_block,
-            }
-            items.append(item)
-        return {"data": items}
-    except Exception as e:
-        print("watchlist_batch fatal error:", e)
         return {"error": str(e)}
 
 
