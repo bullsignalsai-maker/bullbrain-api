@@ -1594,6 +1594,19 @@ def _get_quote_change_pct(symbol: str) -> Optional[float]:
         return None
 
 
+def _risk_level_from_fear_greed(fg_val: int) -> str:
+    """
+    Mirrors the frontend's deriveRiskLevel(fearGreed) in
+    screens/MarketScreen.js — same 3-bucket thresholds and label strings,
+    so this is a drop-in server-computed replacement for that client-side
+    workaround, not a new/different scheme.
+    """
+    if fg_val <= 30:
+        return "High"
+    if fg_val <= 60:
+        return "Moderate"
+    return "Low"
+
 
 def ensure_market_overview_and_baseline_carousel():
     """
@@ -1671,6 +1684,7 @@ def ensure_market_overview_and_baseline_carousel():
         "marketStatus": market_status,
         "marketMood": mood,
         "fearGreed": {"label": fg_label, "value": fg_val},
+        "risk_level": _risk_level_from_fear_greed(fg_val),
         "updated_at": now_iso,
     }
 
