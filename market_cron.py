@@ -1380,29 +1380,39 @@ def persist_internal_market_movers():
         f"total={len(final_movers)}"
     )
 
-def persist_homescreen_core_signals():
+def persist_homescreen_core_signals(results: List[Dict[str, Any]]):
     """
     Writes stable curated AI-ranked HomeScreen signals.
+
+    Prefers the in-memory results from this cycle's compute loop
+    (avoids a redundant Firestore re-read for every CORE_UNIVERSE
+    symbol, since they're always included in scan_symbols); falls
+    back to a Firestore read only for a symbol this cycle didn't
+    successfully compute.
     """
     db = get_db()
     now_iso = utc_now_iso()
 
     symbols = build_homescreen_universe()
     ranked: List[Dict[str, Any]] = []
+    results_by_symbol = {
+        r.get("symbol"): r for r in results if isinstance(r, dict) and r.get("symbol")
+    }
 
     for sym in symbols:
         try:
-            snap = (
-                db.collection(COL_ROOT)
-                  .document(COL_STOCKS)
-                  .collection("symbols")
-                  .document(sym)
-                  .get()
-            )
-            if not snap.exists:
-                continue
-
-            data = snap.to_dict() or {}
+            data = results_by_symbol.get(sym)
+            if data is None:
+                snap = (
+                    db.collection(COL_ROOT)
+                      .document(COL_STOCKS)
+                      .collection("symbols")
+                      .document(sym)
+                      .get()
+                )
+                if not snap.exists:
+                    continue
+                data = snap.to_dict() or {}
 
             quote = data.get("quote")
             if not isinstance(quote, dict):
@@ -1782,7 +1792,7 @@ def main():
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
     persist_internal_market_movers()
-    persist_homescreen_core_signals()
+    persist_homescreen_core_signals(results)
 
     try:
         alpha_watch = persist_alpha_watch(get_db(), results)
