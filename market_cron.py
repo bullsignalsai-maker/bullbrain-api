@@ -200,6 +200,13 @@ def is_market_open(now_utc: datetime.datetime) -> bool:
     close_t = et.replace(hour=16, minute=0, second=0, microsecond=0)
     return open_t <= et <= close_t
 
+# quote_worker.py's slowest routine tiers (SLOW/MARKET CONTEXT) refresh
+# every 300s; a cached quote within that window means quote_worker is
+# actively covering this symbol, so treat it as fresh here rather than
+# re-fetching from Finnhub on every 15-min cron cycle. Keep in sync if
+# quote_worker's tier intervals change.
+CRON_QUOTE_MAX_AGE_SECONDS = 300
+
 def get_canonical_quote(symbol: str, fallback_price: float | None = None) -> Dict[str, Any]:
     """
     Return the best available normalized quote.
@@ -217,7 +224,7 @@ def get_canonical_quote(symbol: str, fallback_price: float | None = None) -> Dic
     if (
         isinstance(cached, dict)
         and cached.get("price") is not None
-        and is_quote_fresh(cached)
+        and is_quote_fresh(cached, max_age_seconds=CRON_QUOTE_MAX_AGE_SECONDS)
     ):
         return dict(cached)
 
