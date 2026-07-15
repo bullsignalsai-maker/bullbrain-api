@@ -143,43 +143,6 @@ def get_db():
 
 
 # =========================================================
-# PHASE 0 — MARKET GAINERS / LOSERS (INTERNAL)
-# =========================================================
-
-def get_internal_market_movers(limit: int = 35) -> List[str]:
-    """
-    Computes market movers from existing stock docs.
-    Uses intraday % change from quotes.
-    """
-    db = get_db()
-
-    snaps = (
-        db.collection(COL_ROOT)
-          .document(COL_STOCKS)
-          .collection("symbols")
-          .stream()
-    )
-
-    movers = []
-
-    for doc in snaps:
-        data = doc.to_dict() or {}
-        quote = data.get("quote", {})
-        chg = quote.get("changePct")
-        updated_at = quote.get("updated_at")
-
-        if (
-            isinstance(chg, (int, float)) and
-            isinstance(updated_at, str)
-        ):
-            movers.append((doc.id, abs(chg)))
-
-
-    movers.sort(key=lambda x: x[1], reverse=True)
-
-    return [sym for sym, _ in movers[:limit]]
-
-# =========================================================
 # MARKET HOURS HELPERS (for header)
 # =========================================================
 
@@ -530,20 +493,20 @@ def get_current_discovery_session_type() -> Optional[str]:
     
     return None
 
-def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
+def should_refresh_daily_movers() -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Full 506-symbol discovery runs only once per defined phase.
     """
     phase = get_discovery_phase()
 
     if not phase:
-        return False, None
+        return False, None, {}
 
     db = get_db()
     snap = _daily_movers_doc_ref(db).get()
 
     if not snap.exists:
-        return True, phase
+        return True, phase, {}
 
     data = snap.to_dict() or {}
     discovery = data.get("discovery", {}) if isinstance(data.get("discovery"), dict) else {}
@@ -551,9 +514,9 @@ def should_refresh_daily_movers() -> Tuple[bool, Optional[str]]:
     done_key = f"{phase}_done"
 
     if discovery.get(done_key) is True:
-        return False, phase
+        return False, phase, discovery
 
-    return True, phase
+    return True, phase, discovery
 
 def refresh_daily_movers_from_sp500() -> List[str]:
     """
@@ -563,7 +526,7 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     - save /bullsignals_ai/daily_movers_YYYY-MM-DD
     - save quote repo entries so quote_worker has fresh baseline
     """
-    should_run, phase = should_refresh_daily_movers()
+    should_run, phase, existing_discovery = should_refresh_daily_movers()
 
     if not should_run:
         existing = load_daily_mover_symbols(
@@ -676,16 +639,8 @@ def refresh_daily_movers_from_sp500() -> List[str]:
     ))
 
     # ---------------------------------------------------------
-    # Preserve previous discovery phase flags before merge write
+    # existing_discovery already fetched in should_refresh_daily_movers()
     # ---------------------------------------------------------
-    existing_discovery = {}
-
-    existing_snap = doc_ref.get()
-    if existing_snap.exists:
-        existing_data = existing_snap.to_dict() or {}
-        if isinstance(existing_data.get("discovery"), dict):
-            existing_discovery = existing_data["discovery"]
-
     phase_key = f"{phase}_done" if phase else "unknown_done"
 
     existing_discovery[phase_key] = True
@@ -1213,30 +1168,11 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         spreadsheet_meta=sheet_meta,
     )
     # ---------------------------------------------------------
-    # 8) Preserve existing profile/logo metadata
-    # ---------------------------------------------------------
-    try:
-        existing_snap = (
-            get_db()
-            .collection(COL_ROOT)
-            .document(COL_STOCKS)
-            .collection("symbols")
-            .document(symbol)
-            .get()
-        )
-        existing_data = existing_snap.to_dict() or {}
-        profile = existing_data.get("profile") or {}
-    except Exception as e:
-        log(f"⚠️ {symbol} profile/logo read failed: {e}")
-        profile = {}
-
-    # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)
     # ---------------------------------------------------------
     doc = {
         "symbol": symbol,
         "company_name": COMPANY_NAMES.get(symbol, symbol),
-        "profile": profile,
         "quote": quote,
         "features_meta": feat_dict,
         "technical": technical,
@@ -1276,7 +1212,6 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             .set(doc, merge=True)
 
         dt = time.time() - t0
-        final_signal = core["decision"]["finalSignal"]
         conf = core["bullbrain"].get("confidence")
         # 🔐 Defensive alias (backward compatibility)
     
@@ -1849,17 +1784,6 @@ def main():
     persist_internal_market_movers()
     persist_homescreen_core_signals()
 
-    # ---------------------------------------------------------
-    # GROK ENHANCEMENT LAYER (SAFE)
-    # ---------------------------------------------------------
-    # Spreadsheet/Grok UI pipeline disabled.
-    # Spreadsheet symbols should only be used as lightweight discovery seeds.
-    # No quote enrichment. No verified-alpha Firestore write.
-    # No separate UI pipeline.
-    try:
-        log("📄 Grok/verified-alpha pipeline disabled — using internal movers only")
-    except Exception as e:
-        log_exc("grok enhancement layer disabled block failed", e)
     try:
         alpha_watch = persist_alpha_watch(get_db(), results)
         log(
