@@ -4036,7 +4036,7 @@ def _db():
     return firestore.client()
 
 def _norm_symbol(symbol: str) -> str:
-    return (symbol or "").upper().strip().replace(".", "-")
+    return (symbol or "").upper().strip()
 
 MARKET_WATCHLIST_SYMBOLS = {"SPY", "QQQ", "GLD", "USO", "SLV"}
 VALID_WATCHLIST_SYMBOLS = set(REAL_TICKERS) | MARKET_WATCHLIST_SYMBOLS
@@ -4099,7 +4099,7 @@ from backend.watchlist_symbols import increment_watchlist_symbol, decrement_watc
 @app.post("/watchlist/{user_id}/add/{symbol}")
 def add_watchlist_symbol(user_id: str, symbol: str):
     sym = _norm_symbol(symbol)
-    if not sym.isalnum():
+    if not sym.replace(".", "").isalnum():
         return {"status": "error", "error": "Invalid symbol"}
 
     if sym not in VALID_WATCHLIST_SYMBOLS:
