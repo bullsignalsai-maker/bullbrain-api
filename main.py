@@ -3024,10 +3024,27 @@ def portfolio_ai_insight(
         if features_vec is None:
             return {"error": "Feature computation failed"}
 
-        # 3) Model inference
-        out = bullbrain_infer(features_vec)
-        prob_up = float(out.get("probability_up") or 0.5)
-        signal = out.get("signal") or "NEUTRAL"
+        # 3) Model inference + full decision ladder (same gates as the
+        #    canonical market_cron/stock_repo path — was previously a
+        #    raw bullbrain_infer() call with no gates at all)
+        core = run_bullbrain_from_inputs(
+            symbol,
+            candles_arrays=candles,
+            feat_dict=feature_dict,
+        )
+        bull = core["bullbrain"]
+        decision = core["decision"]
+
+        signal = bull.get("signal") or "HOLD"  # gated final signal
+        prob_up = float(bull.get("raw", {}).get("prob_up") or 0.5)
+
+        # HOLD caused by a failed gate (not the model's own genuine
+        # neutral read) — suppress the fields below that would
+        # otherwise still reflect the raw, ungated probability.
+        gate_forced_hold = (
+            signal == "HOLD"
+            and decision.get("decisionReasons") != ["ALL_GATES_PASSED"]
+        )
 
         # -------------------------------
         # TREND
@@ -3043,7 +3060,7 @@ def portfolio_ai_insight(
         # EXPECTED MOVE (VOL * probability)
         # ------------------------------------
         vol = feature_dict.get("volatility_5d", 0.02)
-        expected_move = round(vol * (prob_up * 2 - 1), 4)
+        expected_move = 0.0 if gate_forced_hold else round(vol * (prob_up * 2 - 1), 4)
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
         # CONFIDENCE
@@ -3070,14 +3087,18 @@ def portfolio_ai_insight(
         # ------------------------------------
         # NEW: 5-DAY TREND PROBABILITY
         # ------------------------------------
-        five_day_prob = f"{int(prob_up * 100)}% Bullish"
+        five_day_prob = (
+            "Neutral (no statistically valid setup)"
+            if gate_forced_hold
+            else f"{int(prob_up * 100)}% Bullish"
+        )
 
         # ------------------------------------
         # NEW: REBALANCING SUGGESTION
         # ------------------------------------
         suggestion = "No rebalancing needed."
 
-        if portfolio_total_value > 0 and last_close > 0:
+        if not gate_forced_hold and portfolio_total_value > 0 and last_close > 0:
             ideal_pct = prob_up  # If model is 78% bullish, ideal weighting ~78%/100
 
             diff = (allocation_pct / 100) - prob_up
