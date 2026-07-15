@@ -63,12 +63,19 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
     return doc.to_dict()
 
 
-def is_quote_fresh(quote: Dict[str, Any]) -> bool:
+def is_quote_fresh(quote: Dict[str, Any], max_age_seconds: Optional[int] = None) -> bool:
+    """
+    max_age_seconds overrides the doc's own ttl_seconds (and the 30s
+    default) when the caller has a legitimately looser freshness bar
+    than quote_worker's real-time refresh contract — e.g. market_cron
+    treating "quote_worker is actively cycling this symbol" as fresh.
+    """
     ts = _parse_ts(quote.get("updated_at"))
     if not ts:
         return False
     age = (_now_utc() - ts).total_seconds()
-    return age <= int(quote.get("ttl_seconds", QUOTE_TTL_SECONDS))
+    ttl = max_age_seconds if max_age_seconds is not None else int(quote.get("ttl_seconds", QUOTE_TTL_SECONDS))
+    return age <= ttl
 
 
 def mark_needs_refresh(symbol: str) -> None:
