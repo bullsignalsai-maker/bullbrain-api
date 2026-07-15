@@ -150,6 +150,10 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
         "company_name": COMPANY_NAMES.get(symbol, symbol),
         "insights": insights,
 
+        "profile": {
+            "sector": quote.get("sector"),
+        },
+
         "quote": {
             "price": quote.get("price") or quote.get("close"),
             "changePct": quote.get("changePct"),

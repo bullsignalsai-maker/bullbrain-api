@@ -1010,6 +1010,7 @@ def backend_fetch_quote(symbol: str):
             return {
                 "symbol": symbol,
                 "name": profile.get("name") or symbol,
+                "sector": profile.get("finnhubIndustry") or None,
                 "current": float(close),
                 "change": float(change),
                 "changePct": float(change_pct),
@@ -1029,6 +1030,7 @@ def backend_fetch_quote(symbol: str):
         return {
             "symbol": symbol,
             "name": profile.get("name") or symbol,
+            "sector": profile.get("finnhubIndustry") or None,
             "current": price,
             "change": change,
             "changePct": change_pct,

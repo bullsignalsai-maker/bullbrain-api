@@ -30,6 +30,7 @@ def build_stock_header(stock: Dict[str, Any]) -> Dict[str, Any]:
         "symbol": stock.get("symbol"),
         "companyName": stock.get("company_name"),
         "logoUrl": logo_url,
+        "sector": profile.get("sector"),
         # -------------------------------------------------
         # Quote (authoritative – Firestore only)
         # -------------------------------------------------
