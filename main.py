@@ -1065,6 +1065,7 @@ def run_bullbrain_from_inputs(
     # 3) STEP-16 Decision Ladder (single authority)
     # ---------------------------------------------------------
     trend_pct_20d = _trend_pct_20d(candles_arrays.get("close") or [])
+    vol_zscore_20_corrected = _volume_zscore_20(candles_arrays.get("volume") or [])
     decision = final_decision(
         model_signal=model_signal,
         features=feat_dict,
@@ -1078,6 +1079,7 @@ def run_bullbrain_from_inputs(
         ),
         total_days=len(candles_arrays.get("close", [])),
         trend_pct_20d=trend_pct_20d,
+        vol_zscore_20_corrected=vol_zscore_20_corrected,
     )
 
     final_signal = decision["finalSignal"]
@@ -1096,6 +1098,7 @@ def run_bullbrain_from_inputs(
         },
         "decision": decision,
         "trend_pct_20d": trend_pct_20d,
+        "vol_zscore_20_corrected": vol_zscore_20_corrected,
         "pattern": pattern_result.get("currentPattern") if pattern_result else None,
         "patternBias": (
             pattern_bias(
@@ -1222,6 +1225,26 @@ def _trend_pct_20d(closes: list) -> float | None:
         if c_then == 0:
             return None
         return (c_now / c_then - 1.0) * 100.0
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _volume_zscore_20(volumes: list) -> float | None:
+    """Correctly-scaled 20-day volume z-score — std of RAW volume, not std of
+    volume's own 20-day moving average (the bug in compute_bullbrain_features(),
+    inflates |z| ~6.66x — see bullbrain_gate_ladder_audit memory). Matches the
+    formula already used correctly in scan_smart_pattern_history() and
+    backend/smart_patterns.py. Used for gate/narrative logic only — the model's
+    own DMatrix feature is deliberately left untouched."""
+    if not volumes or len(volumes) < 20:
+        return None
+    try:
+        window = np.array(volumes[-20:], dtype=float)
+        mean20 = window.mean()
+        std20 = window.std(ddof=1)
+        if std20 == 0:
+            return None
+        return (float(volumes[-1]) - mean20) / std20
     except (TypeError, ValueError, IndexError):
         return None
 
@@ -1703,6 +1726,7 @@ def final_decision(
     pattern_history: dict | None,
     total_days: int,
     trend_pct_20d: float | None = None,
+    vol_zscore_20_corrected: float | None = None,
 ) -> dict:
     """
     Enforces the full decision ladder.

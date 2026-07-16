@@ -1215,6 +1215,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "quote": quote,
         "features_meta": feat_dict,
         "trend_pct_20d": core.get("trend_pct_20d"),
+        "volume_zscore_20_corrected": core.get("vol_zscore_20_corrected"),
         "technical": technical,
         "bullbrain": core["bullbrain"],
         "decision": core["decision"],
