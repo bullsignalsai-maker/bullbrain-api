@@ -319,14 +319,20 @@ def score_bullbrain(stock: Dict[str, Any]) -> float:
     return round(_clamp(score), 2)
 
 
-def score_volume(f: Dict[str, Any]) -> float:
+def score_volume(f: Dict[str, Any], vol_z_corrected: Optional[float] = None) -> float:
     vs = _num(f.get("volume_vs_ma20_pct"), 0.0) or 0.0
-    z = _num(f.get("volume_zscore_20"), 0.0) or 0.0
+    # volume_zscore_20 from f is inflated ~6.66x (see bullbrain_gate_ladder_audit
+    # memory). Prefer the corrected value.
+    z = _num(vol_z_corrected, 0.0) if vol_z_corrected is not None else (_num(f.get("volume_zscore_20"), 0.0) or 0.0)
     obv = _num(f.get("obv_slope_10"), 0.0) or 0.0
 
     score = 50.0
     score += _clamp(vs * 0.52, -25, 28)
-    score += _clamp(z * 11, -20, 23)
+    # 7 is data-grounded, not the old 11: derived by mapping this population's
+    # p90 corrected z-score (~3.25) near the clamp boundary, since the old
+    # formula was already ~77% saturated and its spread wasn't a meaningful
+    # target to preserve (see bullbrain_gate_ladder_audit memory).
+    score += _clamp(z * 7, -20, 23)
 
     if obv > 0:
         score += 10
@@ -674,7 +680,7 @@ def score_stock(
         "trend": score_trend(features, trend_pct_20d=stock.get("trend_pct_20d")),
         "pattern": score_pattern(stock),
         "bullbrain": score_bullbrain(stock),
-        "volume": score_volume(features),
+        "volume": score_volume(features, vol_z_corrected=stock.get("volume_zscore_20_corrected")),
         "early_expansion": score_early_expansion(features),
     }
     pattern_name = (

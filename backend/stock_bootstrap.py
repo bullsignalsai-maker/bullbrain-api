@@ -80,6 +80,11 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
     if feats_vec is None:
         raise RuntimeError("Feature generation failed")
 
+    # volume_zscore_20 in feat_dict is inflated ~6.66x (see
+    # bullbrain_gate_ladder_audit memory). Compute the corrected value
+    # independently here — this path doesn't call run_bullbrain_from_inputs().
+    vol_z_corrected = backend._volume_zscore_20(candles.get("volume") or [])
+
     # 5️⃣ Inference
     infer = backend.bullbrain_infer(feats_vec)
     if infer is None:
@@ -116,6 +121,7 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
             },
             technical=None,  # stock_bootstrap does not compute /technical
             seed_key=f"{symbol}:{utc_now_iso()}",
+            vol_z_corrected=vol_z_corrected,
         )
     except Exception as e:
         print(f"[bull_insights] failed for {symbol}: {e}")

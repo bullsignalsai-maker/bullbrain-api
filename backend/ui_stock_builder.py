@@ -470,7 +470,11 @@ def build_technical_snapshot_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     volume_label = volume.get("label")
     volume_vs_ma20 = volume.get("volume_vs_ma20_pct")
     volume_comment = volume.get("comment")
-    volume_z = features.get("volume_zscore_20")
+    # volume_zscore_20 from features_meta is inflated ~6.66x (see
+    # bullbrain_gate_ladder_audit memory). Prefer the corrected value.
+    volume_z = stock.get("volume_zscore_20_corrected")
+    if volume_z is None:
+        volume_z = features.get("volume_zscore_20")
 
     if volume_label and isinstance(volume_vs_ma20, (int, float)):
         volume_lines.append(
