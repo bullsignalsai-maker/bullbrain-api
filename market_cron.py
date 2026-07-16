@@ -100,7 +100,8 @@ CORE_UNIVERSE = [
 ]
 
 ACTIVE_SYMBOL_LIMIT = 60
-TOTAL_SCAN_LIMIT = 60
+WATCHLIST_SYMBOL_LIMIT = 40
+TOTAL_SCAN_LIMIT = 150
 COL_ROOT = "bullsignals_ai"
 COL_STOCKS = "stocks"  # document id under bullsignals_ai
 DOC_ACTIVE = "active_symbols"
@@ -338,6 +339,32 @@ def rank_active_symbols(active: Dict[str, Dict[str, Any]]) -> List[str]:
 
     ranked = sorted(active.items(), key=lambda kv: score(kv[1]), reverse=True)
     top = [sym for sym, _ in ranked[:ACTIVE_SYMBOL_LIMIT]]
+    return [s.upper() for s in top if s]
+
+
+# =========================================================
+# WATCHLIST SYMBOLS (READ-ONLY)
+# =========================================================
+
+def load_watchlist_symbols() -> Dict[str, Dict[str, Any]]:
+    db = get_db()
+    snap = db.collection(COL_ROOT).document("watchlist_symbols").get()
+    if not snap.exists:
+        log("ℹ️ watchlist_symbols doc not found (yet) → using empty watchlist")
+        return {}
+    return (snap.to_dict() or {}).get("symbols", {})
+
+
+def rank_watchlist_symbols(watchlist: Dict[str, Dict[str, Any]]) -> List[str]:
+    # count-only ranking — watchlist_symbols has no recency field, unlike
+    # active_symbols; filter out stale zero/negative entries left behind
+    # by decrement_watchlist_symbol() when a symbol is removed by everyone
+    ranked = sorted(
+        ((sym, (meta or {}).get("count", 0)) for sym, meta in watchlist.items()),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    top = [sym for sym, count in ranked[:WATCHLIST_SYMBOL_LIMIT] if count > 0]
     return [s.upper() for s in top if s]
 
 # =========================================================
@@ -810,12 +837,15 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
     # New daily movers from lightweight S&P/REAL_TICKERS discovery
     daily_movers = refresh_daily_movers_from_sp500()
 
+    # Watchlisted symbols — explicit user intent, ranked by aggregate count
+    watchlist = rank_watchlist_symbols(load_watchlist_symbols())
+
     active_raw = load_active_symbols()
     active = rank_active_symbols(active_raw)
 
     universe = list(
         dict.fromkeys(
-            [*daily_movers, *phase0, *CORE_UNIVERSE, *active]
+            [*CORE_UNIVERSE, *watchlist, *daily_movers, *phase0, *active]
         )
     )
 
@@ -823,6 +853,7 @@ def build_scan_universe() -> Tuple[List[str], Dict[str, Any]]:
         "daily_movers": len(daily_movers),
         "market_movers": len(phase0),
         "core_universe": len(CORE_UNIVERSE),
+        "watchlist": len(watchlist),
         "active_ranked": len(active),
         "universe": len(universe),
     }
