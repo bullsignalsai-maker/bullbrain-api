@@ -1547,8 +1547,14 @@ def expected_value_score(
     ev = win_rate * avg_ret
 
     # --- Fragility penalty ---
-    # Each fragility point reduces EV
-    ev -= fragility * 0.5
+    # Each fragility point reduces EV. 0.25 is data-grounded, not arbitrary:
+    # it's ~p10 of the real win_rate*avg_ret distribution among symbols that
+    # legitimately pass Pattern Quality (see bullbrain_gate_ladder_audit
+    # memory, finding #5) — one fragility point should meaningfully threaten
+    # only the weakest ~10% of validated edges, not a typical/good one. The
+    # old 0.5 constant, combined with finding #1's guaranteed fragility floor,
+    # was killing ~42% of legitimately-good setups regardless of edge quality.
+    ev -= fragility * 0.25
 
     return round(ev, 3)
 
