@@ -1318,7 +1318,7 @@ def timeframe_alignment(features: dict, direction: str) -> bool:
 # STEP 8: Mandatory Volume Rule
 # -----------------------------------------------------------
 
-def volume_gate(features: dict) -> bool:
+def volume_gate(features: dict, vol_z_corrected: float | None = None) -> bool:
     """
     Enforce volume confirmation.
 
@@ -1328,7 +1328,11 @@ def volume_gate(features: dict) -> bool:
     """
 
     try:
-        vol_z = float(features.get("volume_zscore_20"))
+        # volume_zscore_20 from compute_bullbrain_features() is inflated ~6.66x
+        # (std of the volume MA, not raw volume — see bullbrain_gate_ladder_audit
+        # memory). Prefer the corrected value; fall back to the buggy one for
+        # callers that don't pass it, same as body_pct/trend_pct_20d.
+        vol_z = float(vol_z_corrected) if vol_z_corrected is not None else float(features.get("volume_zscore_20"))
         vol_vs_ma = float(features.get("volume_vs_ma20_pct"))
     except (TypeError, ValueError):
         return False
@@ -1435,7 +1439,7 @@ def directional_pressure(features: dict) -> int:
 # STEP 11: Signal Fragility Index
 # -----------------------------------------------------------
 
-def signal_fragility(features: dict) -> int:
+def signal_fragility(features: dict, vol_z_corrected: float | None = None) -> int:
     """
     Detect fragile / unstable setups.
 
@@ -1460,7 +1464,10 @@ def signal_fragility(features: dict) -> int:
     if None not in (high, low, open_, close):
         full_range = high - low
         body_pct = ((close - open_) / full_range * 100.0) if full_range > 0 else 0.0
-    vol_z = features.get("volume_zscore_20")
+    # volume_zscore_20 from compute_bullbrain_features() is inflated ~6.66x
+    # (see bullbrain_gate_ladder_audit memory, finding #6). Prefer the
+    # corrected value; fall back to the buggy one for callers that don't pass it.
+    vol_z = vol_z_corrected if vol_z_corrected is not None else features.get("volume_zscore_20")
     vol20 = features.get("volatility_20d")
 
     # 1️⃣ Wide intraday swings → instability
@@ -1485,7 +1492,7 @@ def signal_fragility(features: dict) -> int:
 # STEP 12: Liquidity Quality
 # -----------------------------------------------------------
 
-def liquidity_quality(features: dict) -> str:
+def liquidity_quality(features: dict, vol_z_corrected: float | None = None) -> str:
     """
     Classify liquidity quality using volume and volatility behavior.
 
@@ -1495,7 +1502,11 @@ def liquidity_quality(features: dict) -> str:
     - 'POOR'
     """
 
-    vol_z = features.get("volume_zscore_20")
+    # volume_zscore_20 from compute_bullbrain_features() is inflated ~6.66x
+    # (std of the volume MA, not raw volume — see bullbrain_gate_ladder_audit
+    # memory). Prefer the corrected value; fall back to the buggy one for
+    # callers that don't pass it, same as body_pct/trend_pct_20d.
+    vol_z = vol_z_corrected if vol_z_corrected is not None else features.get("volume_zscore_20")
     vol_vs_ma20 = features.get("volume_vs_ma20_pct")
     intraday_range = features.get("intraday_range_pct")
     vol20 = features.get("volatility_20d")
@@ -1753,7 +1764,7 @@ def final_decision(
     # silently survive into this run's persisted decision.
 
     # ---------------- 1️⃣ Liquidity ----------------
-    liq = liquidity_quality(features)
+    liq = liquidity_quality(features, vol_z_corrected=vol_zscore_20_corrected)
     if liq != "GOOD":
         reasons.append(f"Liquidity={liq}")
         return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
@@ -1823,7 +1834,7 @@ def final_decision(
         }}
 
     # ---------------- 7️⃣ Volume Confirmation ----------------
-    if not volume_gate(features):
+    if not volume_gate(features, vol_z_corrected=vol_zscore_20_corrected):
         reasons.append("VolumeGateFailed")
         return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
             "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
@@ -1859,7 +1870,7 @@ def final_decision(
         }}
 
     # ---------------- 🔟 Fragility ----------------
-    frag = signal_fragility(features)
+    frag = signal_fragility(features, vol_z_corrected=vol_zscore_20_corrected)
     if frag >= 3:
         reasons.append("SignalTooFragile")
         return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
