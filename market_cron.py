@@ -1121,6 +1121,7 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "bullbrain": bull,
         "decision": decision,
         "patternHistory": core.get("patternHistory"),
+        "trend_pct_20d": core.get("trend_pct_20d"),
         "content": {
             "ui": {
                 "hybridProbUp": prob_up

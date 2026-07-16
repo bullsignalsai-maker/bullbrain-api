@@ -486,19 +486,24 @@ def _state_confidence(c: Optional[float]) -> str:
     return "VERY_LOW"
 
 
-def _detect_regime_from_features(trend_strength_20: Optional[float], vol20: Optional[float], vol60: Optional[float], atr14: Optional[float]) -> str:
+def _detect_regime_from_features(trend_pct_20d: Optional[float], vol20: Optional[float], vol60: Optional[float], atr14: Optional[float], close: Optional[float]) -> str:
     """
-    Mirrors your detect_market_regime() semantics, deterministically.
+    Mirrors detect_market_regime() semantics (main.py), deterministically.
+    trend_pct_20d is the true 20-day % return (see bullbrain_gate_ladder_audit
+    memory, finding #2) — not the raw-slope trend_strength_20 feature.
     """
-    if trend_strength_20 is None or vol20 is None:
+    if trend_pct_20d is None or vol20 is None:
         return "UNKNOWN"
-    # HIGH_VOL condition (same spirit as your code)
+    # HIGH_VOL condition (same spirit as main.py's detect_market_regime)
     base60 = vol60 if vol60 is not None else vol20
     if vol20 > 1.5 * base60:
         return "HIGH_VOL"
-    if atr14 is not None and vol20 is not None and atr14 > 1.2 * vol20:
+    # atr14 is a raw dollar range; normalize to % of price before comparing
+    # against vol20 (already a percentage) — see finding #3.
+    atr_pct = (atr14 / close * 100.0) if (atr14 and close) else None
+    if atr_pct is not None and atr_pct > 1.8 * vol20:
         return "HIGH_VOL"
-    if abs(trend_strength_20) > 0.4:
+    if abs(trend_pct_20d) > 10.0:
         return "TRENDING"
     return "RANGING"
 
@@ -667,8 +672,14 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     vol60 = values.get("volatility_60d")
     atr14 = values.get("atr14")
     liq_q = _liquidity_quality_from_features(vol_z, vol_vs_ma20, intraday, vol20)
-    
-    regime = _detect_regime_from_features(values.get("trend_strength_20"), vol20, vol60, atr14)
+
+    trend_pct_20d = _to_float(_get(payload, "trend_pct_20d"))
+    if trend_pct_20d is None:
+        # Fallback for payloads without the corrected field (older stored docs,
+        # or callers other than market_cron.py): use price_vs_sma20_pct rather
+        # than the known-buggy trend_strength_20 raw slope.
+        trend_pct_20d = values.get("price_vs_sma20_pct")
+    regime = _detect_regime_from_features(trend_pct_20d, vol20, vol60, atr14, values.get("close"))
 
     # pattern stats (5d)
     patt_win = _to_float(days5.get("winRate"))

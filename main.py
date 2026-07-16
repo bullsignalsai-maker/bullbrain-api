@@ -1064,6 +1064,7 @@ def run_bullbrain_from_inputs(
     # ---------------------------------------------------------
     # 3) STEP-16 Decision Ladder (single authority)
     # ---------------------------------------------------------
+    trend_pct_20d = _trend_pct_20d(candles_arrays.get("close") or [])
     decision = final_decision(
         model_signal=model_signal,
         features=feat_dict,
@@ -1076,6 +1077,7 @@ def run_bullbrain_from_inputs(
             if pattern_result else None
         ),
         total_days=len(candles_arrays.get("close", [])),
+        trend_pct_20d=trend_pct_20d,
     )
 
     final_signal = decision["finalSignal"]
@@ -1093,6 +1095,7 @@ def run_bullbrain_from_inputs(
             },
         },
         "decision": decision,
+        "trend_pct_20d": trend_pct_20d,
         "pattern": pattern_result.get("currentPattern") if pattern_result else None,
         "patternBias": (
             pattern_bias(
@@ -1205,27 +1208,57 @@ def pattern_quality_gate(history_block: dict | None) -> bool:
 # STEP 5: Market Regime Detection
 # -----------------------------------------------------------
 
-def detect_market_regime(features: dict) -> str:
+def _trend_pct_20d(closes: list) -> float | None:
+    """True 20-day % return, price-comparable — see bullbrain_gate_ladder_audit
+    memory, finding #2. compute_bullbrain_features()'s trend_strength_20 is a
+    raw $/day regression slope, confounded by share price; this is the
+    corrected value, used for gate logic only (the model's own DMatrix
+    feature is deliberately left untouched)."""
+    if not closes or len(closes) < 21:
+        return None
+    try:
+        c_now = float(closes[-1])
+        c_then = float(closes[-21])
+        if c_then == 0:
+            return None
+        return (c_now / c_then - 1.0) * 100.0
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def detect_market_regime(features: dict, trend_pct_20d: float | None = None) -> str:
     """
     Detect market regime using existing features.
     Returns: 'TRENDING', 'RANGING', 'HIGH_VOL'
     """
 
-    trend = features.get("trend_strength_20")
     vol20 = features.get("volatility_20d")
     vol60 = features.get("volatility_60d")
     atr = features.get("atr14")
+    close = features.get("close")
+
+    # trend_pct_20d (true 20-day % return) is preferred when the caller
+    # provides it; falls back to the raw-slope model feature + its old
+    # threshold only for callers that don't pass the corrected value.
+    trend = trend_pct_20d if trend_pct_20d is not None else features.get("trend_strength_20")
 
     # Defensive
     if trend is None or vol20 is None:
         return "UNKNOWN"
 
     # High volatility regime
-    if vol20 > 1.5 * (vol60 or vol20) or (atr and atr > 1.2 * vol20):
+    # atr14 is a raw dollar range; normalize to % of price before comparing
+    # against volatility_20d (already a percentage), otherwise this collapses
+    # into a pure price-level test instead of a volatility test.
+    atr_pct = (atr / close * 100.0) if (atr and close) else None
+    if vol20 > 1.5 * (vol60 or vol20) or (atr_pct and atr_pct > 1.8 * vol20):
         return "HIGH_VOL"
 
     # Strong directional trend
-    if abs(trend) > 0.4:
+    if trend_pct_20d is not None:
+        if abs(trend) > 10.0:
+            return "TRENDING"
+    elif abs(trend) > 0.4:
         return "TRENDING"
 
     # Otherwise range-bound
@@ -1392,7 +1425,18 @@ def signal_fragility(features: dict) -> int:
     fragility = 0
 
     intraday_range = features.get("intraday_range_pct")
-    body_pct = features.get("body_pct")
+    # body_pct from compute_bullbrain_features() is close/open-relative (a known
+    # scale-mismatch bug — see bullbrain_gate_ladder_audit memory, finding #1).
+    # Recompute the full-range-normalized version locally for this gate only;
+    # the model's own DMatrix feature is deliberately left untouched.
+    high = features.get("high")
+    low = features.get("low")
+    open_ = features.get("open")
+    close = features.get("close")
+    body_pct = None
+    if None not in (high, low, open_, close):
+        full_range = high - low
+        body_pct = ((close - open_) / full_range * 100.0) if full_range > 0 else 0.0
     vol_z = features.get("volume_zscore_20")
     vol20 = features.get("volatility_20d")
 
@@ -1536,8 +1580,14 @@ def expected_value_score(
     ev = win_rate * avg_ret
 
     # --- Fragility penalty ---
-    # Each fragility point reduces EV
-    ev -= fragility * 0.5
+    # Each fragility point reduces EV. 0.25 is data-grounded, not arbitrary:
+    # it's ~p10 of the real win_rate*avg_ret distribution among symbols that
+    # legitimately pass Pattern Quality (see bullbrain_gate_ladder_audit
+    # memory, finding #5) — one fragility point should meaningfully threaten
+    # only the weakest ~10% of validated edges, not a typical/good one. The
+    # old 0.5 constant, combined with finding #1's guaranteed fragility floor,
+    # was killing ~42% of legitimately-good setups regardless of edge quality.
+    ev -= fragility * 0.25
 
     return round(ev, 3)
 
@@ -1652,6 +1702,7 @@ def final_decision(
     pattern_name: str | None,
     pattern_history: dict | None,
     total_days: int,
+    trend_pct_20d: float | None = None,
 ) -> dict:
     """
     Enforces the full decision ladder.
@@ -1694,7 +1745,7 @@ def final_decision(
         }
     
     # ---------------- 2️⃣ Market Regime ----------------
-    regime = detect_market_regime(features)
+    regime = detect_market_regime(features, trend_pct_20d=trend_pct_20d)
 
     # ---------------- 3️⃣ Pattern Quality ----------------
     if not pattern_quality_gate(pattern_history):
@@ -1787,11 +1838,13 @@ PATTERN_REGIME_COMPATIBILITY = {
 
     # Breakouts
     "GAP UP & RUNNING": {"TRENDING", "HIGH_VOL"},
+    "GAP DOWN & PRESSURE": {"TRENDING", "HIGH_VOL"},
     "VOLUME BREAKOUT": {"TRENDING", "HIGH_VOL"},
     "FAILED BREAKOUT TRAP": {"HIGH_VOL"},
 
     # Mean reversion
     "OVERSOLD BOUNCE": {"RANGING", "HIGH_VOL"},
+    "OVERBOUGHT DISTRIBUTION": {"RANGING", "HIGH_VOL"},
     "HAMMER REVERSAL": {"RANGING"},
     "DEAD CAT BOUNCE": {"HIGH_VOL"},
 
