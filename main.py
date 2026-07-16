@@ -1718,11 +1718,25 @@ def final_decision(
 
     reasons = []
 
+    # quality dict shape: every branch below returns the SAME 11 keys, using
+    # None for whatever this branch's execution path didn't reach/compute.
+    # This is intentional — save_stock()'s Firestore write uses merge=True,
+    # which lets nested map fields survive from a DIFFERENT historical run
+    # if the current run's quality dict omits them (see
+    # bullbrain_gate_ladder_audit memory, finding A). Always including every
+    # key — even as None — makes every write fully overwrite the previous
+    # one, so a stale regime/fragility/etc. from an earlier run can never
+    # silently survive into this run's persisted decision.
+
     # ---------------- 1️⃣ Liquidity ----------------
     liq = liquidity_quality(features)
     if liq != "GOOD":
         reasons.append(f"Liquidity={liq}")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"liquidity": liq}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": None, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": None, "consensus": None, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 1.5️⃣ Momentum Override ----------------
     override = momentum_override_signal(
@@ -1736,76 +1750,118 @@ def final_decision(
             "finalSignal": override,
             "decisionReasons": ["MOMENTUM_OVERRIDE"],
             "quality": {
-                "liquidity": liq,
-                "override": True,
-                "overrideType": "strong_price_volume_momentum",
-                "originalModelSignal": model_signal,
-                "pattern": pattern_name,
+                "liquidity": liq, "override": True, "overrideType": "strong_price_volume_momentum",
+                "originalModelSignal": model_signal, "pattern": pattern_name,
+                "regime": None, "consensus": None, "pressure": None, "fragility": None, "EV": None, "rarity": None,
             },
         }
-    
+
     # ---------------- 2️⃣ Market Regime ----------------
     regime = detect_market_regime(features, trend_pct_20d=trend_pct_20d)
 
     # ---------------- 3️⃣ Pattern Quality ----------------
     if not pattern_quality_gate(pattern_history):
         reasons.append("PatternQualityFailed")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"regime": regime}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": None, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 4️⃣ Regime Compatibility ----------------
     if pattern_name:
         allowed = PATTERN_REGIME_COMPATIBILITY.get(pattern_name)
         if allowed and regime not in allowed:
             reasons.append(f"PatternNotAllowedIn{regime}")
-            return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"regime": regime}}
+            return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+                "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+                "pattern": pattern_name, "regime": regime, "consensus": None, "pressure": None,
+                "fragility": None, "EV": None, "rarity": None,
+            }}
 
     # ---------------- 5️⃣ Pattern–Model Alignment ----------------
     patt_bias = pattern_bias(pattern_name)
     if not alignment_filter(model_signal, patt_bias):
         reasons.append("SignalPatternConflict")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": None, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 6️⃣ Multi-Timeframe Agreement ----------------
     if not timeframe_alignment(features, model_signal):
         reasons.append("TimeframeMisalignment")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": None, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 7️⃣ Volume Confirmation ----------------
     if not volume_gate(features):
         reasons.append("VolumeGateFailed")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": None, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 8️⃣ Feature Consensus ----------------
     consensus = feature_consensus_score(features)
     if abs(consensus) < 1:
         reasons.append("WeakFeatureConsensus")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"consensus": consensus}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": None,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 9️⃣ Directional Pressure ----------------
     pressure = directional_pressure(features)
     if model_signal == "BUY" and pressure <= 0:
         reasons.append("NoUpsidePressure")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"pressure": pressure}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
     if model_signal == "SELL" and pressure >= 0:
         reasons.append("NoDownsidePressure")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"pressure": pressure}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": None, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 🔟 Fragility ----------------
     frag = signal_fragility(features)
     if frag >= 3:
         reasons.append("SignalTooFragile")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"fragility": frag}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": frag, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 1️⃣1️⃣ Momentum Exhaustion ----------------
     if momentum_exhaustion(features, model_signal):
         reasons.append("MomentumExhausted")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": frag, "EV": None, "rarity": None,
+        }}
 
     # ---------------- 1️⃣2️⃣ Expected Value ----------------
     ev = expected_value_score(pattern_history, frag)
     if ev <= 0:
         reasons.append("NegativeEV")
-        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {"EV": ev}}
+        return {"finalSignal": "HOLD", "decisionReasons": reasons, "quality": {
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": frag, "EV": ev, "rarity": None,
+        }}
 
     # ---------------- 1️⃣3️⃣ Rarity (context only) ----------------
     rarity = signal_rarity(pattern_history, total_days)
@@ -1815,13 +1871,9 @@ def final_decision(
         "finalSignal": model_signal,
         "decisionReasons": ["ALL_GATES_PASSED"],
         "quality": {
-            "liquidity": liq,
-            "regime": regime,
-            "consensus": consensus,
-            "pressure": pressure,
-            "fragility": frag,
-            "EV": ev,
-            "rarity": rarity,
+            "liquidity": liq, "override": False, "overrideType": None, "originalModelSignal": None,
+            "pattern": pattern_name, "regime": regime, "consensus": consensus, "pressure": pressure,
+            "fragility": frag, "EV": ev, "rarity": rarity,
         },
     }
 
