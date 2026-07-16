@@ -165,7 +165,13 @@ def passes_quality_filter(stock: Dict[str, Any]) -> Tuple[bool, List[str]]:
 def detect_regime(stock: Dict[str, Any]) -> str:
     f = stock.get("features_meta") or {}
 
-    trend = _num(f.get("trend_strength_20"), 0.0) or 0.0
+    # trend_strength_20 is a raw $/day slope, confounded by share price (see
+    # bullbrain_gate_ladder_audit memory). Prefer the corrected true 20-day %
+    # return threaded from market_cron.py; fall back to price_vs_sma20_pct
+    # (never the buggy raw slope) for payloads without the new field.
+    trend = _num(stock.get("trend_pct_20d"), None)
+    if trend is None:
+        trend = _num(f.get("price_vs_sma20_pct"), 0.0) or 0.0
     vol20 = _num(f.get("volatility_20d"), 0.0) or 0.0
     vol60 = _num(f.get("volatility_60d"), vol20) or vol20
     r5 = _num(f.get("return_5d"), 0.0) or 0.0
@@ -175,10 +181,10 @@ def detect_regime(stock: Dict[str, Any]) -> str:
     if vol20 > max(4.5, vol60 * 1.6):
         return "HIGH_VOL"
 
-    if trend > 0.25 and r5 > 0 and r10 > 0 and vol_vs >= 0:
+    if trend > 10.0 and r5 > 0 and r10 > 0 and vol_vs >= 0:
         return "RISK_ON"
 
-    if trend < -0.25 and r5 < 0 and r10 < 0:
+    if trend < -10.0 and r5 < 0 and r10 < 0:
         return "RISK_OFF"
 
     return "NEUTRAL"
@@ -236,14 +242,21 @@ def score_momentum(f: Dict[str, Any]) -> float:
     return round(_clamp(score), 2)
 
 
-def score_trend(f: Dict[str, Any]) -> float:
-    trend = _num(f.get("trend_strength_20"), 0.0) or 0.0
+def score_trend(f: Dict[str, Any], trend_pct_20d: Optional[float] = None) -> float:
+    # Same fix as detect_regime() above — prefer the corrected value, fall
+    # back to price_vs_sma20_pct rather than the buggy raw slope.
+    trend = trend_pct_20d
+    if trend is None:
+        trend = _num(f.get("price_vs_sma20_pct"), 0.0) or 0.0
     vs20 = _num(f.get("price_vs_sma20_pct"), 0.0) or 0.0
     vs50 = _num(f.get("sma20_sma50_pct"), 0.0) or 0.0
     sma5_20 = _num(f.get("sma5_sma20_pct"), 0.0) or 0.0
 
     score = 50.0
-    score += _clamp(trend * 28, -30, 35)
+    # 2.0 is data-grounded, not the old 28: derived to preserve score_trend's
+    # original contribution spread (std ~19.9) on the corrected %-return scale
+    # instead of the raw $/day slope (see bullbrain_gate_ladder_audit memory).
+    score += _clamp(trend * 2.0, -30, 35)
     score += _clamp(vs20 * 2.2, -18, 24)
     score += _clamp(vs50 * 2.0, -15, 20)
     score += _clamp(sma5_20 * 1.5, -10, 12)
@@ -658,7 +671,7 @@ def score_stock(
 
     factor_scores = {
         "momentum": score_momentum(features),
-        "trend": score_trend(features),
+        "trend": score_trend(features, trend_pct_20d=stock.get("trend_pct_20d")),
         "pattern": score_pattern(stock),
         "bullbrain": score_bullbrain(stock),
         "volume": score_volume(features),
