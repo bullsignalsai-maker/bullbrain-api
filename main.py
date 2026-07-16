@@ -949,32 +949,6 @@ def bullbrain_infer(features_vector: np.ndarray):
     }
 
 
-def _class_probs_from_prob_up(prob_up: float) -> dict:
-    p = float(prob_up)
-    if p < 0:
-        p = 0.0
-    if p > 1:
-        p = 1.0
-
-    if p >= 0.6:
-        buy = p
-        hold = 1.0 - p
-        sell = 0.0
-    elif p <= 0.4:
-        sell = 1.0 - p
-        hold = p
-        buy = 0.0
-    else:
-        center_offset = p - 0.5
-        hold = 0.6
-        buy = max(0.0, 0.2 + center_offset * 2.0)
-        sell = max(0.0, 0.2 - center_offset * 2.0)
-    total = buy + hold + sell
-    if total <= 0:
-        return {"SELL": 0.33, "HOLD": 0.34, "BUY": 0.33}
-    return {"SELL": sell / total, "HOLD": hold / total, "BUY": buy / total}
-
-
 # --------------------------------------------------------------------
 # QUOTES (FINNHUB + YAHOO FALLBACK)
 # --------------------------------------------------------------------
@@ -1130,138 +1104,6 @@ def run_bullbrain_from_inputs(
             if pattern_result else None
         ),
     }
-
-# --------------------------------------------------------------------
-# CORE PIPELINE FOR ONE SYMBOL (FINAL – STEP-16 AUTHORITY)
-# --------------------------------------------------------------------
-def _run_bullbrain_for_symbol(symbol: str):
-    symbol = symbol.upper()
-
-    if bullbrain_model is None:
-        return None, {"error": "BullBrain model not loaded yet."}
-
-    candles = get_candles(symbol, min_points=120)
-    if not candles:
-        return None, {"error": f"Could not fetch candles for {symbol}"}
-
-    # -------------------------------------------------
-    # 1️⃣ Feature computation + model inference
-    # -------------------------------------------------
-    features_vec, feature_dict, last_close = compute_bullbrain_features(candles)
-    inference = bullbrain_infer(features_vec)
-
-    model_signal = inference.get("signal")
-    bull_conf_raw = float(inference.get("confidence") or 0.0)
-
-    prob_up = inference.get("probability_up")
-    if prob_up is None:
-        prob_up = float(inference.get("raw_output", 0.5))
-    prob_down = 1.0 - float(prob_up)
-    class_probs = _class_probs_from_prob_up(prob_up)
-
-    # -------------------------------------------------
-    # 2️⃣ Pattern scan (single authoritative source)
-    # -------------------------------------------------
-    current_pattern = None
-    pattern_history = None
-    patt_name = None
-    patt_bias = "neutral"
-
-    try:
-        pattern_scan = scan_smart_pattern_history(symbol, candles)
-        current_pattern = pattern_scan.get("currentPattern")
-        pattern_history = pattern_scan.get("historyForCurrent")
-
-        if isinstance(current_pattern, dict):
-            patt_name = current_pattern.get("pattern")
-
-        patt_bias = pattern_bias(patt_name)
-
-    except Exception as e:
-        print("pattern scan error:", e)
-
-    # -------------------------------------------------
-    # 3️⃣ STEP-16 FINAL DECISION (SINGLE AUTHORITY)
-    # -------------------------------------------------
-    decision = final_decision(
-        model_signal=model_signal,
-        features=feature_dict,
-        pattern_name=patt_name,
-        pattern_history=pattern_history,
-        total_days=len(candles.get("close", [])),
-    )
-
-    final_signal = decision["finalSignal"]
-    decision_reasons = decision["decisionReasons"]
-    quality = decision["quality"]
-
-    # -------------------------------------------------
-    # 4️⃣ Confidence (DESCRIPTIVE ONLY – no gating)
-    # -------------------------------------------------
-    regime_ok = quality.get("regime") is not None
-
-    bull_conf = recalibrate_confidence(
-        bull_conf_raw,
-        pattern_history,
-        regime_ok,
-    )
-
-    # Freshness + decay (post-decision hygiene)
-    as_of = datetime.datetime.utcnow().isoformat()
-    SIGNAL_MAX_AGE_HOURS = 24
-
-    is_fresh = signal_is_fresh(as_of, SIGNAL_MAX_AGE_HOURS)
-    if not is_fresh:
-        final_signal = "HOLD"
-
-    bull_conf = apply_confidence_decay(
-        bull_conf,
-        as_of,
-        SIGNAL_MAX_AGE_HOURS,
-    )
-
-    signal_strength = derive_signal_strength(final_signal, bull_conf)
-
-    # -------------------------------------------------
-    # 5️⃣ Final payload
-    # -------------------------------------------------
-    core = {
-        "symbol": symbol,
-        "asOf": as_of,
-        "source": candles.get("source", "polygon"),
-        "price": last_close,
-
-        "features": feature_dict,
-
-        "bullbrain": {
-            "version": BULLBRAIN_VERSION,
-            "signal": final_signal,
-            "strength": signal_strength,
-            "confidence": bull_conf,
-            "probabilities": class_probs,
-            "raw": {
-                "prob_up": float(prob_up),
-                "prob_down": float(prob_down),
-            },
-        },
-
-        "decision": {
-            "finalSignal": final_signal,
-            "reasons": decision_reasons,
-            "quality": quality,
-        },
-
-        "pattern": current_pattern,
-        "patternBias": patt_bias,
-        "patternHistory": pattern_history,
-
-        "signalFresh": is_fresh,
-        "signalExpiryHours": SIGNAL_MAX_AGE_HOURS,
-
-        "model": inference,
-    }
-
-    return core, None
 
 # -----------------------------------------------------------
 # STEP 1: Pattern Bias Normalization
@@ -1959,130 +1801,6 @@ PATTERN_REGIME_COMPATIBILITY = {
 }
 
 # -----------------------------------------------------------
-# STEP 6: Confidence Recalibration
-# -----------------------------------------------------------
-
-def recalibrate_confidence(
-    model_conf: float,
-    pattern_history: dict | None,
-    regime_ok: bool,
-) -> float:
-    """
-    Adjust model confidence using:
-    - Pattern historical win rate
-    - Forward returns strength
-    - Market regime compatibility
-    """
-
-    conf = float(model_conf or 0.0)
-
-    if not pattern_history:
-        return round(conf, 2)
-
-    days5 = pattern_history.get("forwardReturns", {}).get("days5")
-    if not days5:
-        return round(conf, 2)
-
-    win_rate = days5.get("winRate")
-    avg_ret = days5.get("avg")
-
-    # --- Pattern strength adjustments ---
-    if win_rate is not None:
-        if win_rate >= 0.75:
-            conf += 8
-        elif win_rate >= 0.70:
-            conf += 5
-        elif win_rate < 0.60:
-            conf -= 10
-
-    if avg_ret is not None:
-        if avg_ret >= 2.0:
-            conf += 5
-        elif avg_ret <= 0:
-            conf -= 8
-
-    # --- Regime penalty ---
-    if not regime_ok:
-        conf -= 15
-
-    # Clamp
-    conf = max(0.0, min(100.0, conf))
-    return round(conf, 2)
-
-# -----------------------------------------------------------
-# STEP 7: Signal Strength Tiering
-# -----------------------------------------------------------
-
-def derive_signal_strength(signal: str, confidence: float) -> str:
-    """
-    Convert signal + confidence into strength tier.
-    """
-
-    if signal == "HOLD":
-        return "HOLD"
-
-    if signal == "BUY":
-        if confidence >= 80:
-            return "STRONG_BUY"
-        if confidence >= 65:
-            return "BUY"
-        return "WEAK_BUY"
-
-    if signal == "SELL":
-        if confidence >= 80:
-            return "STRONG_SELL"
-        if confidence >= 65:
-            return "SELL"
-        return "WEAK_SELL"
-
-    return "HOLD"
-
-# -----------------------------------------------------------
-# STEP 8: Signal Expiry & Freshness Control
-# -----------------------------------------------------------
-
-def signal_is_fresh(as_of_iso: str, max_age_hours: int = 24) -> bool:
-    """
-    Check whether a signal is still fresh based on its timestamp.
-    """
-    try:
-        ts = datetime.datetime.fromisoformat(as_of_iso)
-        age = datetime.datetime.utcnow() - ts
-        return age.total_seconds() <= max_age_hours * 3600
-    except Exception:
-        return False
-# -----------------------------------------------------------
-# STEP 9: Confidence Time Decay
-# -----------------------------------------------------------
-
-def apply_confidence_decay(
-    confidence: float,
-    as_of_iso: str,
-    max_age_hours: int,
-    min_conf_floor: float = 40.0,
-) -> float:
-    """
-    Linearly decay confidence over time until expiry.
-    """
-
-    try:
-        ts = datetime.datetime.fromisoformat(as_of_iso)
-        age_hours = (datetime.datetime.utcnow() - ts).total_seconds() / 3600.0
-    except Exception:
-        return round(confidence, 2)
-
-    if age_hours <= 0:
-        return round(confidence, 2)
-
-    if age_hours >= max_age_hours:
-        return round(min_conf_floor, 2)
-
-    decay_ratio = age_hours / max_age_hours
-    decayed = confidence * (1 - decay_ratio)
-
-    return round(max(decayed, min_conf_floor), 2)
-
-# -----------------------------------------------------------
 # STEP 10: Probability Conflict Resolver
 # -----------------------------------------------------------
 
@@ -2514,18 +2232,6 @@ def root():
     }
 
 
-# --------------------------------------------------------------------
-# MAIN PREDICTION ENDPOINTS
-# --------------------------------------------------------------------
-@app.get("/predict/{symbol}")
-def predict_symbol(symbol: str):
-    core, err = _run_bullbrain_for_symbol(symbol)
-    if err is not None:
-        return {"symbol": symbol.upper(), **err}
-    return core
-
-
-
 @app.get("/candles/{symbol}")
 def candles_endpoint(symbol: str, limit: int = 252):
     """
@@ -2601,19 +2307,6 @@ def candles_endpoint(symbol: str, limit: int = 252):
             "error": str(e),
         }
 
-
-@app.get("/technical/{symbol}")
-def get_technical(symbol: str):
-    symbol = symbol.upper()
-    try:
-        candles = get_candles(symbol, min_points=120)
-        if not candles:
-            return {"symbol": symbol, "error": f"Could not fetch candles for {symbol}"}
-        _, feat, last_close = compute_bullbrain_features(candles)
-        return build_technical_snapshot(symbol, feat, last_close)
-    except Exception as e:
-        print("get_technical error:", e)
-        return {"symbol": symbol, "error": str(e)}
 
 # --------------------------------------------------------------------
 # SMART PATTERN HISTORY ENDPOINT
@@ -3477,26 +3170,6 @@ def market_overview():
     except Exception as e:
         backend.log(f"[market-overview] Firestore read error: {e}")
         return {}
-
-
-@app.get("/debug-bullbrain/{symbol}")
-def debug_bullbrain(symbol: str):
-    try:
-        sym = symbol.upper()
-        candles = get_candles(sym, min_points=120)
-
-        features_vec, feat_dict, last_close = compute_bullbrain_features(candles)
-        infer = bullbrain_infer(features_vec)
-
-        return {
-            "symbol": sym,
-            "features_shape": len(features_vec),
-            "infer": infer,
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
 
 
 # ---------------------------------------------------------
