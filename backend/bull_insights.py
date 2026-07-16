@@ -490,6 +490,7 @@ def generate_bull_insights(
     pattern: Optional[Dict[str, Any]] = None,
     pattern_history: Optional[Dict[str, Any]] = None,
     seed_key: Optional[str] = None,
+    vol_z_corrected: Optional[float] = None,
 ) -> Dict[str, Any]:
 
     # keep params for compatibility
@@ -510,7 +511,9 @@ def generate_bull_insights(
     rsi14 = _num(features.get("rsi14"))
     macd = _num(features.get("macd"))
     macd_signal = _num(features.get("macd_signal"))
-    vol_z = _num(features.get("volume_zscore_20"))
+    # volume_zscore_20 from features is inflated ~6.66x (see
+    # bullbrain_gate_ladder_audit memory). Prefer the corrected value.
+    vol_z = _num(vol_z_corrected) if vol_z_corrected is not None else _num(features.get("volume_zscore_20"))
     intraday_range_pct = _num(features.get("intraday_range_pct"))
 
     # --- Pattern context

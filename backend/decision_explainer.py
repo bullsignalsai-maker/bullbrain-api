@@ -28,9 +28,14 @@ def build_gate_metrics(stock: Dict[str, Any], gate: str) -> List[Dict[str, Any]]
     days5 = (history.get("forwardReturns") or {}).get("days5") or {}
 
     if gate == "Liquidity":
+        # volume_zscore_20 from features_meta is inflated ~6.66x (see
+        # bullbrain_gate_ladder_audit memory). Prefer the corrected value.
+        vol_z_corrected = stock.get("volume_zscore_20_corrected")
+        if vol_z_corrected is None:
+            vol_z_corrected = features.get("volume_zscore_20")
         return [
             _metric("Volume vs 20D Avg", _num(features.get("volume_vs_ma20_pct")), "%"),
-            _metric("Volume Z-Score", _num(features.get("volume_zscore_20"))),
+            _metric("Volume Z-Score", _num(vol_z_corrected)),
             _metric("Liquidity Quality", quality.get("liquidity") or indicators.get("liquidity_quality")),
         ]
 

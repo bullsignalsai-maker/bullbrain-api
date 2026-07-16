@@ -665,7 +665,12 @@ def compute_indicator_states(payload: Dict[str, Any]) -> Dict[str, Any]:
     bias_strength = _to_float(decision_bias.get("strength"))
 
     # liquidity + regime derived (deterministic)
-    vol_z = values.get("volume_zscore_20")
+    # volume_zscore_20 from features_meta is inflated ~6.66x (see
+    # bullbrain_gate_ladder_audit memory). Prefer the corrected value threaded
+    # from market_cron.py; fall back to the buggy one for payloads without it.
+    vol_z = _to_float(_get(payload, "volume_zscore_20_corrected"))
+    if vol_z is None:
+        vol_z = values.get("volume_zscore_20")
     vol_vs_ma20 = values.get("volume_vs_ma20_pct")
     intraday = values.get("intraday_range_pct")
     vol20 = values.get("volatility_20d")
