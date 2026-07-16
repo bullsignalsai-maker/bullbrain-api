@@ -3509,7 +3509,7 @@ def init_firebase_admin():
     """
     if firebase_admin._apps:
         # Already initialized
-        return firebase_admin._apps[0]
+        return firebase_admin.get_app()
 
     firebase_json = os.getenv("FIREBASE_ADMIN_JSON")
     if not firebase_json:
