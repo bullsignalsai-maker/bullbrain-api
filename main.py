@@ -1392,7 +1392,18 @@ def signal_fragility(features: dict) -> int:
     fragility = 0
 
     intraday_range = features.get("intraday_range_pct")
-    body_pct = features.get("body_pct")
+    # body_pct from compute_bullbrain_features() is close/open-relative (a known
+    # scale-mismatch bug — see bullbrain_gate_ladder_audit memory, finding #1).
+    # Recompute the full-range-normalized version locally for this gate only;
+    # the model's own DMatrix feature is deliberately left untouched.
+    high = features.get("high")
+    low = features.get("low")
+    open_ = features.get("open")
+    close = features.get("close")
+    body_pct = None
+    if None not in (high, low, open_, close):
+        full_range = high - low
+        body_pct = ((close - open_) / full_range * 100.0) if full_range > 0 else 0.0
     vol_z = features.get("volume_zscore_20")
     vol20 = features.get("volatility_20d")
 
