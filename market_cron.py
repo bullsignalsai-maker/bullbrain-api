@@ -1557,7 +1557,88 @@ def persist_homescreen_core_signals(results: List[Dict[str, Any]]):
 
     top5 = [item["symbol"] for item in ranked[:5]]
     log(f"🏠 homescreen updated | count={len(ranked[:10])} | top5={top5}")
-    
+
+
+# =========================================================
+# MOMENTUM OVERRIDE CANDIDATES — cached for /verified-alpha's tier-2
+# backfill (main.py's get_verified_alpha()). Computed here, not at
+# request time: scans the already-computed `results` batch (zero new
+# Firestore reads) rather than the API route scanning the whole
+# stocks/symbols collection live on every Home screen load.
+# =========================================================
+
+DOC_MOMENTUM_OVERRIDE_CANDIDATES = "momentum_override_candidates"
+MOMENTUM_OVERRIDE_CACHE_LIMIT = 15  # headroom above tier-2's actual display need
+
+
+def persist_momentum_override_candidates(db, stock_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    candidates = []
+
+    for doc in stock_docs:
+        if not isinstance(doc, dict):
+            continue
+
+        symbol = str(doc.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+
+        decision = doc.get("decision") or {}
+        if decision.get("decisionReasons") != ["MOMENTUM_OVERRIDE"]:
+            continue
+
+        quote = doc.get("quote") or {}
+        change_pct = quote.get("changePct")
+        if not isinstance(change_pct, (int, float)):
+            continue
+
+        candidates.append((abs(change_pct), symbol, doc))
+
+    # Ranked by today's price-move magnitude, descending -- the tier's own
+    # "momentum" identity, deliberately not by confidence/score (that
+    # would blur the validated-vs-momentum distinction the two tiers are
+    # meant to keep separate).
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    items = []
+    for _, symbol, doc in candidates[:MOMENTUM_OVERRIDE_CACHE_LIMIT]:
+        quote = doc.get("quote") or {}
+        decision = doc.get("decision") or {}
+        quality = decision.get("quality") or {}
+        bull = doc.get("bullbrain") or {}
+        display_intelligence = doc.get("displayIntelligence") or {}
+        profile = doc.get("profile") or {}
+        pattern = doc.get("pattern") or {}
+
+        items.append({
+            "symbol": symbol,
+            "companyName": doc.get("company_name"),
+            "logoUrl": profile.get("logoUrl"),
+            "price": quote.get("price"),
+            "change": quote.get("change"),
+            "changePct": quote.get("changePct"),
+            "signal": display_intelligence.get("signal") or decision.get("finalSignal"),
+            "confidence": decision.get("confidence") or bull.get("confidence"),
+            "probUp": (bull.get("raw") or {}).get("prob_up"),
+            "pattern": pattern.get("pattern") or pattern.get("patternLabel"),
+            "overrideType": quality.get("overrideType"),
+            "originalModelSignal": quality.get("originalModelSignal"),
+            "quote_updated_at": quote.get("updated_at"),
+            "computed_at": doc.get("computed_at"),
+        })
+
+    db.collection(COL_ROOT).document(DOC_MOMENTUM_OVERRIDE_CANDIDATES).set(
+        {
+            "items": items,
+            "count": len(items),
+            "updated_at": utc_now_iso(),
+            "schema_version": "momentum_override_candidates_v1",
+        },
+        merge=True,
+    )
+
+    return {"count": len(items)}
+
+
 # =========================================================
 # ✅ RESTORE OLD BEHAVIOR: Homescreen Market Overview + Baseline Carousel Cards
 # =========================================================
@@ -1847,6 +1928,12 @@ def main():
 
     except Exception as e:
         log_exc("alpha_watch persistence failed", e)
+
+    try:
+        mo_stats = persist_momentum_override_candidates(get_db(), results)
+        log(f"⚡ momentum override candidates cached | count={mo_stats.get('count', 0)}")
+    except Exception as e:
+        log_exc("momentum override candidates persistence failed", e)
 
     # Pick-tracking outcome checker — once/day only. Gated here to
     # final_close_intelligence (the one mode that runs ~once per trading
