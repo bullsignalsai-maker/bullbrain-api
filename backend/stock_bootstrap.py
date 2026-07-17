@@ -141,7 +141,11 @@ def bootstrap_stock(symbol: str) -> Dict[str, Any]:
                     "changePct": quote.get("changePct"),
                 },
                 "technical": {},
-                "bullbrain": {"signal": signal, "confidence": confidence},
+                "bullbrain": {
+                    "signal": signal,
+                    "confidence": confidence,
+                    "raw": {"prob_up": prob_up, "prob_down": prob_down},
+                },
                 "decision": {},
                 "marketAwareness": {},
             },
