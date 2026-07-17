@@ -15,6 +15,46 @@ def _dedupe_lines(lines: List[str]) -> List[str]:
     return out
 
 
+_TONE_BULLISH = "bullish"
+_TONE_BEARISH = "bearish"
+
+# States that carry a clear directional tone, per indicator. States not
+# listed (e.g. MOMENTUM_MIXED, PROB_BALANCED, SIDEWAYS) are treated as
+# neutral and never conflict with anything.
+_INDICATOR_TONE_STATES: Dict[str, Dict[str, str]] = {
+    "momentum_composite": {
+        "MOMENTUM_BULLISH": _TONE_BULLISH,
+        "MOMENTUM_BULL_STRETCHED": _TONE_BULLISH,
+        "MOMENTUM_BEARISH": _TONE_BEARISH,
+        "MOMENTUM_BEAR_STRETCHED": _TONE_BEARISH,
+    },
+    "probability_composite": {
+        "PROB_STRONGLY_UP": _TONE_BULLISH,
+        "PROB_WEAKLY_UP": _TONE_BULLISH,
+        "PROB_STRONGLY_DOWN": _TONE_BEARISH,
+        "PROB_WEAKLY_DOWN": _TONE_BEARISH,
+    },
+    "trend_strength_20": {
+        "STRONG_UPTREND": _TONE_BULLISH,
+        "UPTREND": _TONE_BULLISH,
+        "MILD_UP": _TONE_BULLISH,
+        "STRONG_DOWNTREND": _TONE_BEARISH,
+        "DOWNTREND": _TONE_BEARISH,
+        "MILD_DOWN": _TONE_BEARISH,
+    },
+}
+
+# When selected sentences disagree in tone, this order picks which one
+# anchors the narrative: the model's own forward probability outranks the
+# lagging technical composites, so a contradicting momentum/trend sentence
+# gets dropped rather than shown back-to-back with the probability call.
+_TONE_AUTHORITY = ["probability_composite", "momentum_composite", "trend_strength_20"]
+
+
+def _indicator_tone(indicator: str, state: str) -> Optional[str]:
+    return _INDICATOR_TONE_STATES.get(indicator, {}).get(state)
+
+
 def _select_template(
     indicator: str,
     state: str,
@@ -96,14 +136,30 @@ def build_summary_narrative(
 ) -> str:
     priority = ["momentum_composite", "probability_composite", "trend_strength_20"]
 
-    lines: List[str] = []
+    candidates: List[tuple] = []
     for indicator in priority:
         state = indicator_states.get(indicator)
         if not state or state == "UNKNOWN":
             continue
         text = narrate_indicator(indicator, state, seed=seed)
         if text:
-            lines.append(text)
+            candidates.append((indicator, text, _indicator_tone(indicator, state)))
+
+    # Anchor on the highest-authority directional tone among the selected
+    # sentences, then drop any sentence whose tone conflicts with it — this
+    # is what prevents e.g. a bullish momentum sentence and a bearish
+    # probability sentence from being shown back-to-back as if they agreed.
+    anchor_tone = None
+    for indicator in _TONE_AUTHORITY:
+        tone = next((t for ind, _, t in candidates if ind == indicator), None)
+        if tone:
+            anchor_tone = tone
+            break
+
+    lines = [
+        text for _, text, tone in candidates
+        if anchor_tone is None or tone is None or tone == anchor_tone
+    ]
 
     lines = _dedupe_lines(lines)
     return " ".join(lines[:max_sentences])
