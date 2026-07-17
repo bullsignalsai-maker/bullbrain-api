@@ -4121,15 +4121,21 @@ def get_market_movers(mode: str = "preview"):
 @app.get("/verified-alpha")
 def get_verified_alpha():
     """
-    AI-curated opportunity endpoint.
+    AI-curated opportunity endpoint, two honestly-labeled tiers:
+    - tier="validated": alpha_watch's own quality+conviction screen
+      (passes_quality_filter() + score>=55) -- shown first.
+    - tier="momentum": MOMENTUM_OVERRIDE candidates (cached by
+      market_cron.py's persist_momentum_override_candidates(), not
+      computed here) backfilling remaining slots up to MAX_ITEMS, any
+      symbol already used in tier "validated" excluded.
 
-    Powered only by:
-    - alpha_watch internal AI setups
+    riskLevel intentionally omitted, not fabricated -- confirmed dead/
+    unrendered this week's Momentum risk-label fix.
 
-    No Grok pipeline.
-    No verified_alpha_opportunities dependency.
+    No Grok pipeline. No verified_alpha_opportunities dependency.
     No duplicated market movers.
     """
+    MAX_ITEMS = 10
 
     try:
         alpha_snap = (
@@ -4142,10 +4148,19 @@ def get_verified_alpha():
         ai_items = alpha_data.get("items", []) or []
 
         alpha_opportunities = []
+        used_symbols = set()
 
-        for item in ai_items[:10]:
+        for item in ai_items:
+            if len(alpha_opportunities) >= MAX_ITEMS:
+                break
+
+            symbol = item.get("symbol")
+            if not symbol:
+                continue
+
+            used_symbols.add(str(symbol).upper())
             alpha_opportunities.append({
-                "symbol": item.get("symbol"),
+                "symbol": symbol,
                 "companyName": item.get("companyName"),
                 "logoUrl": item.get("logoUrl"),
                 "price": item.get("price"),
@@ -4161,7 +4176,6 @@ def get_verified_alpha():
                 "pattern": item.get("pattern"),
                 "reason": item.get("reason"),
                 "whyNow": item.get("whyNow") or [],
-                "riskLevel": item.get("riskLevel"),
                 "riskFlags": item.get("riskFlags") or [],
                 "theme": item.get("theme"),
                 "marketRegime": item.get("marketRegime"),
@@ -4169,7 +4183,59 @@ def get_verified_alpha():
                 "quote_updated_at": item.get("quote_updated_at"),
                 "computed_at": item.get("computed_at"),
                 "source": "alpha_watch",
+                "tier": "validated",
             })
+
+        momentum_items = []
+        remaining = MAX_ITEMS - len(alpha_opportunities)
+
+        if remaining > 0:
+            mo_snap = (
+                db.collection("bullsignals_ai")
+                .document("momentum_override_candidates")
+                .get()
+            )
+            mo_data = mo_snap.to_dict() if mo_snap.exists else {}
+
+            for item in (mo_data.get("items") or []):
+                if len(momentum_items) >= remaining:
+                    break
+
+                symbol = item.get("symbol")
+                if not symbol or str(symbol).upper() in used_symbols:
+                    continue
+
+                momentum_items.append({
+                    "symbol": symbol,
+                    "companyName": item.get("companyName"),
+                    "logoUrl": item.get("logoUrl"),
+                    "price": item.get("price"),
+                    "change": item.get("change"),
+                    "changePct": item.get("changePct"),
+                    "signal": item.get("signal"),
+                    "confidence": item.get("confidence"),
+                    "probUp": item.get("probUp"),
+                    "score": None,
+                    "opportunityScore": None,
+                    "marketMomentumBonus": None,
+                    "setupLabel": item.get("overrideType"),
+                    "pattern": item.get("pattern"),
+                    "reason": (
+                        f"Momentum override: strong price/volume signal triggered a "
+                        f"{item.get('originalModelSignal') or 'directional'} call."
+                    ),
+                    "whyNow": [],
+                    "riskFlags": [],
+                    "theme": None,
+                    "marketRegime": None,
+                    "factorScores": {},
+                    "quote_updated_at": item.get("quote_updated_at"),
+                    "computed_at": item.get("computed_at"),
+                    "source": "momentum_override",
+                    "tier": "momentum",
+                })
+
+        all_opportunities = alpha_opportunities + momentum_items
 
         return {
             "status": "ok",
@@ -4178,10 +4244,12 @@ def get_verified_alpha():
             "market_regime": alpha_data.get("market_regime"),
             "title": "AI Opportunity Watch",
             "counts": {
-                "alpha_opportunities": len(alpha_opportunities),
+                "alpha_opportunities": len(all_opportunities),
+                "validated": len(alpha_opportunities),
+                "momentum": len(momentum_items),
             },
-            "alpha_opportunities": alpha_opportunities,
-            "schema_version": "verified_alpha_internal_v3",
+            "alpha_opportunities": all_opportunities,
+            "schema_version": "verified_alpha_internal_v4",
             "fallback_used": False,
         }
 
@@ -4194,10 +4262,12 @@ def get_verified_alpha():
             "error": str(e),
             "counts": {
                 "alpha_opportunities": 0,
+                "validated": 0,
+                "momentum": 0,
             },
             "alpha_opportunities": [],
-            "schema_version": "verified_alpha_internal_v3",
-        }        
+            "schema_version": "verified_alpha_internal_v4",
+        }
 # -----------------------------
 # 5) Market News
 # -----------------------------
