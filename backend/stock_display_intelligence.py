@@ -102,6 +102,94 @@ def _reason_direction_conflicts(reason: str, change_pct: float | None) -> bool:
     return False
 
 
+# Prototype (2026-07-17): additive modelView/marketContext fields, see
+# bullbrain_area_c_fix_scoping memory. Neither field is read by any existing
+# consumer yet — both are purely new sibling keys on the returned dict.
+
+# Same ±5pt threshold as ui_stock_builder.py's _probability_bias(), which
+# these fields are meant to generalize onto the canonical persisted doc
+# instead of being computed ad hoc for Stock Detail only. Duplicated here
+# rather than imported to avoid a cross-module dependency for one constant;
+# if this prototype ships, ui_stock_builder.py should import from here
+# instead of keeping its own copy (same "same logic, two places" risk class
+# documented throughout bullbrain_gate_ladder_audit).
+_MODEL_VIEW_NEUTRAL_BAND = 0.05
+
+
+def _model_view(up, down) -> Dict[str, Any]:
+    """
+    The model's raw probability-implied bias, bypassing the 12-gate decision
+    ladder entirely — unlike `signal` (gated, HOLD for the large majority of
+    symbols per bullbrain_gate_ladder_audit, contributing 0 to the blended
+    score), this reflects what the model actually predicts regardless of
+    whether that prediction is currently actionable.
+    """
+    if not isinstance(up, float) or not isinstance(down, float):
+        return {
+            "bias": "Unknown",
+            "up": None,
+            "down": None,
+            "strengthPct": None,
+            "label": "Model view unavailable",
+        }
+
+    diff = up - down
+    strength_pct = round(abs(diff) * 100, 1)
+
+    if abs(diff) < _MODEL_VIEW_NEUTRAL_BAND:
+        bias, label = "Neutral", "Model view is balanced"
+    elif diff > 0:
+        bias, label = "Bullish", "Model view leans bullish"
+    else:
+        bias, label = "Bearish", "Model view leans bearish"
+
+    return {
+        "bias": bias,
+        "up": round(up, 4),
+        "down": round(down, 4),
+        "strengthPct": strength_pct,
+        "label": label,
+    }
+
+
+# Derived from the real factor-sum distribution across 584 cached symbols
+# (2026-07-17): p10=39, p25=51, p50=61, p75=69, p90=74. 58/42 mirrors
+# _score_label()'s existing MOMENTUM_WATCH threshold (58) for continuity
+# with the current vocabulary, symmetric around the neutral midpoint (50).
+# Provisional — derived from one snapshot, same caveat as every other
+# empirically-derived threshold in this project until checked on more dates.
+_MARKET_CONTEXT_POSITIVE = 58
+_MARKET_CONTEXT_NEGATIVE = 42
+
+
+def _market_context(factors: Dict[str, float], change_pct: float) -> Dict[str, Any]:
+    """
+    Today's price/momentum context only — the same factors that feed the
+    blended `score`, minus baseSignal and confidence (the two model-derived
+    terms). This is what was driving the blended label's contradictions in
+    bullbrain_output_quality_area_c: quantified as agreeing with modelView
+    only ~45% of the time when both are directional.
+    """
+    market_score = 50 + sum(
+        v for k, v in factors.items() if k not in ("baseSignal", "confidence")
+    )
+    market_score = int(max(0, min(100, round(market_score))))
+
+    if market_score >= _MARKET_CONTEXT_POSITIVE:
+        bias, label = "Positive", "Today's context is constructive"
+    elif market_score <= _MARKET_CONTEXT_NEGATIVE:
+        bias, label = "Negative", "Today's context is deteriorating"
+    else:
+        bias, label = "Neutral", "Today's context is mixed"
+
+    return {
+        "bias": bias,
+        "score": market_score,
+        "changePct": change_pct,
+        "label": label,
+    }
+
+
 def _score_label(score: int, change_pct: float, risk_level: str):
     risk = str(risk_level or "").lower()
 
@@ -260,6 +348,10 @@ def build_display_intelligence(
 
     signal, label, tone = _score_label(score, change_pct, risk_level)
 
+    raw_probs = bull.get("raw") or {}
+    model_view = _model_view(_num(raw_probs.get("prob_up")), _num(raw_probs.get("prob_down")))
+    market_context = _market_context(factors, change_pct)
+
     why_now: List[str] = []
 
     if reason:
@@ -328,4 +420,8 @@ def build_display_intelligence(
             "technical": bool(technical),
             "marketTheme": bool(dominant_theme or market_sentiment),
         },
+        # Prototype additive fields (2026-07-17) — see modelView/marketContext
+        # section above. Not consumed anywhere yet.
+        "modelView": model_view,
+        "marketContext": market_context,
     }
