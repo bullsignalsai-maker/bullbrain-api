@@ -1422,6 +1422,42 @@ def persist_internal_market_movers():
         f"total={len(final_movers)}"
     )
 
+
+def load_logo_url_map(db) -> Dict[str, str]:
+    """
+    One bulk read of profile.logoUrl across all stock docs -- same pattern
+    persist_internal_market_movers() already uses successfully above.
+
+    compute_symbol() never attaches a `profile` field to the doc it
+    returns (confirmed: zero references anywhere in its body), so
+    persist_homescreen_core_signals() and persist_alpha_watch() -- both of
+    which consume `results`, compute_symbol()'s in-memory output, directly
+    -- always see profile.get("logoUrl") as None, even though their own
+    code is correct and profile.logoUrl is genuinely populated in
+    Firestore (written separately by scripts/sync_ticker_logos.py). Built
+    once per cron cycle and merged into `results` before those two
+    functions run, rather than duplicating this same collection scan
+    inside each of them independently.
+    """
+    logo_map: Dict[str, str] = {}
+
+    snaps = (
+        db.collection(COL_ROOT)
+          .document(COL_STOCKS)
+          .collection("symbols")
+          .stream()
+    )
+
+    for doc in snaps:
+        data = doc.to_dict() or {}
+        profile = data.get("profile") or {}
+        logo_url = profile.get("logoUrl")
+        if logo_url:
+            logo_map[str(doc.id).upper()] = logo_url
+
+    return logo_map
+
+
 def persist_homescreen_core_signals(results: List[Dict[str, Any]]):
     """
     Writes stable curated AI-ranked HomeScreen signals.
@@ -1915,6 +1951,28 @@ def main():
         f"ok={success} skip={skipped} fail={failed} | results={len(results)}"
     )
     persist_internal_market_movers()
+
+    # Merge in profile.logoUrl before persist_homescreen_core_signals()/
+    # persist_alpha_watch() read it below -- see load_logo_url_map()
+    # docstring for why this is needed. Neither function's own
+    # profile.get("logoUrl") code changes; it just has something real to
+    # read once this runs.
+    try:
+        logo_url_map = load_logo_url_map(get_db())
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            logo_url = logo_url_map.get(str(r.get("symbol") or "").upper())
+            if logo_url:
+                profile = r.get("profile")
+                if not isinstance(profile, dict):
+                    profile = {}
+                    r["profile"] = profile
+                profile["logoUrl"] = logo_url
+        log(f"🖼️ logo URLs merged | matched={sum(1 for r in results if isinstance(r, dict) and (r.get('profile') or {}).get('logoUrl'))}/{len(results)}")
+    except Exception as e:
+        log_exc("logo URL merge failed", e)
+
     persist_homescreen_core_signals(results)
 
     try:
