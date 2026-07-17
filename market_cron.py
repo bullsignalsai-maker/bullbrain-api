@@ -1848,6 +1848,28 @@ def main():
     except Exception as e:
         log_exc("alpha_watch persistence failed", e)
 
+    # Pick-tracking outcome checker — once/day only. Gated here to
+    # final_close_intelligence (the one mode that runs ~once per trading
+    # day) so we don't even attempt a DB read on the other ~42 daily
+    # ticks; check_pending_picks() also has its own internal once-per-day
+    # guard as a second layer, in case this window's cron tick ever fires
+    # more than once. Own try/except so a failure here can never affect
+    # anything above.
+    #
+    # Known residual gap, accepted (not fixed here): this gate's holiday
+    # awareness relies on get_cron_mode()'s static US_MARKET_HOLIDAYS list,
+    # which can miss ad-hoc closures (confirmed: it doesn't have
+    # 2025-01-09, a real NYSE/NASDAQ closure). On such a day this could
+    # fire as if it were a normal trading day. See
+    # bullbrain_pick_tracking_checker memory.
+    if mode == "final_close_intelligence":
+        try:
+            from backend.pick_tracking import check_pending_picks
+            checker_stats = check_pending_picks(get_db())
+            log(f"🎯 pick-tracking checker: {checker_stats}")
+        except Exception as e:
+            log_exc("pick-tracking checker failed", e)
+
     # ---------------------------------------------------------
     # MARKET MOMENTUM SCREEN CACHE
     # Builds Firestore-first UI-ready data for Momentum Movers screen

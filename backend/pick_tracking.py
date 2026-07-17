@@ -14,10 +14,20 @@
 import datetime
 from typing import Any, Dict, List, Optional
 
+from backend.market_calendar import load_recent_trading_days, trading_days_elapsed
+from backend.stock_repo import get_stock
+
 COL_ROOT = "bullsignals_ai"
 PICK_TRACKING_COLLECTION = "pick_tracking"
 
 HORIZONS_TRADING_DAYS = [5, 20]
+
+# Calendar-day width of the pick_date range the checker scans each run.
+# Comfortably covers the 20-trading-day (~28 calendar day) max horizon
+# with margin -- see homescreen_replacement_track_scoping memory for the
+# volume math confirming this stays cheap even at 12 months of history,
+# since cost is bounded by this window, not by total collection size.
+CHECKER_WINDOW_DAYS = 35
 
 
 def _now_iso() -> str:
@@ -119,3 +129,140 @@ def record_picks_for_tracking(
         written += 1
 
     return written
+
+
+# =========================================================
+# Outcome checker — read side.
+# =========================================================
+
+def _today_str() -> str:
+    # Matches how pick_date/date_key are written in record_picks_for_tracking
+    # (UTC date) -- checked safe against the actual run windows
+    # persist_alpha_watch() executes in (9:30 AM-4:45 PM ET is always the
+    # same UTC calendar day), so this intentionally isn't switched to ET.
+    return datetime.datetime.utcnow().date().isoformat()
+
+
+def _get_checker_state(db) -> Dict[str, Any]:
+    doc = db.collection(COL_ROOT).document(PICK_TRACKING_COLLECTION).get()
+    return doc.to_dict() if doc.exists else {}
+
+
+def _mark_checker_ran(db, date_key: str, stats: Dict[str, Any]) -> None:
+    db.collection(COL_ROOT).document(PICK_TRACKING_COLLECTION).set(
+        {
+            "last_checker_run_date": date_key,
+            "last_checker_run_at": _now_iso(),
+            "last_checker_stats": stats,
+        },
+        merge=True,
+    )
+
+
+def _lookup_current_price(symbol: str) -> Optional[float]:
+    stock = get_stock(symbol)
+    if not stock:
+        return None
+    price = (stock.get("quote") or {}).get("price")
+    return float(price) if isinstance(price, (int, float)) else None
+
+
+def check_pending_picks(db) -> Dict[str, Any]:
+    """
+    Once-per-day outcome checker: finds picks whose 5d/20d horizon has
+    elapsed and is still "pending", fills in the real return, or marks
+    "unavailable" if current price data can't be found (delisted, dropped
+    from the tracked universe, etc.) -- never leaves a due row silently
+    unresolved.
+
+    Safe to call more than once on the same UTC calendar day -- guarded
+    internally via a state doc, so only the first call each day does work.
+    Bounded to a fixed-size lookback window (CHECKER_WINDOW_DAYS), so cost
+    stays flat regardless of how large the collection grows over time.
+    """
+    today = _today_str()
+    state = _get_checker_state(db)
+    if state.get("last_checker_run_date") == today:
+        return {"skipped": True, "reason": "already_ran_today"}
+
+    # Today is trusted as a trading day by construction: the caller only
+    # invokes this when market_cron's own gating has already confirmed
+    # today is a live trading day. Added explicitly rather than relying on
+    # today's own candle being published yet, which it usually isn't at
+    # checker run time.
+    trading_day_set = load_recent_trading_days()
+    trading_day_set.add(today)
+
+    window_start = (
+        datetime.date.fromisoformat(today) - datetime.timedelta(days=CHECKER_WINDOW_DAYS)
+    ).isoformat()
+
+    collection = (
+        db.collection(COL_ROOT)
+          .document(PICK_TRACKING_COLLECTION)
+          .collection("picks")
+    )
+    query = collection.where("pick_date", ">=", window_start).where("pick_date", "<=", today)
+
+    scanned = 0
+    checked = 0
+    unavailable = 0
+    updated_docs = 0
+
+    for doc in query.stream():
+        scanned += 1
+        data = doc.to_dict()
+        symbol = data.get("symbol")
+        pick_date = data.get("pick_date")
+        pick_price = data.get("pick_price")
+        horizons = data.get("horizons") or {}
+
+        updates: Dict[str, Any] = {}
+        current_price: Optional[float] = None
+        price_lookup_attempted = False
+
+        for horizon_key, horizon in horizons.items():
+            if not isinstance(horizon, dict) or horizon.get("status") != "pending":
+                continue
+
+            trading_days_needed = horizon.get("trading_days")
+            if not isinstance(trading_days_needed, int):
+                continue
+
+            elapsed = trading_days_elapsed(pick_date, today, trading_day_set)
+            if elapsed < trading_days_needed:
+                continue  # not due yet
+
+            if not price_lookup_attempted:
+                current_price = _lookup_current_price(symbol)
+                price_lookup_attempted = True
+
+            prefix = f"horizons.{horizon_key}"
+            if current_price is None:
+                updates[f"{prefix}.status"] = "unavailable"
+                updates[f"{prefix}.checked_at"] = _now_iso()
+                unavailable += 1
+            else:
+                return_pct = (
+                    round((current_price / pick_price - 1) * 100, 2)
+                    if isinstance(pick_price, (int, float)) and pick_price
+                    else None
+                )
+                updates[f"{prefix}.status"] = "checked"
+                updates[f"{prefix}.price"] = current_price
+                updates[f"{prefix}.return_pct"] = return_pct
+                updates[f"{prefix}.checked_at"] = _now_iso()
+                checked += 1
+
+        if updates:
+            doc.reference.update(updates)
+            updated_docs += 1
+
+    stats = {
+        "scanned": scanned,
+        "updated_docs": updated_docs,
+        "checked": checked,
+        "unavailable": unavailable,
+    }
+    _mark_checker_ran(db, today, stats)
+    return stats
