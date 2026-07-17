@@ -9,6 +9,8 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 from firebase_admin import firestore
 
+from backend.pick_tracking import record_picks_for_tracking
+
 try:
     from backend.firestore_utils import utc_now_iso
 except Exception:
@@ -908,5 +910,14 @@ def persist_alpha_watch(db: firestore.Client, stock_docs: List[Dict[str, Any]]) 
         },
         merge=True,
     )
+
+    # NEW — additive only. Reads payload["items"] and stock_docs (both
+    # already computed above, no new fetch). Writes to a brand-new
+    # collection only. Own try/except so a tracking failure can never
+    # affect the two writes above or the returned payload.
+    try:
+        record_picks_for_tracking(db, date_key, payload.get("items", []), stock_docs)
+    except Exception as e:
+        print(f"[pick-tracking] failed: {e}", flush=True)
 
     return payload
