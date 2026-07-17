@@ -4268,6 +4268,166 @@ def get_verified_alpha():
             "alpha_opportunities": [],
             "schema_version": "verified_alpha_internal_v4",
         }
+
+
+@app.get("/alphaclara-tracking")
+def get_alphaclara_tracking():
+    """
+    "Alphaclara is Tracking" -- honest, real-time accountability for past
+    Alpha Watch picks, sourced from bullsignals_ai/pick_tracking/picks.
+
+    Design, confirmed before implementation:
+    - No merging by symbol -- every pick_tracking row within the window is
+      its own card, even if the same symbol recurs. A real recurrence is
+      honest information, not noise.
+    - Two independent queries, same WINDOW_DAYS constant reused for both,
+      unioned: (1) picks whose pick_date falls in the window (still
+      tracking, live price shown), (2) picks whose 5d horizon was checked
+      within the same window (the "loop closes" case -- shows the frozen
+      checked result, not a live price). No separate "extra day" constant,
+      no separate "graduated" section -- everything sorts together by
+      recency, newest first.
+    - Gains and losses both shown identically, no filtering.
+    """
+    WINDOW_DAYS = 3
+
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today = now.date()
+        window_start_date = (today - datetime.timedelta(days=WINDOW_DAYS - 1)).isoformat()
+        window_start_dt = (
+            datetime.datetime.combine(
+                today - datetime.timedelta(days=WINDOW_DAYS - 1),
+                datetime.time.min,
+                tzinfo=datetime.timezone.utc,
+            ).isoformat().replace("+00:00", "Z")
+        )
+
+        picks_col = (
+            db.collection("bullsignals_ai")
+            .document("pick_tracking")
+            .collection("picks")
+        )
+
+        # Firestore's raw dotted-string field-path parser chokes on a
+        # segment starting with a digit ("5d") -- needs the escaped API
+        # representation (backtick-quoted), not a plain "horizons.5d.
+        # checked_at" string. Confirmed by reproducing the parser error
+        # directly before fixing.
+        from google.cloud.firestore_v1.field_path import FieldPath
+        checked_at_path = FieldPath("horizons", "5d", "checked_at").to_api_repr()
+
+        recent_docs = list(picks_col.where("pick_date", ">=", window_start_date).stream())
+        graduated_docs = list(
+            picks_col.where(checked_at_path, ">=", window_start_dt).stream()
+        )
+
+        seen_ids = set()
+        raw_items = []
+        for doc in recent_docs + graduated_docs:
+            if doc.id in seen_ids:
+                continue
+            seen_ids.add(doc.id)
+            raw_items.append(doc.to_dict() or {})
+
+        # One stock-doc lookup per distinct symbol shown, not per card --
+        # multiple cards for the same symbol (recurrence, kept deliberately
+        # unmerged) share one lookup.
+        symbols_needed = {
+            str(it.get("symbol") or "").upper()
+            for it in raw_items
+            if it.get("symbol")
+        }
+        stock_by_symbol = {}
+        for sym in symbols_needed:
+            snap = (
+                db.collection("bullsignals_ai")
+                .document("stocks")
+                .collection("symbols")
+                .document(sym)
+                .get()
+            )
+            stock_by_symbol[sym] = snap.to_dict() if snap.exists else {}
+
+        items = []
+        for it in raw_items:
+            symbol = str(it.get("symbol") or "").upper()
+            if not symbol:
+                continue
+
+            stock = stock_by_symbol.get(symbol) or {}
+            profile = stock.get("profile") or {}
+            quote = stock.get("quote") or {}
+            pick_price = it.get("pick_price")
+            h5 = (it.get("horizons") or {}).get("5d") or {}
+            h5_status = h5.get("status")
+
+            entry = {
+                "symbol": symbol,
+                "companyName": stock.get("company_name"),
+                "logoUrl": profile.get("logoUrl"),
+                "pick_date": it.get("pick_date"),
+                "recorded_at": it.get("recorded_at"),
+                "pick_price": pick_price,
+                "pick_reason": it.get("pick_reason"),
+                "pick_setup_label": it.get("pick_setup_label"),
+                "pick_model_view": it.get("pick_model_view"),
+            }
+
+            if h5_status == "checked":
+                entry["status"] = "checked"
+                entry["checked_price"] = h5.get("price")
+                entry["checked_return_pct"] = h5.get("return_pct")
+                entry["checked_at"] = h5.get("checked_at")
+                entry["horizon"] = "5d"
+            elif h5_status == "unavailable":
+                entry["status"] = "unavailable"
+                entry["unavailable_reason"] = h5.get("unavailable_reason")
+                entry["checked_at"] = h5.get("checked_at")
+            else:
+                entry["status"] = "tracking"
+                current_price = quote.get("price")
+                entry["current_price"] = current_price
+                entry["current_price_updated_at"] = quote.get("updated_at")
+                if (
+                    isinstance(current_price, (int, float))
+                    and isinstance(pick_price, (int, float))
+                    and pick_price
+                ):
+                    entry["livePct"] = round((current_price / pick_price - 1) * 100, 2)
+                else:
+                    entry["livePct"] = None
+
+            items.append(entry)
+
+        items.sort(key=lambda e: e.get("checked_at") or e.get("recorded_at") or "", reverse=True)
+
+        return {
+            "status": "ok",
+            "title": "Alphaclara is Tracking",
+            "subtitle": "Real setups Alphaclara flagged, tracked honestly — wins and losses both.",
+            "updated_at": now.isoformat().replace("+00:00", "Z"),
+            "window_days": WINDOW_DAYS,
+            "items": items,
+            "counts": {
+                "total": len(items),
+                "tracking": sum(1 for i in items if i["status"] == "tracking"),
+                "checked": sum(1 for i in items if i["status"] == "checked"),
+                "unavailable": sum(1 for i in items if i["status"] == "unavailable"),
+            },
+        }
+
+    except Exception as e:
+        print("[alphaclara-tracking] error:", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "title": "Alphaclara is Tracking",
+            "items": [],
+            "counts": {"total": 0, "tracking": 0, "checked": 0, "unavailable": 0},
+        }
+
+
 # -----------------------------
 # 5) Market News
 # -----------------------------
