@@ -4271,7 +4271,10 @@ def get_verified_alpha():
 
 
 @app.get("/alphaclara-tracking")
-def get_alphaclara_tracking():
+def get_alphaclara_tracking(
+    limit: Optional[int] = None,
+    window_days: int = 3,
+):
     """
     "Alphaclara is Tracking" -- honest, real-time accountability for past
     Alpha Watch picks, sourced from bullsignals_ai/pick_tracking/picks.
@@ -4291,8 +4294,16 @@ def get_alphaclara_tracking():
       no separate "graduated" section -- everything sorts together by
       recency, newest first.
     - Gains and losses both shown identically, no filtering.
+    - `limit` and `window_days` are both optional and additive: omitted,
+      behavior is identical to the unparameterized endpoint (unlimited
+      items, 3-day window) for the compact Home preview. A "View All"
+      screen passes both explicitly, e.g. limit=None, window_days=30 for
+      full history. window_days is capped at 30 -- raw (pre-dedupe) doc
+      volume scales directly with it (3 days is already ~2,486 raw reads
+      before dedup), so an uncapped value could blow up Firestore reads
+      per request.
     """
-    WINDOW_DAYS = 3
+    WINDOW_DAYS = min(window_days, 30)
 
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -4416,6 +4427,9 @@ def get_alphaclara_tracking():
             items.append(entry)
 
         items.sort(key=lambda e: e.get("checked_at") or e.get("recorded_at") or "", reverse=True)
+
+        if limit is not None:
+            items = items[:limit]
 
         return {
             "status": "ok",
