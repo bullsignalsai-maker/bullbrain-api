@@ -4277,9 +4277,12 @@ def get_alphaclara_tracking():
     Alpha Watch picks, sourced from bullsignals_ai/pick_tracking/picks.
 
     Design, confirmed before implementation:
-    - No merging by symbol -- every pick_tracking row within the window is
-      its own card, even if the same symbol recurs. A real recurrence is
-      honest information, not noise.
+    - Deduped by symbol -- the cron records a fresh pick_tracking row every
+      ~15min for each symbol still in alpha_watch (by design, see
+      backend/pick_tracking.py), so the raw window is dominated by repeat
+      rows of the same handful of symbols rather than distinct picks. This
+      endpoint shows only the most recent row per symbol within the window;
+      the full row-by-row history stays intact in pick_tracking, untouched.
     - Two independent queries, same WINDOW_DAYS constant reused for both,
       unioned: (1) picks whose pick_date falls in the window (still
       tracking, live price shown), (2) picks whose 5d horizon was checked
@@ -4330,9 +4333,21 @@ def get_alphaclara_tracking():
             seen_ids.add(doc.id)
             raw_items.append(doc.to_dict() or {})
 
-        # One stock-doc lookup per distinct symbol shown, not per card --
-        # multiple cards for the same symbol (recurrence, kept deliberately
-        # unmerged) share one lookup.
+        # Dedupe by symbol -- keep only the most recently recorded pick per
+        # symbol within the window. The cron re-records every symbol still
+        # in alpha_watch each cycle, so without this a single symbol can
+        # show dozens of near-identical cards. Full history is untouched
+        # in pick_tracking; this only trims what this endpoint displays.
+        latest_by_symbol: Dict[str, Dict[str, Any]] = {}
+        for it in raw_items:
+            symbol = str(it.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            existing = latest_by_symbol.get(symbol)
+            if existing is None or (it.get("recorded_at") or "") > (existing.get("recorded_at") or ""):
+                latest_by_symbol[symbol] = it
+        raw_items = list(latest_by_symbol.values())
+
         symbols_needed = {
             str(it.get("symbol") or "").upper()
             for it in raw_items
