@@ -788,6 +788,12 @@ def score_stock(
         "weights": weights,
         "pattern": (stock.get("pattern") or {}).get("pattern")
             or (stock.get("pattern") or {}).get("patternLabel"),
+        # Already computed for every scanned symbol in compute_symbol()
+        # (market_cron.py) before this function ever runs -- no new fetch,
+        # no recompute. Distinct from factorScores/weights above (why this
+        # stock was picked for Alpha Watch); this is why the display
+        # signal/label is what it is (System B, the "why" info icon source).
+        "displayIntelligence": stock.get("displayIntelligence"),
         "schema_version": "alpha_watch_item_v4",
     }
 
