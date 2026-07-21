@@ -71,6 +71,7 @@ def _build_pick_record(
         "pick_factor_scores": item.get("factorScores"),
 
         "pick_model_view": display_intelligence.get("modelView"),
+        "pick_market_context": display_intelligence.get("marketContext"),
         "pick_pattern_stats": {
             "pattern": pattern_history.get("pattern"),
             "winRate": days5.get("winRate"),
