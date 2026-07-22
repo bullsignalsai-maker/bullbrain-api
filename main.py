@@ -4349,7 +4349,19 @@ def get_alphaclara_tracking(
         # in alpha_watch each cycle, so without this a single symbol can
         # show dozens of near-identical cards. Full history is untouched
         # in pick_tracking; this only trims what this endpoint displays.
+        #
+        # The kept record's own pick_date is always recent (it's the latest
+        # recorded row), which silently hides a real multi-day streak -- a
+        # symbol picked continuously since day 1 of the window looks exactly
+        # like one picked for the first time today. first_picked_date fixes
+        # that: the earliest pick_date seen for the symbol across all raw
+        # (pre-dedupe) rows in this same window, tracked in the same pass
+        # before the rest of the rows are discarded. Bounded by window_days
+        # like everything else here -- a streak longer than the requested
+        # window will show first_picked_date as the window's own start, not
+        # the true all-time first pick (that would need an unbounded scan).
         latest_by_symbol: Dict[str, Dict[str, Any]] = {}
+        first_picked_by_symbol: Dict[str, str] = {}
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
             if not symbol:
@@ -4357,6 +4369,13 @@ def get_alphaclara_tracking(
             existing = latest_by_symbol.get(symbol)
             if existing is None or (it.get("recorded_at") or "") > (existing.get("recorded_at") or ""):
                 latest_by_symbol[symbol] = it
+
+            pick_date = it.get("pick_date") or ""
+            if pick_date and (
+                symbol not in first_picked_by_symbol
+                or pick_date < first_picked_by_symbol[symbol]
+            ):
+                first_picked_by_symbol[symbol] = pick_date
         raw_items = list(latest_by_symbol.values())
 
         symbols_needed = {
@@ -4393,6 +4412,7 @@ def get_alphaclara_tracking(
                 "companyName": stock.get("company_name"),
                 "logoUrl": profile.get("logoUrl"),
                 "pick_date": it.get("pick_date"),
+                "first_picked_date": first_picked_by_symbol.get(symbol),
                 "recorded_at": it.get("recorded_at"),
                 "pick_price": pick_price,
                 "pick_reason": it.get("pick_reason"),
