@@ -4394,6 +4394,8 @@ def get_alphaclara_tracking(
             )
             stock_by_symbol[sym] = snap.to_dict() if snap.exists else {}
 
+        today_str = today.isoformat()
+
         items = []
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
@@ -4443,6 +4445,20 @@ def get_alphaclara_tracking(
                     entry["livePct"] = round((current_price / pick_price - 1) * 100, 2)
                 else:
                     entry["livePct"] = None
+
+            # Tier for the Pick Detail screen's three-way grouping. Checked
+            # takes priority over freshness -- a completed horizon is never
+            # "fresh" even if it happens to be first_picked_date == today.
+            # "fresh" means genuinely new to the list (first_picked_date is
+            # today, no earlier record in the window), not just re-recorded
+            # -- distinct from "tracking," which covers every other still-
+            # open pick regardless of how long it's been tracked.
+            if entry["status"] in ("checked", "unavailable"):
+                entry["tier"] = "checked"
+            elif entry.get("first_picked_date") == today_str:
+                entry["tier"] = "fresh"
+            else:
+                entry["tier"] = "tracking"
 
             items.append(entry)
 
