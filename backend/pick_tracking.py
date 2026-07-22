@@ -46,6 +46,34 @@ def _build_pick_record(
     pattern_history = stock.get("patternHistory") or {}
     days5 = (pattern_history.get("forwardReturns") or {}).get("days5") or {}
 
+    # Internal calibration only -- not shown to users yet, no evidence this
+    # heuristic has predictive value. Same formula as /portfolio-ai-insight
+    # (vol * probability skew), EXCEPT that endpoint's vol input is off by
+    # 100x: it treats volatility_5d as a fraction (default fallback 0.02)
+    # but the feature is computed in percentage units (main.py's
+    # `daily_ret.rolling(5).std() * 100.0` -- confirmed on real data, e.g.
+    # PANW's volatility_5d is 3.53, meaning 3.53%, not 0.0353). Dividing by
+    # 100 here so freshly-captured calibration data isn't wrong by two
+    # orders of magnitude from day one. volatility_5d is a 5-day-scaled
+    # input, so this is explicitly the 5d estimate -- not comparable to the
+    # 20d horizon without rescaling.
+    bull = stock.get("bullbrain") or {}
+    decision = stock.get("decision") or {}
+    features_meta = stock.get("features_meta") or {}
+    raw_prob_up = (bull.get("raw") or {}).get("prob_up")
+    vol_5d = features_meta.get("volatility_5d")
+
+    expected_move_5d = None
+    if isinstance(raw_prob_up, (int, float)) and isinstance(vol_5d, (int, float)):
+        gate_forced_hold = (
+            bull.get("signal") == "HOLD"
+            and decision.get("decisionReasons") != ["ALL_GATES_PASSED"]
+        )
+        expected_move_5d = (
+            0.0 if gate_forced_hold
+            else round((vol_5d / 100.0) * (raw_prob_up * 2 - 1), 4)
+        )
+
     return {
         "symbol": item.get("symbol"),
         "source": source,
@@ -72,6 +100,7 @@ def _build_pick_record(
 
         "pick_model_view": display_intelligence.get("modelView"),
         "pick_market_context": display_intelligence.get("marketContext"),
+        "pick_expected_move_5d": expected_move_5d,
         "pick_pattern_stats": {
             "pattern": pattern_history.get("pattern"),
             "winRate": days5.get("winRate"),
