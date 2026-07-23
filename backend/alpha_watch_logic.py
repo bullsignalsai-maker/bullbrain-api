@@ -25,6 +25,24 @@ HISTORY_ROOT = "alpha_watch_history"
 MIN_PRICE = 5.0
 MIN_AVG_VOLUME_20D = 1_200_000
 MAX_FRESHNESS_HOURS = 18
+# UNVALIDATED, checked 2026-07-24 -- not confirmed sound, do not treat as
+# settled. History: hand-tuned by feel across 4 changes over 2.5 weeks
+# (68.0 -> 64.0 -> 62.0 -> 55.0, commits d544cd4/fd5fa0e/12df3a4,
+# 2026-05-18 to 2026-06-03), zero derivation rationale in any commit
+# message or comment at any point, then frozen for 7 weeks with no
+# revisit -- including after this week's score_trend/score_volume fixes
+# (2f2c821/069e221, 2026-07-16) changed two of this score's six inputs.
+# Absence of an obvious problem is NOT evidence this is correctly
+# calibrated -- no before/after distribution comparison was performed to
+# check whether those fixes shifted where the real cutoff should sit.
+# Real-data check same day: 4.5% of the universe (24/528) currently
+# clears this bar, but NOT via broad-based strength -- momentum/trend/
+# volume cluster near their ceiling (many exactly 100.0) for nearly all
+# 24, pattern is the only factor with genuine spread (39-93), and
+# bullbrain is exactly 45.0 or 63.0 for all 24 with no other value ever
+# appearing (see score_bullbrain() below -- a real formula bug, not
+# evidence of consistent quality). See bullbrain_alpha_watch_scoring_audit
+# memory. Status: threshold calibration unknown, not resolved.
 MIN_FINAL_SCORE = 55.0
 NEGATIVE_MOVE_PENALTY_TRIGGER = -2.0
 MAX_EARLY_EXPANSION_DEFAULT = 85.0
@@ -305,6 +323,21 @@ def score_pattern(stock: Dict[str, Any]) -> float:
 
 
 def score_bullbrain(stock: Dict[str, Any]) -> float:
+    # BUG, found 2026-07-24, not yet fixed: confidence is not an
+    # independent signal -- bullbrain_infer() defines it as
+    # max(prob_up, 1-prob_up)*100, a deterministic function of prob_up
+    # itself. For any prob_up < 0.5, (conf-50)*0.8 and (prob-0.5)*80
+    # cancel EXACTLY, algebraically, for every input in that range -- not
+    # a coincidence, a mathematical identity. Confirmed on real data: all
+    # 24 currently-qualifying alpha_watch stocks show this score as
+    # exactly 45.0 or 63.0 (45 + the BUY bonus below), no other value
+    # ever appearing, despite real underlying prob_up spread (e.g. 0.423,
+    # 0.3202, 0.3948 -- genuinely different inputs, identical output).
+    # This factor contributes zero real signal for any stock without a
+    # genuine BUY read -- i.e. most of the real universe. See
+    # bullbrain_alpha_watch_scoring_audit memory. Needs its own fix, same
+    # category as the ATR/trend/EV bugs fixed earlier this week -- not
+    # fixed here, findings only.
     conf = _confidence(stock)
     prob = _prob_up(stock)
     sig = _signal(stock)
