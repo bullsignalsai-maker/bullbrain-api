@@ -74,6 +74,22 @@ def _build_pick_record(
             else round((vol_5d / 100.0) * (raw_prob_up * 2 - 1), 4)
         )
 
+    # pick_source: three real cases, not a false binary -- confirmed with
+    # real data (bullbrain_area_d_momentum_override_audit memory) that most
+    # tracked picks are neither a clean gate pass nor an override (93% of
+    # symbols tracked over a recent 6h window were alpha_watch picks whose
+    # own gate ladder HOLD-rejected them for an unrelated reason). "other"
+    # is the common case today, not a rare fallback -- pick_decision_reasons
+    # keeps the raw reason so "other" can be broken down by specific gate
+    # later without a second migration.
+    decision_reasons = decision.get("decisionReasons")
+    if decision_reasons == ["ALL_GATES_PASSED"]:
+        pick_source = "gates_passed"
+    elif decision_reasons == ["MOMENTUM_OVERRIDE"]:
+        pick_source = "momentum_override"
+    else:
+        pick_source = "other"
+
     return {
         "symbol": item.get("symbol"),
         "source": source,
@@ -101,6 +117,8 @@ def _build_pick_record(
         "pick_model_view": display_intelligence.get("modelView"),
         "pick_market_context": display_intelligence.get("marketContext"),
         "pick_expected_move_5d": expected_move_5d,
+        "pick_source": pick_source,
+        "pick_decision_reasons": decision_reasons,
         "pick_pattern_stats": {
             "pattern": pattern_history.get("pattern"),
             "winRate": days5.get("winRate"),
