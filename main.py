@@ -2893,7 +2893,15 @@ def portfolio_ai_insight(
         # ------------------------------------
         # EXPECTED MOVE (VOL * probability)
         # ------------------------------------
-        vol = feature_dict.get("volatility_5d", 0.02)
+        # volatility_5d is computed in percentage units (main.py's
+        # daily_ret.rolling(5).std() * 100.0 -- confirmed on real data, e.g.
+        # PANW's volatility_5d is 3.53, meaning 3.53%, not 0.0353), not the
+        # fraction the old `0.02` fallback implied. Same bug already fixed
+        # in backend/pick_tracking.py's expected_move_5d capture -- without
+        # the /100.0 here, expected_move comes out ~100x too large. Fallback
+        # updated to 2.0 (still "assume 2% volatility" once divided) so the
+        # missing-data case doesn't silently become the same size of bug.
+        vol = feature_dict.get("volatility_5d", 2.0) / 100.0
         expected_move = 0.0 if gate_forced_hold else round(vol * (prob_up * 2 - 1), 4)
         expected_move_pct = f"{expected_move * 100:+.2f}%"
 
