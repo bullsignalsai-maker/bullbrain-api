@@ -4462,6 +4462,8 @@ def get_alphaclara_tracking(
                 "pick_reason": it.get("pick_reason"),
                 "pick_setup_label": it.get("pick_setup_label"),
                 "pick_model_view": it.get("pick_model_view"),
+                "pick_factor_scores": it.get("pick_factor_scores"),
+                "pick_market_regime": it.get("pick_market_regime"),
             }
 
             if resolved is not None and resolved.get("status") == "checked":
