@@ -4424,8 +4424,22 @@ def get_alphaclara_tracking(
             pick_price = it.get("pick_price")
             first_pick = earliest_by_symbol.get(symbol) or {}
             first_picked_price = first_pick.get("pick_price")
-            h5 = (it.get("horizons") or {}).get("5d") or {}
-            h5_status = h5.get("status")
+            horizons = it.get("horizons") or {}
+            h5 = horizons.get("5d") or {}
+            h20 = horizons.get("20d") or {}
+            # Prefer the most-advanced resolved horizon -- 20d always
+            # completes after 5d, so once it resolves it's a more complete
+            # signal than freezing on the earlier 5d checkpoint forever.
+            # Falls back to 5d if 20d hasn't resolved yet (the common case,
+            # since 5d always resolves first). Previously this only ever
+            # looked at 5d, so a completed 20d horizon was silently never
+            # surfaced at all.
+            if h20.get("status") in ("checked", "unavailable"):
+                resolved, resolved_horizon = h20, "20d"
+            elif h5.get("status") in ("checked", "unavailable"):
+                resolved, resolved_horizon = h5, "5d"
+            else:
+                resolved, resolved_horizon = None, None
 
             entry = {
                 "symbol": symbol,
@@ -4450,16 +4464,17 @@ def get_alphaclara_tracking(
                 "pick_model_view": it.get("pick_model_view"),
             }
 
-            if h5_status == "checked":
+            if resolved is not None and resolved.get("status") == "checked":
                 entry["status"] = "checked"
-                entry["checked_price"] = h5.get("price")
-                entry["checked_return_pct"] = h5.get("return_pct")
-                entry["checked_at"] = h5.get("checked_at")
-                entry["horizon"] = "5d"
-            elif h5_status == "unavailable":
+                entry["checked_price"] = resolved.get("price")
+                entry["checked_return_pct"] = resolved.get("return_pct")
+                entry["checked_at"] = resolved.get("checked_at")
+                entry["horizon"] = resolved_horizon
+            elif resolved is not None and resolved.get("status") == "unavailable":
                 entry["status"] = "unavailable"
-                entry["unavailable_reason"] = h5.get("unavailable_reason")
-                entry["checked_at"] = h5.get("checked_at")
+                entry["unavailable_reason"] = resolved.get("unavailable_reason")
+                entry["checked_at"] = resolved.get("checked_at")
+                entry["horizon"] = resolved_horizon
             else:
                 entry["status"] = "tracking"
                 current_price = quote.get("price")
