@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import os
 import requests
 import datetime
+from zoneinfo import ZoneInfo
 import json
 import numpy as np
 import pandas as pd
@@ -4397,7 +4398,19 @@ def get_alphaclara_tracking(
             )
             stock_by_symbol[sym] = snap.to_dict() if snap.exists else {}
 
-        today_str = today.isoformat()
+        # Tier freshness uses the US/Eastern trading day, not naive UTC --
+        # UTC midnight falls mid-evening ET (7-8pm depending on DST), hours
+        # before a US user's own day is over, so a pick made mid-afternoon
+        # ET could already read as "yesterday" once UTC has rolled over,
+        # even though it's still today for anyone watching the market.
+        # Mirrors quote_worker.py's is_market_open()/is_weekend() -- same
+        # ZoneInfo("America/New_York") conversion, same reasoning: the
+        # trading calendar is the one objective "day" here, not wherever
+        # the requesting user happens to be. Scoped to this comparison only
+        # -- today/window_start_date/window_start_dt above stay UTC, since
+        # those bound the Firestore query against UTC-stamped pick_date/
+        # checked_at values and must match that storage convention.
+        today_str = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
 
         items = []
         for it in raw_items:
