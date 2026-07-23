@@ -4350,32 +4350,35 @@ def get_alphaclara_tracking(
         # show dozens of near-identical cards. Full history is untouched
         # in pick_tracking; this only trims what this endpoint displays.
         #
-        # The kept record's own pick_date is always recent (it's the latest
-        # recorded row), which silently hides a real multi-day streak -- a
-        # symbol picked continuously since day 1 of the window looks exactly
-        # like one picked for the first time today. first_picked_date fixes
-        # that: the earliest pick_date seen for the symbol across all raw
-        # (pre-dedupe) rows in this same window, tracked in the same pass
-        # before the rest of the rows are discarded. Bounded by window_days
-        # like everything else here -- a streak longer than the requested
-        # window will show first_picked_date as the window's own start, not
-        # the true all-time first pick (that would need an unbounded scan).
+        # The kept record's own pick_date/pick_price are always recent
+        # (it's the latest recorded row), which silently hides both a real
+        # multi-day streak and its true starting price -- a symbol picked
+        # continuously since day 1 of the window looks exactly like one
+        # picked for the first time today, AND its "since picked" price
+        # keeps sliding forward every cron cycle instead of anchoring to
+        # when it actually first qualified. earliest_by_symbol fixes both:
+        # the full earliest-recorded row per symbol (by recorded_at, not by
+        # pick_date string -- multiple rows can share the same pick_date,
+        # and Firestore's stream() order isn't guaranteed, so recorded_at
+        # is the only reliable tiebreak) across all raw (pre-dedupe) rows
+        # in this same window, tracked in the same pass before the rest of
+        # the rows are discarded -- no second lookup. Bounded by
+        # window_days like everything else here -- a streak longer than
+        # the requested window will show the window's own start, not the
+        # true all-time first pick (that would need an unbounded scan).
         latest_by_symbol: Dict[str, Dict[str, Any]] = {}
-        first_picked_by_symbol: Dict[str, str] = {}
+        earliest_by_symbol: Dict[str, Dict[str, Any]] = {}
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
             if not symbol:
                 continue
-            existing = latest_by_symbol.get(symbol)
-            if existing is None or (it.get("recorded_at") or "") > (existing.get("recorded_at") or ""):
+            existing_latest = latest_by_symbol.get(symbol)
+            if existing_latest is None or (it.get("recorded_at") or "") > (existing_latest.get("recorded_at") or ""):
                 latest_by_symbol[symbol] = it
 
-            pick_date = it.get("pick_date") or ""
-            if pick_date and (
-                symbol not in first_picked_by_symbol
-                or pick_date < first_picked_by_symbol[symbol]
-            ):
-                first_picked_by_symbol[symbol] = pick_date
+            existing_earliest = earliest_by_symbol.get(symbol)
+            if existing_earliest is None or (it.get("recorded_at") or "") < (existing_earliest.get("recorded_at") or ""):
+                earliest_by_symbol[symbol] = it
         raw_items = list(latest_by_symbol.values())
 
         symbols_needed = {
@@ -4406,6 +4409,8 @@ def get_alphaclara_tracking(
             profile = stock.get("profile") or {}
             quote = stock.get("quote") or {}
             pick_price = it.get("pick_price")
+            first_pick = earliest_by_symbol.get(symbol) or {}
+            first_picked_price = first_pick.get("pick_price")
             h5 = (it.get("horizons") or {}).get("5d") or {}
             h5_status = h5.get("status")
 
@@ -4414,9 +4419,19 @@ def get_alphaclara_tracking(
                 "companyName": stock.get("company_name"),
                 "logoUrl": profile.get("logoUrl"),
                 "pick_date": it.get("pick_date"),
-                "first_picked_date": first_picked_by_symbol.get(symbol),
+                "first_picked_date": first_pick.get("pick_date"),
                 "recorded_at": it.get("recorded_at"),
+                # pick_price/livePct(SinceLastUpdate) reflect the most
+                # recently re-recorded snapshot -- meaningful for a symbol
+                # just picked today, but for a multi-day streak this keeps
+                # sliding forward every cron cycle instead of anchoring to
+                # when the symbol actually first qualified. first_picked_price/
+                # livePctSinceFirstPick is the honest "since picked" number
+                # for that case. Both exposed, unrenamed/untouched existing
+                # fields kept as-is, so the frontend picks the one that
+                # matches what it's labeling.
                 "pick_price": pick_price,
+                "first_picked_price": first_picked_price,
                 "pick_reason": it.get("pick_reason"),
                 "pick_setup_label": it.get("pick_setup_label"),
                 "pick_model_view": it.get("pick_model_view"),
@@ -4445,6 +4460,18 @@ def get_alphaclara_tracking(
                     entry["livePct"] = round((current_price / pick_price - 1) * 100, 2)
                 else:
                     entry["livePct"] = None
+                entry["livePctSinceLastUpdate"] = entry["livePct"]
+
+                if (
+                    isinstance(current_price, (int, float))
+                    and isinstance(first_picked_price, (int, float))
+                    and first_picked_price
+                ):
+                    entry["livePctSinceFirstPick"] = round(
+                        (current_price / first_picked_price - 1) * 100, 2
+                    )
+                else:
+                    entry["livePctSinceFirstPick"] = None
 
             # Tier for the Pick Detail screen's three-way grouping. Checked
             # takes priority over freshness -- a completed horizon is never
