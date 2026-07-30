@@ -4377,6 +4377,7 @@ def get_alphaclara_tracking(
         # true all-time first pick (that would need an unbounded scan).
         latest_by_symbol: Dict[str, Dict[str, Any]] = {}
         earliest_by_symbol: Dict[str, Dict[str, Any]] = {}
+        latest_resolved_by_symbol: Dict[str, Dict[str, Any]] = {}
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
             if not symbol:
@@ -4388,6 +4389,24 @@ def get_alphaclara_tracking(
             existing_earliest = earliest_by_symbol.get(symbol)
             if existing_earliest is None or (it.get("recorded_at") or "") < (existing_earliest.get("recorded_at") or ""):
                 earliest_by_symbol[symbol] = it
+
+            # A symbol still actively re-picked has its checked outcome
+            # buried under newer "tracking" records with fresh, reset-to-
+            # pending horizons (confirmed on real data: ABT has a real
+            # resolved 5d result from an earlier record, invisible via the
+            # primary status because it's still being re-picked). Track
+            # the most-recently-recorded row with ANY resolved horizon
+            # separately from the overall latest row, same pass, no
+            # second lookup.
+            it_horizons = it.get("horizons") or {}
+            it_has_resolved = any(
+                (it_horizons.get(h) or {}).get("status") in ("checked", "unavailable")
+                for h in ("5d", "20d")
+            )
+            if it_has_resolved:
+                existing_resolved = latest_resolved_by_symbol.get(symbol)
+                if existing_resolved is None or (it.get("recorded_at") or "") > (existing_resolved.get("recorded_at") or ""):
+                    latest_resolved_by_symbol[symbol] = it
         raw_items = list(latest_by_symbol.values())
 
         symbols_needed = {
@@ -4449,6 +4468,23 @@ def get_alphaclara_tracking(
             else:
                 resolved, resolved_horizon = None, None
 
+            # Secondary, independent of the primary status above -- a
+            # symbol can be BOTH actively "tracking" (fresh latest record)
+            # AND have a real resolved outcome from an earlier record.
+            # Same 20d-over-5d preference, applied to whichever record
+            # actually has the resolved data. When the latest record is
+            # itself the resolved one, this harmlessly duplicates the
+            # primary checked_* fields (same record, no double-counting).
+            last_resolved = latest_resolved_by_symbol.get(symbol)
+            if last_resolved is not None:
+                lr_horizons = last_resolved.get("horizons") or {}
+                if (lr_horizons.get("20d") or {}).get("status") in ("checked", "unavailable"):
+                    lr_data, lr_horizon = lr_horizons.get("20d") or {}, "20d"
+                else:
+                    lr_data, lr_horizon = lr_horizons.get("5d") or {}, "5d"
+            else:
+                lr_data, lr_horizon = {}, None
+
             entry = {
                 "symbol": symbol,
                 "companyName": stock.get("company_name"),
@@ -4472,6 +4508,11 @@ def get_alphaclara_tracking(
                 "pick_model_view": it.get("pick_model_view"),
                 "pick_factor_scores": it.get("pick_factor_scores"),
                 "pick_market_regime": it.get("pick_market_regime"),
+                "last_resolved_horizon": lr_horizon,
+                "last_resolved_status": lr_data.get("status"),
+                "last_resolved_return_pct": lr_data.get("return_pct"),
+                "last_resolved_price": lr_data.get("price"),
+                "last_resolved_at": lr_data.get("checked_at"),
             }
 
             if resolved is not None and resolved.get("status") == "checked":
