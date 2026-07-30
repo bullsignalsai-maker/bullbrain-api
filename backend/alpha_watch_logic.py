@@ -444,20 +444,20 @@ def stability_profile(stock: Dict[str, Any]) -> Dict[str, Any]:
     range_pct = _num(f.get("intraday_range_pct"), 0.0) or 0.0
     vol_vs = _num(f.get("volume_vs_ma20_pct"), 0.0) or 0.0
 
-    if frag >= 3:
-        mult *= 0.52
-        flags.append("High fragility")
-    elif frag >= 2:
+    # No separate high-fragility tier here: passes_quality_filter() already
+    # rejects fragility > 2 before score_stock() ever calls this function,
+    # so a >=3 branch here could never fire. Removed 2026-07-30 (was dead
+    # code since the file's first commit). See bullbrain_alpha_watch_scoring_audit memory.
+    if frag >= 2:
         mult *= 0.84
         flags.append("Moderate fragility")
 
     if liq == "THIN":
         mult *= 0.88
         flags.append("Liquidity thin")
-
-    elif liq == "POOR":
-        mult *= 0.65
-        flags.append("Liquidity poor")
+    # No POOR tier here either, same reason: passes_quality_filter() already
+    # rejects liquidity == "POOR" upstream. Removed 2026-07-30 (also dead
+    # since day one). See bullbrain_alpha_watch_scoring_audit memory.
 
     if rsi > 78:
         mult *= 0.70
