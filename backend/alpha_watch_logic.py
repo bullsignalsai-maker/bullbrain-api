@@ -323,27 +323,32 @@ def score_pattern(stock: Dict[str, Any]) -> float:
 
 
 def score_bullbrain(stock: Dict[str, Any]) -> float:
-    # BUG, found 2026-07-24, not yet fixed: confidence is not an
-    # independent signal -- bullbrain_infer() defines it as
-    # max(prob_up, 1-prob_up)*100, a deterministic function of prob_up
-    # itself. For any prob_up < 0.5, (conf-50)*0.8 and (prob-0.5)*80
-    # cancel EXACTLY, algebraically, for every input in that range -- not
-    # a coincidence, a mathematical identity. Confirmed on real data: all
-    # 24 currently-qualifying alpha_watch stocks show this score as
-    # exactly 45.0 or 63.0 (45 + the BUY bonus below), no other value
-    # ever appearing, despite real underlying prob_up spread (e.g. 0.423,
-    # 0.3202, 0.3948 -- genuinely different inputs, identical output).
-    # This factor contributes zero real signal for any stock without a
-    # genuine BUY read -- i.e. most of the real universe. See
-    # bullbrain_alpha_watch_scoring_audit memory. Needs its own fix, same
-    # category as the ATR/trend/EV bugs fixed earlier this week -- not
-    # fixed here, findings only.
-    conf = _confidence(stock)
+    # FIXED 2026-07-30 (found 2026-07-24, see bullbrain_alpha_watch_scoring_audit
+    # memory): confidence is not an independent signal -- bullbrain_infer()
+    # defines it as max(prob_up, 1-prob_up)*100, a deterministic function
+    # of prob_up itself, so it always describes "distance from 50/50"
+    # regardless of direction. The old formula fed both confidence AND
+    # prob_up into the score as if they were independent; for any
+    # prob_up < 0.5 the two terms canceled EXACTLY (an algebraic identity,
+    # confirmed on real data: 24/24 currently-qualifying stocks showed
+    # this score as exactly 45.0 or 63.0, no other value, despite real
+    # prob_up spread like 0.423/0.3202/0.3948). Dropped confidence
+    # entirely -- prob_up alone already carries magnitude AND direction,
+    # which confidence never did.
+    #
+    # Verified against real data before applying: prob_up<0.5 symbols now
+    # show genuinely differentiated, correctly-ordered scores instead of
+    # a flat 45.0 (e.g. AVB 0.2353->23.82, WDC 0.2493->24.94). Checked the
+    # real MIN_FINAL_SCORE=55.0 qualifying set impact across 127 real
+    # symbols: median final_score 36.63->35.07, qualifying count 23->21 --
+    # 2 real symbols (KIM, XYL) lose qualification (they only cleared 55
+    # because of the old formula's bullish-side double-counting), 0 gain
+    # qualification, the other 21 unaffected. A real, modest effect, not
+    # just an academic correctness fix.
     prob = _prob_up(stock)
     sig = _signal(stock)
 
     score = 45.0
-    score += (conf - 50) * 0.8
     score += (prob - 0.5) * 80
 
     if sig == "BUY":
