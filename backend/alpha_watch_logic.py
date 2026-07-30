@@ -500,7 +500,16 @@ def derive_setup_label(stock: Dict[str, Any], scores: Dict[str, float]) -> str:
     if scores.get("early_expansion", 0) >= 78 and scores.get("volume", 0) >= 70:
         return "Early Momentum Expansion"
 
-    if scores.get("bullbrain", 0) >= 75 and scores.get("trend", 0) >= 70:
+    # 50 is data-grounded, not the old 75: the old cutoff was calibrated
+    # against score_bullbrain()'s pre-fix, bullish-side-doubled scale
+    # (fixed 2026-07-30, commit 44fce88) and became unreachable dead code
+    # afterward -- confirmed 0 of 25 real current qualifiers (final_score
+    # >= MIN_FINAL_SCORE) ever cleared 75, or even 65. 50 sits in a real,
+    # natural gap in the post-fix distribution among real qualifiers
+    # (19 symbols cluster at 33.77-44.68, 6 at 55.07-63.42; nothing in
+    # between) -- isolates the genuine top cluster (6 of 25) instead of
+    # nobody. See bullbrain_alpha_watch_scoring_audit memory.
+    if scores.get("bullbrain", 0) >= 50 and scores.get("trend", 0) >= 70:
         return "High Conviction AI Setup"
     if scores.get("momentum", 0) >= 72 and scores.get("volume", 0) >= 65:
         return "Momentum Expansion"
@@ -538,7 +547,13 @@ def build_why_now(scores: Dict[str, float]) -> List[str]:
         points.append("Trend structure remains constructive")
     if scores.get("pattern", 0) >= 65:
         points.append("Pattern intelligence supports the setup")
-    if scores.get("bullbrain", 0) >= 65:
+    # 41 is data-grounded, not the old 65: matches the real median (40.82)
+    # /mean (43.62) bullbrain score among real current qualifiers, post
+    # score_bullbrain() fix (commit 44fce88) -- the old 65 was unreachable
+    # dead code (0 of 25 real qualifiers ever cleared it). "Above average"
+    # is now literally, empirically true for whoever this callout shows
+    # for. See bullbrain_alpha_watch_scoring_audit memory.
+    if scores.get("bullbrain", 0) >= 41:
         points.append("BullBrain conviction is above average")
     if scores.get("volume", 0) >= 65:
         points.append("Volume participation is confirming the move")
