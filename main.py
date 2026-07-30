@@ -22,6 +22,7 @@ from firebase_admin import credentials, firestore
 import time
 from backend.candle_store import get_candles
 from backend.candle_store import get_candles as get_cached_candles
+from backend.candle_store import _read_firestore_candles
 from backend.stock_bootstrap import bootstrap_stock
 from backend.quote_demand import ensure_quote
 from backend.active_symbols import touch_active_symbol
@@ -4378,6 +4379,7 @@ def get_alphaclara_tracking(
         latest_by_symbol: Dict[str, Dict[str, Any]] = {}
         earliest_by_symbol: Dict[str, Dict[str, Any]] = {}
         latest_resolved_by_symbol: Dict[str, Dict[str, Any]] = {}
+        pick_count_by_symbol: Dict[str, int] = {}
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
             if not symbol:
@@ -4389,6 +4391,11 @@ def get_alphaclara_tracking(
             existing_earliest = earliest_by_symbol.get(symbol)
             if existing_earliest is None or (it.get("recorded_at") or "") < (existing_earliest.get("recorded_at") or ""):
                 earliest_by_symbol[symbol] = it
+
+            # Real recurrence count -- free in this same pass, no new
+            # Firestore reads. How many times this symbol was actually
+            # re-recorded within the window (e.g. ABT: 328, HIMS: 1).
+            pick_count_by_symbol[symbol] = pick_count_by_symbol.get(symbol, 0) + 1
 
             # A symbol still actively re-picked has its checked outcome
             # buried under newer "tracking" records with fresh, reset-to-
@@ -4492,6 +4499,7 @@ def get_alphaclara_tracking(
                 "pick_date": it.get("pick_date"),
                 "first_picked_date": first_pick.get("pick_date"),
                 "recorded_at": it.get("recorded_at"),
+                "pick_count": pick_count_by_symbol.get(symbol, 1),
                 # pick_price/livePct(SinceLastUpdate) reflect the most
                 # recently re-recorded snapshot -- meaningful for a symbol
                 # just picked today, but for a multi-day streak this keeps
@@ -4596,6 +4604,112 @@ def get_alphaclara_tracking(
             "title": "Alphaclara is Tracking",
             "items": [],
             "counts": {"total": 0, "tracking": 0, "checked": 0, "unavailable": 0},
+        }
+
+
+@app.get("/alphaclara-tracking/{symbol}/history")
+def get_alphaclara_pick_history(symbol: str, window_days: int = 30):
+    """
+    Real daily price history for one symbol's tracked pick window, joined
+    from the candle cache (backend/candle_store.py's Firestore cache) --
+    genuine daily closes, never fabricated/interpolated points. Kept
+    separate from /alphaclara-tracking's list response since this adds a
+    real, non-trivial per-symbol candle read; only worth paying for when
+    a user opens one specific pick's detail screen, not for every item in
+    a list response.
+
+    Query note: symbol + pick_date is a compound filter on two different
+    fields, which needs a Firestore composite index that doesn't exist in
+    this project (confirmed directly -- no firestore.indexes.json in this
+    repo, and the live query fails with "requires an index" otherwise).
+    Filters by pick_date range only, same pattern the main endpoint
+    already uses (no new index needed), and narrows to the requested
+    symbol in Python. Creating that composite index later would let this
+    query the collection directly instead of scanning the whole window.
+    """
+    symbol = symbol.upper()
+    WINDOW_DAYS = min(window_days, 30)
+
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today = now.date()
+        window_start_date = (today - datetime.timedelta(days=WINDOW_DAYS - 1)).isoformat()
+
+        picks_col = (
+            db.collection("bullsignals_ai")
+            .document("pick_tracking")
+            .collection("picks")
+        )
+        docs = list(picks_col.where("pick_date", ">=", window_start_date).stream())
+        recs = [
+            data
+            for d in docs
+            if (data := (d.to_dict() or {})).get("symbol", "").upper() == symbol
+        ]
+
+        if not recs:
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "pick_count": 0,
+                "first_picked_date": None,
+                "end_date": None,
+                "price_history": [],
+            }
+
+        recs.sort(key=lambda r: r.get("recorded_at") or "")
+        pick_count = len(recs)
+        first_picked_date = recs[0].get("pick_date")
+
+        # End date: the most recently recorded row's resolved horizon
+        # checked date, if one exists (a real "loop closed" moment), else
+        # today (still tracking). Same 20d-over-5d preference as the main
+        # endpoint's resolved-horizon logic.
+        end_date = today.isoformat()
+        for r in reversed(recs):
+            horizons = r.get("horizons") or {}
+            h20 = horizons.get("20d") or {}
+            h5 = horizons.get("5d") or {}
+            resolved = None
+            if h20.get("status") in ("checked", "unavailable"):
+                resolved = h20
+            elif h5.get("status") in ("checked", "unavailable"):
+                resolved = h5
+            if resolved and resolved.get("checked_at"):
+                end_date = resolved["checked_at"][:10]
+                break
+
+        candle_doc = _read_firestore_candles(symbol)
+        candles = (candle_doc or {}).get("candles") or {}
+        ts_list = candles.get("ts") or []
+        close_list = candles.get("close") or []
+
+        price_history = []
+        for ts, close in zip(ts_list, close_list):
+            if ts is None or close is None:
+                continue
+            date_str = datetime.datetime.utcfromtimestamp(ts / 1000).date().isoformat()
+            if first_picked_date <= date_str <= end_date:
+                price_history.append({"date": date_str, "close": close})
+        price_history.sort(key=lambda p: p["date"])
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "pick_count": pick_count,
+            "first_picked_date": first_picked_date,
+            "end_date": end_date,
+            "price_history": price_history,
+        }
+
+    except Exception as e:
+        print("[alphaclara-tracking-history] error:", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "symbol": symbol,
+            "pick_count": 0,
+            "price_history": [],
         }
 
 
