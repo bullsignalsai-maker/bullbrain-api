@@ -1302,6 +1302,40 @@ def load_today_spreadsheet_mover_metadata() -> Dict[str, Dict[str, Any]]:
         log(f"⚠️ daily spreadsheet mover metadata unavailable: {e}")
         return {}
     
+# Percentile-derived from the real volume_zscore_20_corrected distribution
+# across real symbols with fresh quotes (2026-07-30 check, n=294): p25=-0.22,
+# p75=1.43, p90=2.42 -- these bands split the real population at its natural
+# quartile/decile boundaries, not arbitrary round numbers. Verified: median
+# |changePct| rises with level (Below Average 3.35 -> Average 3.78 ->
+# Above Average 4.39), a real if modest relationship. obv_slope_10 is a
+# 10-day accumulation/distribution trend -- a different timeframe from the
+# same-day volumeLevel above, so it's kept as its own separate field rather
+# than folded into a same-day "confirms this move" claim: an earlier draft
+# paired obv_slope_10's sign with today's price direction as "Confirming
+# Move" and found ~zero real correlation with move size (a wrong-series
+# timeframe mismatch, caught before shipping). See
+# bullbrain_market_movers_volume_context memory.
+def _classify_volume_context(vol_z_corrected, obv_slope_10):
+    level = None
+    if isinstance(vol_z_corrected, (int, float)):
+        if vol_z_corrected >= 2.4:
+            level = "Well Above Average"
+        elif vol_z_corrected >= 1.4:
+            level = "Above Average"
+        elif vol_z_corrected >= -0.2:
+            level = "Average"
+        else:
+            level = "Below Average"
+
+    obv_trend = None
+    if isinstance(obv_slope_10, (int, float)) and obv_slope_10 != 0:
+        obv_trend = "Accumulation" if obv_slope_10 > 0 else "Distribution"
+
+    label = f"{level} Volume" if level else None
+
+    return level, obv_trend, label
+
+
 def persist_internal_market_movers():
     db = get_db()
 
@@ -1327,6 +1361,10 @@ def persist_internal_market_movers():
         price = quote.get("price")
         profile = data.get("profile") or {}
         logo_url = profile.get("logoUrl")
+        features = data.get("features_meta") or {}
+        vol_vs_ma20 = features.get("volume_vs_ma20_pct")
+        obv_slope_10 = features.get("obv_slope_10")
+        vol_z_corrected = data.get("volume_zscore_20_corrected")
 
         try:
             px = float(price)
@@ -1355,8 +1393,11 @@ def persist_internal_market_movers():
         # 20 minutes is safe because cron runs every 15 minutes.
         if age_seconds > 20 * 60:
             continue
-        sheet_meta = spreadsheet_metadata.get(sym) or {}   
-        display_intelligence = data.get("displayIntelligence") or {} 
+        sheet_meta = spreadsheet_metadata.get(sym) or {}
+        display_intelligence = data.get("displayIntelligence") or {}
+        volume_level, obv_trend, volume_label = _classify_volume_context(
+            vol_z_corrected, obv_slope_10
+        )
         if isinstance(chg, (int, float)):
             movers.append({
                 "symbol": sym,
@@ -1367,6 +1408,12 @@ def persist_internal_market_movers():
                 "direction": "up" if chg >= 0 else "down",
                 "quote_updated_at": updated_at,
                 "logoUrl": logo_url or None,
+
+                "volumeVsAvgPct": round(vol_vs_ma20, 2) if isinstance(vol_vs_ma20, (int, float)) else None,
+                "volumeZScore": round(vol_z_corrected, 2) if isinstance(vol_z_corrected, (int, float)) else None,
+                "volumeLevel": volume_level,
+                "obvTrend": obv_trend,
+                "volumeLabel": volume_label,
 
                 # Optional spreadsheet catalyst metadata.
                 # Present only when this symbol came from the spreadsheet
