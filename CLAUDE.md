@@ -17,7 +17,10 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 10000
 
 # One-off cron / worker scripts (each imports `main` for shared state, e.g. the loaded BullBrain model)
-python market_cron.py        # */15 * * * 1-5 — refreshes stock intelligence, movers, homescreen carousel
+python market_cron.py        # */15 * * * 0-5 (Sun-Fri; Sunday included on purpose — see get_cron_mode()'s
+                              #   is_sunday_overnight carve-out, a real 20:30-20:44 ET warm scan ahead of
+                              #   Monday's open, not dead code or drift) — refreshes stock intelligence,
+                              #   movers, homescreen carousel
 python homescreen_cron.py    # lightweight snapshot cron; calls the running API's /internal/homescreen/compute
 python quote_worker.py       # long-running Render background worker; refreshes live quotes with market-hours-aware throttling
 

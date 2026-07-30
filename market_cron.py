@@ -2,8 +2,21 @@
 # =========================================================
 # BullSignalsAI — Market Intelligence Cron
 #
-# Schedule:
-#   */15 * * * 1-5
+# Schedule (as actually configured on Render, confirmed 2026-07-30 --
+# this comment previously said 1-5, which was the documentation drifting
+# from reality, not the schedule being wrong):
+#   */15 * * * 0-5
+#
+# Sunday (0) is included ON PURPOSE, not drift or an accident to "fix"
+# back to 1-5: get_cron_mode()'s is_sunday_overnight carve-out lets a
+# real 20:30-20:44 ET warm scan (refresh_daily_movers_from_sp500,
+# persist_quote_discovery_market_movers, save_market_momentum_screen) run
+# on Sunday evening ahead of Monday's open. Every other Sunday invocation
+# (~94 of ~96/week) correctly hits get_cron_mode()'s early "skip" return
+# -- a cheap, in-memory-only check (is_us_market_holiday() is a plain set
+# lookup, no I/O) -- so the extra Sunday ticks are harmless, not free of
+# cost but negligibly so. Narrowing this back to 1-5 would silently kill
+# the Sunday warm scan, not just remove waste.
 #
 # Responsibilities:
 #   1) Refresh stock intelligence for MAG7 + active symbols
