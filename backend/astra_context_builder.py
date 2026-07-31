@@ -124,6 +124,32 @@ def build_market_context_from_firestore() -> Dict[str, Any]:
         "updated_at": snap.get("updated_at"),
     }
 
+def _find_current_alpha_watch_item(symbol: str) -> Dict[str, Any] | None:
+    """
+    Alpha Watch's OWN selection reasoning for a symbol -- genuinely
+    different from BullBrain's raw signal/pattern below (see
+    bullbrain_area_d_momentum_override_audit memory: the two systems are
+    substantially decoupled). Only checks the live /bullsignals_ai/
+    alpha_watch doc (today's current picks) -- a symbol that qualified
+    previously but has since rotated out won't be found here. The
+    historical case ("was a pick") would need a pick_tracking query by
+    symbol, deliberately out of scope here (needs its own care around
+    Firestore indexing given how many rows a single symbol can have).
+    """
+    doc = db.collection("bullsignals_ai").document("alpha_watch").get()
+    if not doc.exists:
+        return None
+
+    items = (doc.to_dict() or {}).get("items") or []
+    symbol = symbol.upper()
+
+    for item in items:
+        if str(item.get("symbol") or "").upper() == symbol:
+            return item
+
+    return None
+
+
 def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None = None) -> Dict[str, Any]:
     stock = get_stock(symbol) or {}
 
@@ -140,6 +166,22 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
     display_intelligence = stock.get("displayIntelligence") or {}
 
     days5 = ((history.get("forwardReturns") or {}).get("days5") or {})
+
+    alpha_watch_item = _find_current_alpha_watch_item(symbol)
+    alpha_watch_reasoning = (
+        {
+            "isCurrentPick": True,
+            "setupLabel": alpha_watch_item.get("setupLabel"),
+            "reason": alpha_watch_item.get("reason"),
+            "whyNow": alpha_watch_item.get("whyNow"),
+            "factorScores": alpha_watch_item.get("factorScores"),
+            "score": alpha_watch_item.get("score"),
+            "marketRegime": alpha_watch_item.get("marketRegime"),
+            "riskLevel": alpha_watch_item.get("riskLevel"),
+            "riskFlags": alpha_watch_item.get("riskFlags"),
+        }
+        if alpha_watch_item else None
+    )
 
     return {
         "symbol": symbol,
@@ -180,6 +222,13 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
             "best5d": days5.get("best"),
             "worst5d": days5.get("worst"),
         },
+
+        # Genuinely separate from aiSignal/pattern above: that's BullBrain's
+        # raw model view; this is Alpha Watch's OWN selection reasoning
+        # (score_stock() in alpha_watch_logic.py), decoupled from the raw
+        # signal per the Area D audit. Honestly None when the symbol isn't
+        # a current Alpha Watch pick -- never fabricated.
+        "alphaWatchReasoning": alpha_watch_reasoning,
 
         "technical": {
             "trend": technical.get("trend") or {},
