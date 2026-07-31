@@ -315,6 +315,99 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
             f"{summary.get('mean_return_pct')}%. This reflects real, checked outcomes, not a forecast."
         )
 
+    if context.get("contextType") == "alphaclara_picks_overview":
+        accuracy_report = context.get("accuracyReport") or {}
+        accuracy_summary = accuracy_report.get("summary")
+        picks_overview = context.get("picksOverview") or {}
+        counts = picks_overview.get("counts") or {}
+        rankings = picks_overview.get("rankings") or {}
+        question = ((context.get("intent") or {}).get("question") or "").lower()
+
+        # 1) Ranking-question phrasing, checked BEFORE trusting an extracted
+        # symbol -- confirmed on real data that "whats our best performer
+        # right now" extracts "NOW" (a real ticker, ServiceNow) purely from
+        # the word "now", which would otherwise hijack this into a wrong,
+        # single-symbol answer instead of the intended ranking answer. Same
+        # residual ticker/word collision class already disclosed for the
+        # symbol-extraction fix -- worked around here by priority ordering
+        # rather than re-solved at the source.
+        ranking_words = ["best", "worst", "top", "most", "biggest", "performer", "moved the most"]
+        is_ranking_question = rankings and any(w in question for w in ranking_words)
+
+        if is_ranking_question:
+            best = rankings.get("bestPerformer")
+            worst = rankings.get("worstPerformer")
+            most_picked = rankings.get("mostPicked")
+
+            parts = []
+            if best:
+                parts.append(f"the best performer right now is {best.get('symbol')} at {best.get('returnPct')}%")
+            if worst:
+                parts.append(f"the worst is {worst.get('symbol')} at {worst.get('returnPct')}%")
+            if most_picked:
+                parts.append(f"the most-picked symbol is {most_picked.get('symbol')} ({most_picked.get('pick_count')} times)")
+
+            if parts:
+                return "Across all tracked picks, " + "; ".join(parts) + "."
+
+        # 2) A specific symbol was mentioned -- answer about THAT pick.
+        if symbols:
+            sym_ctx = symbols[0]
+            symbol = sym_ctx.get("symbol")
+            tracking_summary = sym_ctx.get("pickTrackingSummary")
+
+            if not tracking_summary:
+                return (
+                    f"I don't have a tracked pick on record for {symbol}. "
+                    "It may not have been an Alphaclara pick, or it's outside the tracked window."
+                )
+
+            status = tracking_summary.get("status")
+            pick_count = tracking_summary.get("pick_count") or 0
+            times = "time" if pick_count == 1 else "times"
+
+            if status == "checked":
+                return (
+                    f"{symbol} was picked {pick_count} {times}. Its resolved return is "
+                    f"{tracking_summary.get('checked_return_pct')}%, checked on "
+                    f"{str(tracking_summary.get('checked_at') or '')[:10]}."
+                )
+            if status == "tracking":
+                return (
+                    f"{symbol} was picked {pick_count} {times} and is still being tracked. "
+                    f"It's moved {tracking_summary.get('livePctSinceFirstPick')}% since first "
+                    f"picked on {tracking_summary.get('first_picked_date')}."
+                )
+            return (
+                f"{symbol} was picked {pick_count} {times}, but its outcome couldn't be "
+                "determined (price data unavailable)."
+            )
+
+        # 3) Defensive: an accuracy-shaped question, in case one ever reaches
+        # here (structurally it shouldn't -- accuracy_track_record's intent
+        # check runs before any contextType branch and always wins first).
+        if accuracy_summary and any(w in question for w in ["accura", "track record", "win rate", "success rate"]):
+            horizon_days = str(accuracy_summary.get("horizon") or "").rstrip("d") or "an unknown number of"
+            return (
+                f"Based on {accuracy_summary.get('n')} tracked picks ({horizon_days}-day outcomes), "
+                f"{accuracy_summary.get('pct_positive')}% were positive with an average return of "
+                f"{accuracy_summary.get('mean_return_pct')}%."
+            )
+
+        # 4) Sensible default: an aggregate status overview -- always true and
+        # useful regardless of which specific sub-question actually triggered
+        # this path, without guessing at an intent we have no real signal for.
+        summary_line = (
+            f"Alphaclara is currently tracking {counts.get('total', 0)} picks — "
+            f"{counts.get('tracking', 0)} still active, {counts.get('checked', 0)} resolved."
+        )
+        if accuracy_summary:
+            summary_line += (
+                f" Of the resolved picks, {accuracy_summary.get('pct_positive')}% were positive "
+                f"with an average return of {accuracy_summary.get('mean_return_pct')}%."
+            )
+        return summary_line
+
     if context.get("contextType") == "momentum_movers":
         momentum = context.get("momentum") or {}
         selected = momentum.get("selectedMover") or {}
