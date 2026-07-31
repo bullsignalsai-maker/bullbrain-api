@@ -47,6 +47,15 @@ def detect_astra_intent(
         intent = KNOWN_INTENTS[question_id]
     elif any(w in q_lower for w in ["compare", "vs", "versus"]):
         intent = "compare_symbols"
+    elif any(
+        w in q_lower
+        for w in [
+            "accuracy", "accurate", "track record", "how good",
+            "win rate", "success rate", "hit rate", "how reliable",
+            "how often are you right", "actually work",
+        ]
+    ):
+        intent = "accuracy_track_record"
     elif any(w in q_lower for w in ["why moving", "why is", "running", "moving"]):
         intent = "mover_why"
     elif any(w in q_lower for w in ["real", "quality", "sustainable", "valid"]):
