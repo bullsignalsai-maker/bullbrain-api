@@ -6,6 +6,17 @@ from typing import Dict, Any
 
 from backend.astra_intent_router import detect_astra_intent
 from backend.astra_context_builder import build_astra_context
+from symbols_clean import REAL_TICKERS
+
+# A candidate word from the user's question is only treated as a stock
+# symbol if it's a genuine, known ticker -- not merely "looks like one"
+# (1-5 uppercase letters). The previous approach was a denylist of common
+# short words ("WHY", "IS", ...), which is unbounded: any short English
+# word not yet added ("DID", "YOU", "PICK") slipped through and got
+# treated as a real symbol, producing empty/garbage context blocks
+# alongside the real one. REAL_TICKERS is the same source of truth
+# alpha_watch_logic.py/market_cron.py already use.
+_REAL_TICKER_SET = frozenset(REAL_TICKERS)
 
 # displayIntelligence (System B) buckets, collapsed into Clara's three
 # conversational phrases. Raw BUY/SELL/HOLD are also recognized so the
@@ -673,7 +684,7 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     mentioned_symbols = re.findall(r"\b[A-Z]{1,5}\b", question_upper)
 
     for sym in mentioned_symbols:
-        if sym not in available_symbols and sym not in ["WHY", "WHAT", "WITH", "THIS", "THAT", "HOLD", "BUY", "SELL", "IS"]:
+        if sym not in available_symbols and sym in _REAL_TICKER_SET:
             available_symbols.append(sym)
 
     # ✅ Resolve follow-up pronouns like "it", "that", "this stock"
