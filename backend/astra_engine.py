@@ -18,6 +18,15 @@ from symbols_clean import REAL_TICKERS
 # alpha_watch_logic.py/market_cron.py already use.
 _REAL_TICKER_SET = frozenset(REAL_TICKERS)
 
+# Real tickers that are ALSO common short English words -- confirmed to
+# cause real, live problems twice: "IT" hijacked "why did you pick PANW"-
+# style questions, "NOW" hijacked a ranking question via "right now" (see
+# bullbrain_clara_astra_investigation memory). For exactly these words,
+# extraction below additionally requires the user to have actually typed
+# them in all-caps -- everywhere else, REAL_TICKERS membership alone is
+# still sufficient (typing "panw" lowercase must keep working).
+_AMBIGUOUS_TICKERS = frozenset({"IT", "ALL", "LOW", "NOW", "ON", "ARE", "GO", "SO"})
+
 # displayIntelligence (System B) buckets, collapsed into Clara's three
 # conversational phrases. Raw BUY/SELL/HOLD are also recognized so the
 # fallback path (a symbol without displayIntelligence yet) still translates.
@@ -792,13 +801,23 @@ def run_astra(req, astra_llm_answer_fn) -> Dict[str, Any]:
     else:
         available_symbols = [p.symbol.upper() for p in (req.positions or [])]
 
-    # ✅ Add any symbols mentioned in the question, even if not in portfolio
-    question_upper = (req.question or "").upper()
-    mentioned_symbols = re.findall(r"\b[A-Z]{1,5}\b", question_upper)
+    # ✅ Add any symbols mentioned in the question, even if not in portfolio.
+    # Extracted from the ORIGINAL, non-uppercased question -- casing is a
+    # real signal ("PANW" vs "it"/"now") that a pre-uppercase step would
+    # destroy before ever getting a chance to use it. Only required for
+    # the narrow _AMBIGUOUS_TICKERS set; every other real ticker still
+    # matches regardless of how the user typed it.
+    mentioned_raw = re.findall(r"\b[A-Za-z]{1,5}\b", req.question or "")
 
-    for sym in mentioned_symbols:
-        if sym not in available_symbols and sym in _REAL_TICKER_SET:
-            available_symbols.append(sym)
+    for raw in mentioned_raw:
+        sym = raw.upper()
+        if sym in available_symbols or sym not in _REAL_TICKER_SET:
+            continue
+        if sym in _AMBIGUOUS_TICKERS and raw != sym:
+            # Ambiguous ticker, not typed in all-caps -- treat as the
+            # ordinary English word it almost certainly is.
+            continue
+        available_symbols.append(sym)
 
     # ✅ Resolve follow-up pronouns like "it", "that", "this stock"
     resolved_question, resolved_symbols = resolve_followup_symbols(req, available_symbols)
