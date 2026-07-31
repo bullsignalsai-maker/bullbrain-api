@@ -213,6 +213,38 @@ def _report_for_horizon(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _horizon_sort_key(horizon: str) -> int:
+    # "5d"/"20d" sort lexicographically as ["20d", "5d"] (ASCII '2' < '5'),
+    # not shortest-first -- extract the numeric value so "shortest horizon"
+    # below is actually shortest, not alphabetical.
+    try:
+        return int("".join(ch for ch in horizon if ch.isdigit()))
+    except Exception:
+        return 0
+
+
+def _build_summary(horizons_report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    A small, flat, stable summary for lightweight consumers (e.g. a UI
+    disclosure line) that shouldn't need to know about the horizon-keyed
+    breakdown structure. Picks the shortest horizon with any resolved
+    picks -- resolves "which horizon does this describe" once, here,
+    instead of leaving every caller to guess.
+    """
+    for horizon in sorted(horizons_report.keys(), key=_horizon_sort_key):
+        overall = horizons_report[horizon]["overall"]
+        if overall.get("n"):
+            return {
+                "horizon": horizon,
+                "n": overall["n"],
+                "pct_positive": overall["pct_positive"],
+                "mean_return_pct": overall["mean_return_pct"],
+                "pick_date_range": horizons_report[horizon]["pick_date_range"],
+            }
+
+    return None
+
+
 def build_accuracy_report(deduped_picks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Takes already-deduped picks (see dedupe_checked_picks()) and returns
@@ -225,13 +257,16 @@ def build_accuracy_report(deduped_picks: List[Dict[str, Any]]) -> Dict[str, Any]
         if horizon:
             by_horizon[horizon].append(p)
 
+    horizons_report = {
+        horizon: _report_for_horizon(picks)
+        for horizon, picks in sorted(by_horizon.items(), key=lambda kv: _horizon_sort_key(kv[0]))
+    }
+
     return {
         "schema_version": "pick_accuracy_report_v1",
         "total_distinct_picks": len(deduped_picks),
-        "horizons": {
-            horizon: _report_for_horizon(picks)
-            for horizon, picks in sorted(by_horizon.items())
-        },
+        "summary": _build_summary(horizons_report),
+        "horizons": horizons_report,
         "confounding_guard": {
             "min_distinct_symbols": MIN_DISTINCT_SYMBOLS,
             "max_dominant_symbol_share": MAX_DOMINANT_SYMBOL_SHARE,
