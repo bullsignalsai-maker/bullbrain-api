@@ -3230,7 +3230,7 @@ def astra_symbol_sentiment(symbol: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------
 @app.post("/astra-chat")
 def astra_chat(req: AstraChatRequest):
-    if req.contextType not in ("stock_detail", "market", "momentum_movers"):
+    if req.contextType not in ("stock_detail", "market", "momentum_movers", "alphaclara_picks_overview"):
         if not req.positions or req.total_value <= 0:
             return {
                 "answer": (

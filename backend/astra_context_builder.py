@@ -256,6 +256,53 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
     }
 
 
+def _pick_performance_metric(item: Dict[str, Any]) -> float | None:
+    # Two differently-named fields answer the same real question ("how
+    # has this performed since picked"): a resolved pick's return is
+    # frozen in checked_return_pct, a still-open pick's is live in
+    # livePctSinceFirstPick. Unified here so ranking doesn't depend on
+    # correctly reconciling both field names per item.
+    if item.get("status") == "checked":
+        return item.get("checked_return_pct")
+    if item.get("status") == "tracking":
+        return item.get("livePctSinceFirstPick")
+    return None
+
+
+def _compute_picks_rankings(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Pre-computed server-side, not left for the LLM to scan-and-rank a
+    (potentially 100+-item) JSON array itself -- deterministic, always
+    correct, same discipline as every other cross-item computation in
+    this project.
+    """
+    def _summary(item: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        if not item:
+            return None
+        return {
+            "symbol": item.get("symbol"),
+            "status": item.get("status"),
+            "tier": item.get("tier"),
+            "returnPct": _pick_performance_metric(item),
+            "pick_count": item.get("pick_count"),
+        }
+
+    ranked = [
+        (item, m) for item in items
+        if isinstance((m := _pick_performance_metric(item)), (int, float))
+    ]
+
+    best = max(ranked, key=lambda pair: pair[1])[0] if ranked else None
+    worst = min(ranked, key=lambda pair: pair[1])[0] if ranked else None
+    most_picked = max(items, key=lambda i: i.get("pick_count") or 0) if items else None
+
+    return {
+        "bestPerformer": _summary(best),
+        "worstPerformer": _summary(worst),
+        "mostPicked": _summary(most_picked),
+    }
+
+
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
 
@@ -283,6 +330,75 @@ def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
             },
             "symbols": [],
             "accuracyReport": report,
+        }
+
+    # Alphaclara Picks LIST screen: bundles BOTH the accuracy report and
+    # the real tiered picks list, so either an aggregate question ("how
+    # accurate", "best performer") or a specific-pick question ("why is
+    # HIMS still tracking", "PANW's return since picked") can be answered
+    # from the same context. Reuses /alphaclara-tracking's existing dedup/
+    # tiering logic directly rather than rebuilding it -- imported lazily
+    # (not at module top) so that scripts which only need
+    # astra_context_builder.py for unrelated reasons aren't forced through
+    # main.py's full startup (BullBrain model load, etc.). Safe here
+    # because this branch only ever runs during a live /astra-chat
+    # request, by which point main.py is already fully loaded.
+    if getattr(req, "contextType", None) == "alphaclara_picks_overview":
+        from main import get_alphaclara_tracking
+
+        raw_docs = get_checked_picks_for_report(db)
+        deduped = dedupe_checked_picks(raw_docs)
+        accuracy_report = build_accuracy_report(deduped)
+
+        # Fetched once, full and uncapped within the 30-day window (not
+        # limit=30) -- confirmed on real data that a specifically-
+        # mentioned symbol (PANW, HIMS) can sit well outside even a
+        # 30-item recency-sorted slice despite being a real, resolvable
+        # pick, so a mentioned-symbol lookup must never depend on the
+        # truncated aggregate list below.
+        tracking = get_alphaclara_tracking(limit=None, window_days=30)
+        all_items = tracking.get("items") or []
+        tracking_by_symbol = {
+            str(item.get("symbol") or "").upper(): item
+            for item in all_items
+        }
+
+        # Same pattern as stock_detail: any symbol mentioned in the
+        # question still gets its own real per-symbol lookup, enriched
+        # with its pick-tracking record (return/pick_count) from the full,
+        # untruncated set -- distinct from alphaWatchReasoning (why it was
+        # EVER picked); this is how it has actually PERFORMED since picked.
+        requested_symbols = intent_payload.get("symbols") or []
+        symbol_contexts = []
+        for sym in requested_symbols:
+            ctx = build_symbol_context(sym, None)
+            ctx["pickTrackingSummary"] = tracking_by_symbol.get(sym.upper())
+            symbol_contexts.append(ctx)
+
+        return {
+            "intent": intent_payload,
+            "contextType": "alphaclara_picks_overview",
+            "portfolio": {
+                "total_value": None,
+                "total_gain": None,
+                "today_gain": None,
+                "position_count": 0,
+                "top_holding": None,
+                "best_position": None,
+                "worst_position": None,
+            },
+            "symbols": symbol_contexts,
+            "accuracyReport": accuracy_report,
+            "picksOverview": {
+                # Truncated for prompt size -- rankings below are computed
+                # over the full all_items set, not this slice, so ranking
+                # accuracy never depends on this truncation.
+                "items": all_items[:30],
+                "counts": tracking.get("counts") or {},
+                "window_days": tracking.get("window_days"),
+                "updated_at": tracking.get("updated_at"),
+                "rankings": _compute_picks_rankings(all_items),
+            },
         }
 
     # Momentum Movers mode: no portfolio required
