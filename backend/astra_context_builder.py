@@ -4,6 +4,8 @@ from typing import Dict, Any, List
 from backend.stock_repo import get_stock
 from backend.news.market_news_repo import get_market_news
 from backend.news.market_highlights import build_market_highlights
+from backend.pick_tracking import get_checked_picks_for_report
+from backend.pick_accuracy_report import dedupe_checked_picks, build_accuracy_report
 
 from firebase_admin import firestore
 db = firestore.client()
@@ -207,6 +209,33 @@ def build_symbol_context(symbol: str, portfolio_position: Dict[str, Any] | None 
 
 def build_astra_context(req, intent_payload: Dict[str, Any]) -> Dict[str, Any]:
     positions = req.positions or []
+
+    # Accuracy/track-record questions are answered the same way regardless
+    # of which screen the user is on -- checked first, before any
+    # contextType branch, so "how accurate are you" asked from a stock
+    # detail screen still gets the real track record, not that screen's
+    # unrelated symbol context.
+    if intent_payload.get("intent") == "accuracy_track_record":
+        raw_docs = get_checked_picks_for_report(db)
+        deduped = dedupe_checked_picks(raw_docs)
+        report = build_accuracy_report(deduped)
+
+        return {
+            "intent": intent_payload,
+            "contextType": "accuracy_track_record",
+            "portfolio": {
+                "total_value": None,
+                "total_gain": None,
+                "today_gain": None,
+                "position_count": 0,
+                "top_holding": None,
+                "best_position": None,
+                "worst_position": None,
+            },
+            "symbols": [],
+            "accuracyReport": report,
+        }
+
     # Momentum Movers mode: no portfolio required
     if getattr(req, "contextType", None) == "momentum_movers":
         selected = getattr(req, "selectedMover", None) or {}

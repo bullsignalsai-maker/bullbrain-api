@@ -295,6 +295,26 @@ def build_fast_astra_answer(context: Dict[str, Any]) -> str:
     intent = context.get("intent", {}).get("intent")
     portfolio = context.get("portfolio") or {}
     symbols = context.get("symbols") or []
+    if context.get("contextType") == "accuracy_track_record":
+        report = context.get("accuracyReport") or {}
+        summary = report.get("summary")
+
+        if not summary:
+            return (
+                "I don't have enough resolved picks yet to report real accuracy numbers. "
+                "Check back once more tracked picks have reached their outcome window."
+            )
+
+        horizon_days = str(summary.get("horizon") or "").rstrip("d") or "an unknown number of"
+        date_range = summary.get("pick_date_range") or {}
+
+        return (
+            f"Based on {summary.get('n')} tracked picks ({horizon_days}-day outcomes, "
+            f"{date_range.get('min')} to {date_range.get('max')}), "
+            f"{summary.get('pct_positive')}% were positive with an average return of "
+            f"{summary.get('mean_return_pct')}%. This reflects real, checked outcomes, not a forecast."
+        )
+
     if context.get("contextType") == "momentum_movers":
         momentum = context.get("momentum") or {}
         selected = momentum.get("selectedMover") or {}
