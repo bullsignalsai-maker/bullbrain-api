@@ -56,6 +56,20 @@ def detect_astra_intent(
         ]
     ):
         intent = "accuracy_track_record"
+    elif any(
+        w in q_lower
+        for w in [
+            "still tracking", "still pending", "pending",
+            "hasn't resolved", "has not resolved", "not yet resolved", "resolved yet",
+            "new today",
+        ]
+    ):
+        # Placed before mover_why/decision_explain deliberately: "why is
+        # HIMS still tracking" contains "why is" (mover_why, checked next)
+        # AND "still tracking" -- whichever check runs first wins, so this
+        # more specific list-state phrase has to be checked earlier, or
+        # every such question gets misrouted to mover_why instead.
+        intent = "picks_list_status"
     elif any(w in q_lower for w in ["why moving", "why is", "running", "moving"]):
         intent = "mover_why"
     elif any(w in q_lower for w in ["real", "quality", "sustainable", "valid"]):
