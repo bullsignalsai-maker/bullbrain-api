@@ -314,3 +314,34 @@ def check_pending_picks(db) -> Dict[str, Any]:
     }
     _mark_checker_ran(db, today, stats)
     return stats
+
+
+# =========================================================
+# Accuracy report — read side.
+#
+# Thin Firestore wrapper only -- all analysis logic (dedup, breakdowns,
+# confounding guard) lives in backend/pick_accuracy_report.py, which takes
+# plain dicts and has no Firestore dependency of its own.
+# =========================================================
+
+def get_checked_picks_for_report(db, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Fetches raw pick_tracking docs for the report builder. No filtering by
+    outcome/status here -- dedupe_checked_picks() (backend/pick_accuracy_
+    report.py) is what selects the checked horizons; this just bounds the
+    Firestore scan by pick_date when `since` is given. Omit `since` for
+    full history -- the collection is small enough today (thousands of
+    docs) that a full scan is still cheap; add a default lookback here
+    first if that stops being true, rather than in the caller.
+    """
+    collection = (
+        db.collection(COL_ROOT)
+          .document(PICK_TRACKING_COLLECTION)
+          .collection("picks")
+    )
+
+    query = collection
+    if since:
+        query = query.where("pick_date", ">=", since)
+
+    return [doc.to_dict() for doc in query.stream()]
