@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from urllib.parse import urlparse
@@ -37,6 +38,12 @@ from fastapi import APIRouter
 
 from backend.news.market_news_repo import get_market_news
 from backend.market_momentum import get_market_momentum_screen, save_market_momentum_screen
+from backend.pick_tracking import get_checked_picks_for_report
+from backend.pick_accuracy_report import (
+    dedupe_checked_picks,
+    build_accuracy_report,
+    render_markdown_report,
+)
 
 router = APIRouter()
 app = FastAPI()
@@ -4711,6 +4718,43 @@ def get_alphaclara_pick_history(symbol: str, window_days: int = 30):
             "pick_count": 0,
             "price_history": [],
         }
+
+
+@app.get("/alphaclara-accuracy-report")
+def get_alphaclara_accuracy_report(
+    since: Optional[str] = None,
+    format: str = "json",
+):
+    """
+    Reusable pick accuracy report -- built 2026-07-31 after a one-off
+    post-mortem found the naive approach (analyzing raw pick_tracking rows
+    directly) overcounts massively, since record_picks_for_tracking()
+    writes a fresh row every cron cycle a symbol appears in a ranked list
+    (one real pick was counted 96 times). All analysis logic (dedup,
+    per-horizon breakdowns, confounding guard) lives in
+    backend/pick_accuracy_report.py -- pure functions, no Firestore -- so
+    this route is just: fetch raw docs, dedupe, build report, render.
+
+    `since` (optional pick_date, e.g. "2026-07-24"): bounds the Firestore
+    scan. Omit for full history.
+    `format`: "json" (default) for programmatic/future in-app use, or
+    "markdown" for a quick human-readable read (matches how this was
+    manually reviewed today, minus re-deriving the dedup/confounding logic
+    each time).
+    """
+    try:
+        raw_docs = get_checked_picks_for_report(db, since=since)
+        deduped = dedupe_checked_picks(raw_docs)
+        report = build_accuracy_report(deduped)
+
+        if format == "markdown":
+            return PlainTextResponse(render_markdown_report(report))
+
+        return {"status": "ok", **report}
+
+    except Exception as e:
+        print("[alphaclara-accuracy-report] error:", e)
+        return {"status": "error", "error": str(e)}
 
 
 # -----------------------------
