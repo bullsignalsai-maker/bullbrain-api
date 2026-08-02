@@ -4428,16 +4428,22 @@ def get_alphaclara_tracking(
             for it in raw_items
             if it.get("symbol")
         }
+        # Batched into one request instead of one .get() per symbol -- each
+        # individual .get() pays its own fixed network round-trip (~129ms
+        # measured, almost all overhead, not actual read time), so 134
+        # sequential calls cost ~17s just in round trips. get_all() sends
+        # every ref in a single request and pays that overhead once.
+        stock_refs = [
+            db.collection("bullsignals_ai")
+            .document("stocks")
+            .collection("symbols")
+            .document(sym)
+            for sym in symbols_needed
+        ]
         stock_by_symbol = {}
-        for sym in symbols_needed:
-            snap = (
-                db.collection("bullsignals_ai")
-                .document("stocks")
-                .collection("symbols")
-                .document(sym)
-                .get()
-            )
-            stock_by_symbol[sym] = snap.to_dict() if snap.exists else {}
+        if stock_refs:
+            for snap in db.get_all(stock_refs):
+                stock_by_symbol[snap.id] = snap.to_dict() if snap.exists else {}
 
         # Tier freshness uses the US/Eastern trading day, not naive UTC --
         # UTC midnight falls mid-evening ET (7-8pm depending on DST), hours
