@@ -39,6 +39,7 @@ from fastapi import APIRouter
 from backend.news.market_news_repo import get_market_news
 from backend.market_momentum import get_market_momentum_screen, save_market_momentum_screen
 from backend.pick_tracking import get_checked_picks_for_report
+from backend.market_calendar import load_recent_trading_days
 from backend.pick_accuracy_report import (
     dedupe_checked_picks,
     build_accuracy_report,
@@ -4325,10 +4326,29 @@ def get_alphaclara_tracking(
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
         today = now.date()
-        window_start_date = (today - datetime.timedelta(days=WINDOW_DAYS - 1)).isoformat()
+
+        # Trading-day-based window, not naive calendar days -- "3 days"
+        # should mean 3 real market sessions, not 3 calendar days that can
+        # span a weekend with zero cron activity. Confirmed live
+        # 2026-08-02: the old calendar-day math returned 0 items on a
+        # Sunday night purely because Sat + most of Sun have no
+        # market_cron activity by design (see
+        # bullbrain_alphaclara_tracking_endpoint memory) -- the exact same
+        # 3-calendar-day window on a Tue-Thu stretch would show plenty of
+        # data, so the old math's coverage silently depended on which day
+        # of the week the request happened to land on. Reuses the same
+        # candle-derived trading-day calendar built for the pick-tracking
+        # outcome checker (backend/market_calendar.py). Falls back to
+        # calendar-day arithmetic only if candle data is unavailable.
+        trading_days_sorted = sorted(load_recent_trading_days(lookback_days=60), reverse=True)
+        recent_trading_days = trading_days_sorted[:WINDOW_DAYS]
+        window_start_date = (
+            recent_trading_days[-1] if recent_trading_days
+            else (today - datetime.timedelta(days=WINDOW_DAYS - 1)).isoformat()
+        )
         window_start_dt = (
             datetime.datetime.combine(
-                today - datetime.timedelta(days=WINDOW_DAYS - 1),
+                datetime.date.fromisoformat(window_start_date),
                 datetime.time.min,
                 tzinfo=datetime.timezone.utc,
             ).isoformat().replace("+00:00", "Z")
