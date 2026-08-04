@@ -750,6 +750,33 @@ def persist_quote_discovery_market_movers():
         spreadsheet_metadata = data.get("spreadsheet_metadata") or {}
         current_session_type = get_current_discovery_session_type()
 
+        # This writer runs BEFORE BullBrain's full feature computation --
+        # deliberately lightweight, quote-only, no features_meta access.
+        # It shouldn't duplicate persist_internal_market_movers()'s heavier
+        # volume-context computation just to avoid wiping it: both writers
+        # replace the whole `movers` array on write, so without this,
+        # every discovery-only cycle silently reset volumeVsAvgPct/
+        # volumeZScore/volumeLevel/obvTrend/volumeLabel to null for every
+        # symbol, even when the enriched writer had just computed them.
+        # Read the current doc's per-symbol values once and carry them
+        # forward.
+        existing_volume_by_symbol: Dict[str, Dict[str, Any]] = {}
+        try:
+            existing_snap = db.collection(COL_ROOT).document("market_movers").get()
+            existing_data = existing_snap.to_dict() if existing_snap.exists else {}
+            for m in (existing_data or {}).get("movers") or []:
+                sym = str(m.get("symbol") or "").upper().strip()
+                if sym:
+                    existing_volume_by_symbol[sym] = {
+                        "volumeVsAvgPct": m.get("volumeVsAvgPct"),
+                        "volumeZScore": m.get("volumeZScore"),
+                        "volumeLevel": m.get("volumeLevel"),
+                        "obvTrend": m.get("obvTrend"),
+                        "volumeLabel": m.get("volumeLabel"),
+                    }
+        except Exception as e:
+            log(f"⚠️ could not read existing market_movers volume fields: {e}")
+
         preview_gainers = []
         preview_losers = []
 
@@ -762,7 +789,14 @@ def persist_quote_discovery_market_movers():
                 return None
 
             sheet_meta = spreadsheet_metadata.get(sym) or {}
-            
+            preserved_volume = existing_volume_by_symbol.get(sym) or {
+                "volumeVsAvgPct": None,
+                "volumeZScore": None,
+                "volumeLevel": None,
+                "obvTrend": None,
+                "volumeLabel": None,
+            }
+
             return {
                 "symbol": sym,
                 "company": item.get("company_name") or COMPANY_NAMES.get(sym, sym),
@@ -790,6 +824,10 @@ def persist_quote_discovery_market_movers():
                 "weakestSectors": sheet_meta.get("weakestSectors"),
                 "sessionType": sheet_meta.get("sessionType") or current_session_type,
                 "generatedAt": sheet_meta.get("generatedAt"),
+
+                # Preserved from whatever persist_internal_market_movers()
+                # last computed -- see comment above.
+                **preserved_volume,
             }
 
         for item in gainers[:35]:
