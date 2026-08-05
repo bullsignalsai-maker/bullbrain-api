@@ -336,6 +336,109 @@ def check_pending_picks(db) -> Dict[str, Any]:
 
 
 # =========================================================
+# Retention — read+delete side.
+# =========================================================
+
+# Comfortably beyond both the checker's own scan window
+# (CHECKER_WINDOW_DAYS=35) and the accuracy report's default read window
+# (get_checked_picks_for_report's DEFAULT_REPORT_LOOKBACK_DAYS=90), so a
+# 90-day gap always separates "the report stops looking here" from
+# "cleanup deletes here" -- no boundary race between the two.
+PRUNE_AFTER_DAYS = 180
+
+# Firestore batch writes cap at 500 operations.
+_PRUNE_BATCH_SIZE = 400
+
+
+def prune_resolved_picks(db) -> Dict[str, Any]:
+    """
+    Once-per-day cleanup: deletes pick_tracking rows old enough
+    (pick_date <= today - PRUNE_AFTER_DAYS) AND fully resolved -- every
+    horizon status is "checked" or "unavailable", never "pending". A row
+    still pending this far out (checker missed a run, symbol data was
+    transiently unavailable) is left alone rather than deleted, so
+    nothing still due for a real outcome is ever lost; it just waits for
+    a later prune run once check_pending_picks() resolves it.
+
+    No separate archive step: dedupe_checked_picks() already collapses
+    every raw row sharing a (symbol, pick_date, horizon) key down to one
+    representative record, and duplicate rows share the same
+    checked_return_pct by construction (same real-world outcome, per
+    dedupe_checked_picks()'s own docstring) -- so by the time a row ages
+    past the report's 90-day read window, its raw duplicates carry no
+    analysis value that isn't already fully captured in any report
+    computed while it was still in-window.
+
+    Safe to call more than once on the same UTC calendar day -- guarded
+    via the same state doc check_pending_picks() uses, under a
+    different key so the two don't clobber each other's stats.
+    """
+    today = _today_str()
+    state = _get_checker_state(db)
+    if state.get("last_prune_run_date") == today:
+        return {"skipped": True, "reason": "already_ran_today"}
+
+    cutoff = (
+        datetime.date.fromisoformat(today) - datetime.timedelta(days=PRUNE_AFTER_DAYS)
+    ).isoformat()
+
+    collection = (
+        db.collection(COL_ROOT)
+          .document(PICK_TRACKING_COLLECTION)
+          .collection("picks")
+    )
+    query = collection.where("pick_date", "<=", cutoff)
+
+    scanned = 0
+    deleted = 0
+    skipped_still_pending = 0
+    batch = db.batch()
+    batch_count = 0
+
+    for doc in query.stream():
+        scanned += 1
+        data = doc.to_dict() or {}
+        horizons = data.get("horizons") or {}
+
+        fully_resolved = bool(horizons) and all(
+            isinstance(h, dict) and h.get("status") in ("checked", "unavailable")
+            for h in horizons.values()
+        )
+
+        if not fully_resolved:
+            skipped_still_pending += 1
+            continue
+
+        batch.delete(doc.reference)
+        batch_count += 1
+        deleted += 1
+
+        if batch_count >= _PRUNE_BATCH_SIZE:
+            batch.commit()
+            batch = db.batch()
+            batch_count = 0
+
+    if batch_count:
+        batch.commit()
+
+    stats = {
+        "scanned": scanned,
+        "deleted": deleted,
+        "skipped_still_pending": skipped_still_pending,
+        "cutoff": cutoff,
+    }
+    db.collection(COL_ROOT).document(PICK_TRACKING_COLLECTION).set(
+        {
+            "last_prune_run_date": today,
+            "last_prune_run_at": _now_iso(),
+            "last_prune_stats": stats,
+        },
+        merge=True,
+    )
+    return stats
+
+
+# =========================================================
 # Accuracy report — read side.
 #
 # Thin Firestore wrapper only -- all analysis logic (dedup, breakdowns,
@@ -343,15 +446,23 @@ def check_pending_picks(db) -> Dict[str, Any]:
 # plain dicts and has no Firestore dependency of its own.
 # =========================================================
 
+DEFAULT_REPORT_LOOKBACK_DAYS = 90
+
+
 def get_checked_picks_for_report(db, since: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Fetches raw pick_tracking docs for the report builder. No filtering by
     outcome/status here -- dedupe_checked_picks() (backend/pick_accuracy_
     report.py) is what selects the checked horizons; this just bounds the
-    Firestore scan by pick_date when `since` is given. Omit `since` for
-    full history -- the collection is small enough today (thousands of
-    docs) that a full scan is still cheap; add a default lookback here
-    first if that stops being true, rather than in the caller.
+    Firestore scan by pick_date. Defaults to the last
+    DEFAULT_REPORT_LOOKBACK_DAYS days when `since` isn't given -- the
+    longest horizon this reports on is 20 trading days (~1 calendar
+    month), so 90 days is generous margin, not a truncation of anything
+    the accuracy math uses. Was previously an unbounded full-collection
+    scan on every call (public endpoint + two Clara chat contexts) with no
+    dedup on the write side -- that was fine at launch size but scales
+    with the collection's total lifetime history forever, not with what
+    the report actually needs. Pass `since` explicitly for a wider window.
     """
     collection = (
         db.collection(COL_ROOT)
@@ -359,8 +470,11 @@ def get_checked_picks_for_report(db, since: Optional[str] = None) -> List[Dict[s
           .collection("picks")
     )
 
-    query = collection
-    if since:
-        query = query.where("pick_date", ">=", since)
+    effective_since = since or (
+        datetime.date.fromisoformat(_today_str())
+        - datetime.timedelta(days=DEFAULT_REPORT_LOOKBACK_DAYS)
+    ).isoformat()
+
+    query = collection.where("pick_date", ">=", effective_since)
 
     return [doc.to_dict() for doc in query.stream()]

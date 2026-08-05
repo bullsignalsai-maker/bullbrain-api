@@ -2147,6 +2147,17 @@ def main():
         except Exception as e:
             log_exc("pick-tracking checker failed", e)
 
+        # Retention cleanup — same once/day gate as the checker above, own
+        # try/except so a failure here can never affect anything else.
+        # Only deletes rows old enough (180d) that every horizon is
+        # guaranteed resolved; see prune_resolved_picks()'s docstring.
+        try:
+            from backend.pick_tracking import prune_resolved_picks
+            prune_stats = prune_resolved_picks(get_db())
+            log(f"🧹 pick-tracking retention: {prune_stats}")
+        except Exception as e:
+            log_exc("pick-tracking retention cleanup failed", e)
+
     # ---------------------------------------------------------
     # MARKET MOMENTUM SCREEN CACHE
     # Builds Firestore-first UI-ready data for Momentum Movers screen
