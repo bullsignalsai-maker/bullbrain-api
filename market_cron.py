@@ -1376,12 +1376,17 @@ def _classify_volume_context(vol_z_corrected, obv_slope_10):
 def persist_internal_market_movers():
     db = get_db()
 
-    snaps = (
-        db.collection(COL_ROOT)
-          .document(COL_STOCKS)
-          .collection("symbols")
-          .stream()
-    )
+    # Fetch only REAL_TICKERS's own docs, not the whole symbols
+    # collection -- confirmed live (2026-08-05 cost audit) that
+    # stocks/symbols has grown to 5,726 docs (on-demand-bootstrapped
+    # symbols from past user searches/watchlist adds, never cleaned up),
+    # while REAL_TICKERS is only 546; the old `.stream()` here read all
+    # 5,726 every cron cycle just to filter 5,184 of them back out in the
+    # loop below. get_all() batches these into one efficient round trip,
+    # same technique as get_alphaclara_tracking()'s N+1 fix.
+    symbols_col = db.collection(COL_ROOT).document(COL_STOCKS).collection("symbols")
+    stock_refs = [symbols_col.document(sym) for sym in REAL_TICKERS]
+    snaps = [s for s in db.get_all(stock_refs) if s.exists]
 
     movers = []
     spreadsheet_metadata = load_today_spreadsheet_mover_metadata()
@@ -1405,10 +1410,9 @@ def persist_internal_market_movers():
         log(f"⚠️ could not read existing market_movers for merge: {e}")
 
     for doc in snaps:
+        # No REAL_TICKERS membership check needed here anymore -- snaps
+        # only ever contains docs fetched by REAL_TICKERS symbol above.
         sym = str(doc.id or "").upper().strip()
-
-        if sym not in REAL_TICKERS:
-            continue
 
         data = doc.to_dict() or {}
         quote = data.get("quote", {})
@@ -1570,15 +1574,19 @@ def load_logo_url_map(db) -> Dict[str, str]:
     once per cron cycle and merged into `results` before those two
     functions run, rather than duplicating this same collection scan
     inside each of them independently.
+
+    Bounded to REAL_TICKERS via get_all() rather than streaming the
+    whole symbols collection -- same fix as persist_internal_market_
+    movers() above, and for the same reason: stocks/symbols has grown to
+    5,726 docs (5,184 of them bootstrapped one-off symbols outside
+    REAL_TICKERS, never cleaned up), so the old unbounded `.stream()`
+    here read ~10x more documents than this function actually needed.
     """
     logo_map: Dict[str, str] = {}
 
-    snaps = (
-        db.collection(COL_ROOT)
-          .document(COL_STOCKS)
-          .collection("symbols")
-          .stream()
-    )
+    symbols_col = db.collection(COL_ROOT).document(COL_STOCKS).collection("symbols")
+    stock_refs = [symbols_col.document(sym) for sym in REAL_TICKERS]
+    snaps = [s for s in db.get_all(stock_refs) if s.exists]
 
     for doc in snaps:
         data = doc.to_dict() or {}
