@@ -1,15 +1,26 @@
+import re
 from typing import Any, Dict, List, Optional
 from backend.firestore_utils import utc_now_iso
 
 
+# Order is the check order (dict iteration order == insertion order),
+# not just documentation -- _detect_catalyst_type() returns the FIRST
+# category whose keywords match, so narrower/more specific categories
+# must come before broader/more generic ones or a coincidental broad
+# match wins over a real, specific one. "ai" is deliberately last: its
+# keyword list is the broadest of the seven ("ai" itself is a bare
+# 2-letter substring match, not word-boundary -- it also matches inside
+# "maintain"/"gain"/"said"/"certain"/"contain", a separate, real
+# collision risk not fixed here, only worked around by ordering).
+# Confirmed live: an ICE acquisition headline ("Intercontinental
+# Exchange to Acquire MarketAxess in $6 Billion Deal") was mislabeled
+# "ai" under the old order, purely because "ai" was checked before
+# "deal". Same ordering-bug class as astra_intent_router.py's
+# "risk"/mover_risk collision and "why is"/picks_list_status collision.
 CATALYST_KEYWORDS = {
     "price_target": [
         "price target", "raises target", "raised target", "target to",
         "street high", "analyst"
-    ],
-    "ai": [
-        "ai", "artificial intelligence", "chip", "chips", "gpu",
-        "data center", "infrastructure", "grok"
     ],
     "earnings": [
         "earnings", "revenue", "profit", "eps", "beats", "misses",
@@ -29,6 +40,10 @@ CATALYST_KEYWORDS = {
     "product": [
         "launch", "update", "software", "model", "iphone", "wwdc",
         "product", "release"
+    ],
+    "ai": [
+        "ai", "artificial intelligence", "chip", "chips", "gpu",
+        "data center", "infrastructure", "grok"
     ],
 }
 
@@ -57,9 +72,19 @@ def _clean_text(v: Any, limit: int = 220) -> str:
 
 
 def _detect_catalyst_type(text: str) -> Optional[str]:
+    # Word-boundary matching, not raw substring containment -- a plain
+    # `w in t` check treats every keyword as matchable anywhere inside a
+    # longer word, so short keywords collide with ordinary English words
+    # that happen to contain them as a substring: "ai" matched inside
+    # "maintain"/"gain"/"said"/"certain", "eps" matched inside "steps"
+    # (confirmed live: a real Apple headline about the CEO "Steps Down"
+    # was mislabeled "earnings" purely from "eps" inside "Steps"). \b
+    # requires each keyword to appear as its own word (or exact phrase,
+    # for multi-word entries like "price target"), not embedded in a
+    # longer one.
     t = text.lower()
     for ctype, words in CATALYST_KEYWORDS.items():
-        if any(w in t for w in words):
+        if any(re.search(rf"\b{re.escape(w)}\b", t) for w in words):
             return ctype
     return None
 
@@ -161,6 +186,7 @@ def _pick_best_catalyst(
                 "summary": summary,
                 "source": source,
                 "url": url,
+                "datetime": item.get("datetime"),
                 "confidence": "high" if score >= 6 else "medium",
             }
 

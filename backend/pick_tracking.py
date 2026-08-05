@@ -46,6 +46,19 @@ def _build_pick_record(
     pattern_history = stock.get("patternHistory") or {}
     days5 = (pattern_history.get("forwardReturns") or {}).get("days5") or {}
 
+    # Real, verifiable source data for pick_reason, when it genuinely
+    # traces to one -- backend/market_awareness.py's _pick_best_catalyst()
+    # already has the real, less-truncated headline (240 chars, vs.
+    # pick_reason's own 85-char display truncation, which can cut off a
+    # decisive word -- confirmed live: a real ICE acquisition headline
+    # lost the word "Deal" this way) plus the real source/url/datetime,
+    # sitting on stock.marketAwareness.catalyst by the time this runs.
+    # catalyst is None for the ~15% of picks that are a generic price/
+    # pattern fallback (no qualifying news found) -- these fields stay
+    # honestly null for those, never fabricated.
+    market_awareness = stock.get("marketAwareness") or {}
+    catalyst = market_awareness.get("catalyst")
+
     # Internal calibration only -- not shown to users yet, no evidence this
     # heuristic has predictive value. Same formula as /portfolio-ai-insight
     # (vol * probability skew), EXCEPT that endpoint's vol input is off by
@@ -110,6 +123,12 @@ def _build_pick_record(
         "pick_score": item.get("score"),
         "pick_setup_label": item.get("setupLabel"),
         "pick_reason": item.get("reason"),
+        "pick_news_url": catalyst.get("url") if catalyst else None,
+        "pick_news_source": catalyst.get("source") if catalyst else None,
+        # 240-char, the real less-truncated headline from the catalyst
+        # itself -- not the 85-char one embedded in pick_reason above.
+        "pick_news_headline": catalyst.get("headline") if catalyst else None,
+        "pick_news_datetime": catalyst.get("datetime") if catalyst else None,
         "pick_why_now": item.get("whyNow"),
         "pick_market_regime": item.get("marketRegime"),
         "pick_factor_scores": item.get("factorScores"),
