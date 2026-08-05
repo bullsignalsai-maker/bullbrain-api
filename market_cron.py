@@ -750,32 +750,30 @@ def persist_quote_discovery_market_movers():
         spreadsheet_metadata = data.get("spreadsheet_metadata") or {}
         current_session_type = get_current_discovery_session_type()
 
-        # This writer runs BEFORE BullBrain's full feature computation --
-        # deliberately lightweight, quote-only, no features_meta access.
-        # It shouldn't duplicate persist_internal_market_movers()'s heavier
-        # volume-context computation just to avoid wiping it: both writers
-        # replace the whole `movers` array on write, so without this,
-        # every discovery-only cycle silently reset volumeVsAvgPct/
-        # volumeZScore/volumeLevel/obvTrend/volumeLabel to null for every
-        # symbol, even when the enriched writer had just computed them.
-        # Read the current doc's per-symbol values once and carry them
-        # forward.
-        existing_volume_by_symbol: Dict[str, Dict[str, Any]] = {}
+        # Structural "merge, don't clobber" fix -- this is the third real
+        # bug from the old wholesale-replace pattern (Core Signals logos,
+        # then volume/OBV badges, now Market Movers logos again). Both
+        # writers to this doc used to build a brand-new dict per symbol
+        # and replace the whole `movers` array, so whichever ran most
+        # recently silently erased every field only the OTHER writer
+        # knows how to compute -- logoUrl and volumeLevel/obvTrend here
+        # (this writer has no features_meta/profile access, deliberately,
+        # to stay lightweight), sessionType/generatedAt in the other
+        # direction (see persist_internal_market_movers()). Fixed
+        # generally instead of enumerating fields again: read whatever is
+        # currently stored per symbol once, and each writer only overlays
+        # the specific fields it genuinely computes fresh -- everything
+        # else, present or future, survives automatically.
+        existing_by_symbol: Dict[str, Dict[str, Any]] = {}
         try:
             existing_snap = db.collection(COL_ROOT).document("market_movers").get()
             existing_data = existing_snap.to_dict() if existing_snap.exists else {}
             for m in (existing_data or {}).get("movers") or []:
                 sym = str(m.get("symbol") or "").upper().strip()
                 if sym:
-                    existing_volume_by_symbol[sym] = {
-                        "volumeVsAvgPct": m.get("volumeVsAvgPct"),
-                        "volumeZScore": m.get("volumeZScore"),
-                        "volumeLevel": m.get("volumeLevel"),
-                        "obvTrend": m.get("obvTrend"),
-                        "volumeLabel": m.get("volumeLabel"),
-                    }
+                    existing_by_symbol[sym] = m
         except Exception as e:
-            log(f"⚠️ could not read existing market_movers volume fields: {e}")
+            log(f"⚠️ could not read existing market_movers for merge: {e}")
 
         preview_gainers = []
         preview_losers = []
@@ -789,15 +787,8 @@ def persist_quote_discovery_market_movers():
                 return None
 
             sheet_meta = spreadsheet_metadata.get(sym) or {}
-            preserved_volume = existing_volume_by_symbol.get(sym) or {
-                "volumeVsAvgPct": None,
-                "volumeZScore": None,
-                "volumeLevel": None,
-                "obvTrend": None,
-                "volumeLabel": None,
-            }
 
-            return {
+            fresh_fields = {
                 "symbol": sym,
                 "company": item.get("company_name") or COMPANY_NAMES.get(sym, sym),
                 "price": item.get("price"),
@@ -824,11 +815,10 @@ def persist_quote_discovery_market_movers():
                 "weakestSectors": sheet_meta.get("weakestSectors"),
                 "sessionType": sheet_meta.get("sessionType") or current_session_type,
                 "generatedAt": sheet_meta.get("generatedAt"),
-
-                # Preserved from whatever persist_internal_market_movers()
-                # last computed -- see comment above.
-                **preserved_volume,
             }
+
+            existing = existing_by_symbol.get(sym) or {}
+            return {**existing, **fresh_fields}
 
         for item in gainers[:35]:
             row = enrich(item)
@@ -841,6 +831,15 @@ def persist_quote_discovery_market_movers():
                 preview_losers.append(row)
 
         final_movers = preview_gainers[:35] + preview_losers[:35]
+
+        # Same guard as persist_internal_market_movers(): don't overwrite
+        # the stored array with an empty one when this cycle genuinely
+        # found nothing (e.g. daily_movers doc exists but its own
+        # gainers/losers happen to be empty). Whatever's already there
+        # (from either writer) stays until there's real data to write.
+        if not final_movers:
+            log("⚠️ quote discovery preview: 0 movers this cycle -- skipping write to avoid wiping the existing movers array")
+            return
 
         db.collection(COL_ROOT).document("market_movers").set(
             {
@@ -1387,6 +1386,24 @@ def persist_internal_market_movers():
     movers = []
     spreadsheet_metadata = load_today_spreadsheet_mover_metadata()
 
+    # Merge, don't clobber -- symmetric with persist_quote_discovery_
+    # market_movers()'s fix. This writer doesn't set sessionType/
+    # generatedAt (the discovery writer's own fields), so without this it
+    # would silently erase them whenever it runs after that writer, same
+    # underlying pattern, just on less-visible fields. Read whatever's
+    # currently stored per symbol once; only the fields this writer
+    # genuinely computes fresh get overlaid below.
+    existing_by_symbol: Dict[str, Dict[str, Any]] = {}
+    try:
+        existing_snap = db.collection(COL_ROOT).document("market_movers").get()
+        existing_data = existing_snap.to_dict() if existing_snap.exists else {}
+        for m in (existing_data or {}).get("movers") or []:
+            sym = str(m.get("symbol") or "").upper().strip()
+            if sym:
+                existing_by_symbol[sym] = m
+    except Exception as e:
+        log(f"⚠️ could not read existing market_movers for merge: {e}")
+
     for doc in snaps:
         sym = str(doc.id or "").upper().strip()
 
@@ -1437,7 +1454,7 @@ def persist_internal_market_movers():
             vol_z_corrected, obv_slope_10
         )
         if isinstance(chg, (int, float)):
-            movers.append({
+            fresh_fields = {
                 "symbol": sym,
                 "company": data.get("company_name") or COMPANY_NAMES.get(sym, sym),
                 "price": round(px, 2),
@@ -1472,7 +1489,24 @@ def persist_internal_market_movers():
                 "displayLabel": display_intelligence.get("label"),
                 "displayScore": display_intelligence.get("score"),
                 "displayHeadline": display_intelligence.get("headline"),
-            })
+            }
+
+            existing = existing_by_symbol.get(sym) or {}
+            movers.append({**existing, **fresh_fields})
+
+    # A writer that finds zero qualifying items this cycle must not
+    # overwrite the stored array with an empty one -- confirmed live
+    # (2026-08-04): this function's own freshness gate (quotes >20min
+    # stale) rejects every symbol after-hours, and .set(merge=True) still
+    # replaces `movers` with [] since the field IS present in the
+    # payload, wiping out whatever the other writer had just populated
+    # (all 70 symbols, logos and volume context included -- not just a
+    # few fields, the entire array). Skip the write entirely when there's
+    # nothing new to contribute; whatever is already stored (from either
+    # writer) stays exactly as it was until this writer has real data.
+    if not movers:
+        log("⚠️ persist_internal_market_movers: 0 qualifying movers this cycle (likely stale quotes) -- skipping write to avoid wiping the existing movers array")
+        return
 
     # ✅ Separate gainers and losers
     gainers = [m for m in movers if m.get("direction") == "up"]
