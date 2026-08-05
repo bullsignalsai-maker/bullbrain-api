@@ -4545,6 +4545,14 @@ def get_alphaclara_tracking(
                 "pick_price": pick_price,
                 "first_picked_price": first_picked_price,
                 "pick_reason": it.get("pick_reason"),
+                # Real, verifiable source for pick_reason when it genuinely
+                # traces to one (backend/pick_tracking.py's
+                # _build_pick_record()) -- honestly null for the generic
+                # price/pattern fallback case, never fabricated.
+                "pick_news_url": it.get("pick_news_url"),
+                "pick_news_source": it.get("pick_news_source"),
+                "pick_news_headline": it.get("pick_news_headline"),
+                "pick_news_datetime": it.get("pick_news_datetime"),
                 "pick_setup_label": it.get("pick_setup_label"),
                 "pick_model_view": it.get("pick_model_view"),
                 "pick_factor_scores": it.get("pick_factor_scores"),
