@@ -4702,23 +4702,38 @@ def get_alphaclara_pick_history(symbol: str, window_days: int = 30):
         pick_count = len(recs)
         first_picked_date = recs[0].get("pick_date")
 
-        # End date: the most recently recorded row's resolved horizon
-        # checked date, if one exists (a real "loop closed" moment), else
-        # today (still tracking). Same 20d-over-5d preference as the main
-        # endpoint's resolved-horizon logic.
-        end_date = today.isoformat()
-        for r in reversed(recs):
-            horizons = r.get("horizons") or {}
-            h20 = horizons.get("20d") or {}
-            h5 = horizons.get("5d") or {}
-            resolved = None
-            if h20.get("status") in ("checked", "unavailable"):
-                resolved = h20
-            elif h5.get("status") in ("checked", "unavailable"):
-                resolved = h5
-            if resolved and resolved.get("checked_at"):
-                end_date = resolved["checked_at"][:10]
-                break
+        # End date: freeze only on the pick's OVERALL/latest recorded row,
+        # never on an older row's resolved horizon buried under newer
+        # tracking rows. Mirrors /alphaclara-tracking's primary-status vs
+        # latest_resolved_by_symbol distinction (main.py's list endpoint) --
+        # a symbol can have a real resolved 5d/20d result from an earlier
+        # record (e.g. TEAM's 5d checked 2026-08-03) while still being
+        # actively re-picked every cron cycle since (27x, through today).
+        # Previously this scanned every row newest-first and froze end_date
+        # on the FIRST resolved horizon it found, regardless of whether the
+        # symbol was still open -- silently truncating the chart days
+        # before the pick's true "now" and hiding real cached candles
+        # (confirmed live on TEAM: cut the chart off at Aug 3 even though
+        # the candle cache had real closes through Aug 6). Only the most
+        # recent row (recs[-1], recs sorted ascending by recorded_at)
+        # decides whether the pick is closed; if it's still tracking,
+        # end_date stays "today" so the chart reflects everything cached
+        # so far, same as the list endpoint's own status field.
+        latest_rec = recs[-1]
+        latest_horizons = latest_rec.get("horizons") or {}
+        latest_h20 = latest_horizons.get("20d") or {}
+        latest_h5 = latest_horizons.get("5d") or {}
+        if latest_h20.get("status") in ("checked", "unavailable"):
+            latest_resolved = latest_h20
+        elif latest_h5.get("status") in ("checked", "unavailable"):
+            latest_resolved = latest_h5
+        else:
+            latest_resolved = None
+
+        if latest_resolved and latest_resolved.get("checked_at"):
+            end_date = latest_resolved["checked_at"][:10]
+        else:
+            end_date = today.isoformat()
 
         candle_doc = _read_firestore_candles(symbol)
         candles = (candle_doc or {}).get("candles") or {}
