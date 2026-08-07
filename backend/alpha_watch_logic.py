@@ -802,6 +802,18 @@ def score_stock(
         else:
             setup_label = "Constructive Pullback Watch"
 
+    # Evidence-based exclusion (2026-08-06 pick deep dive, see
+    # bullbrain_pick_deep_dive_2026_08_06 memory): "Developing Momentum
+    # Watch" x NEUTRAL regime is a real, well-sampled losing combination --
+    # 80 checked picks, 42 distinct symbols, 12 distinct days, 46.2% win
+    # rate and a net-negative mean return (-0.03%), against a 51.7% book
+    # average and 58.8% for RISK_ON. The same label in RISK_ON wins 55.0%
+    # (n=20) -- it's the NEUTRAL pairing specifically that's broken, not
+    # the label. setup_label/regime are both already computed above; this
+    # only skips returning the item.
+    if setup_label == "Developing Momentum Watch" and regime == "NEUTRAL":
+        return None
+
     # Display-facing signal: displayIntelligence (System B) is the single
     # source of truth for user-facing signal labels app-wide. It's computed
     # in the same pass as this stock doc (market_cron.py / stock_bootstrap.py),
