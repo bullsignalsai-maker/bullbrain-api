@@ -275,6 +275,35 @@ def build_accuracy_report(deduped_picks: List[Dict[str, Any]]) -> Dict[str, Any]
     }
 
 
+def snapshot_from_report(report: Dict[str, Any], date_key: str) -> Dict[str, Any]:
+    """
+    Shapes build_accuracy_report()'s output down to the cheap rollup the
+    accuracy trend chart persists daily -- n/pct_positive/mean_return_pct
+    per horizon, no subgroup breakdowns or factor scores (those stay
+    live-only in /alphaclara-accuracy-report). `primary_horizon` mirrors
+    report["summary"]["horizon"] (the shortest horizon with resolved
+    picks), so the trend endpoint has a stable default to chart without
+    re-deriving that choice.
+    """
+    horizons = {
+        horizon: {
+            "n": h["overall"]["n"],
+            "pct_positive": h["overall"]["pct_positive"],
+            "mean_return_pct": h["overall"]["mean_return_pct"],
+        }
+        for horizon, h in (report.get("horizons") or {}).items()
+    }
+    summary = report.get("summary") or {}
+
+    return {
+        "schema_version": "accuracy_snapshot_v1",
+        "date": date_key,
+        "horizons": horizons,
+        "primary_horizon": summary.get("horizon"),
+        "total_distinct_picks": report.get("total_distinct_picks", 0),
+    }
+
+
 def _render_subgroup_breakdown_md(title: str, breakdown: Dict[str, Any]) -> List[str]:
     lines = [f"### {title}"]
 
