@@ -2166,6 +2166,30 @@ def main():
         except Exception as e:
             log_exc("pick-tracking retention cleanup failed", e)
 
+        # Accuracy trend snapshot — same once/day gate, own try/except.
+        # Persists a cheap daily rollup (n/pct_positive/mean_return_pct per
+        # horizon) for the accuracy trend chart. Doc ID is a fixed UTC date
+        # string, so if this window's cron tick ever fires more than once
+        # the same day, the second write just overwrites the first with
+        # that day's freshest data — no separate once-per-day guard needed.
+        try:
+            from backend.pick_tracking import get_checked_picks_for_report
+            from backend.pick_accuracy_report import (
+                dedupe_checked_picks,
+                build_accuracy_report,
+                snapshot_from_report,
+            )
+            from backend.accuracy_snapshot_repo import save_accuracy_snapshot
+
+            today = datetime.datetime.utcnow().date().isoformat()
+            raw_docs = get_checked_picks_for_report(get_db())
+            report = build_accuracy_report(dedupe_checked_picks(raw_docs))
+            snapshot = snapshot_from_report(report, today)
+            save_accuracy_snapshot(today, snapshot)
+            log(f"📊 accuracy snapshot recorded | date={today} n={snapshot.get('total_distinct_picks')}")
+        except Exception as e:
+            log_exc("accuracy snapshot persistence failed", e)
+
     # ---------------------------------------------------------
     # MARKET MOMENTUM SCREEN CACHE
     # Builds Firestore-first UI-ready data for Momentum Movers screen

@@ -45,6 +45,7 @@ from backend.pick_accuracy_report import (
     build_accuracy_report,
     render_markdown_report,
 )
+from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since
 
 router = APIRouter()
 app = FastAPI()
@@ -4803,6 +4804,88 @@ def get_alphaclara_accuracy_report(
 
     except Exception as e:
         print("[alphaclara-accuracy-report] error:", e)
+        return {"status": "error", "error": str(e)}
+
+
+# Recorded days before the trend line is considered meaningful enough to
+# show without a "not enough history yet" disclosure. Two work-weeks of
+# daily snapshots, not a full month -- see accuracy_snapshot_repo.py /
+# market_cron.py's final_close_intelligence gate for how these get written.
+TREND_MIN_DAYS_FOR_CONFIDENCE = 14
+DEFAULT_TREND_LOOKBACK_DAYS = 90
+
+
+@app.get("/alphaclara-accuracy-trend")
+def get_alphaclara_accuracy_trend(
+    since: Optional[str] = None,
+    horizon: Optional[str] = None,
+):
+    """
+    Time series of daily accuracy snapshots (backend/accuracy_snapshot_
+    repo.py), written once/trading day by market_cron.py's final_close_
+    intelligence gate via backend/pick_accuracy_report.py's
+    snapshot_from_report(). Unlike /alphaclara-accuracy-report, this can
+    only show trend data going forward from whenever snapshot recording
+    started -- there is no historical daily win-rate data to backfill, so
+    `history.insufficient_history` is the honest signal for "not enough
+    data yet" rather than ever interpolating or backfilling fake points.
+
+    `since` (optional date, e.g. "2026-07-24"): bounds which snapshots are
+    read. Defaults to the last DEFAULT_TREND_LOOKBACK_DAYS days.
+    `horizon` (optional, e.g. "5d"): which horizon to chart. Defaults to
+    the most recent snapshot's own primary_horizon (the shortest horizon
+    with resolved picks at that time).
+    """
+    try:
+        effective_since = since or (
+            datetime.date.today() - datetime.timedelta(days=DEFAULT_TREND_LOOKBACK_DAYS)
+        ).isoformat()
+
+        snapshots = get_accuracy_snapshots_since(effective_since)
+
+        effective_horizon = horizon or (
+            snapshots[-1].get("primary_horizon") if snapshots else None
+        )
+
+        points = []
+        for snap in snapshots:
+            h = (snap.get("horizons") or {}).get(effective_horizon)
+            if not h:
+                continue
+            points.append({
+                "date": snap.get("date"),
+                "n": h.get("n"),
+                "pct_positive": h.get("pct_positive"),
+                "mean_return_pct": h.get("mean_return_pct"),
+            })
+
+        days_recorded = len(points)
+        insufficient = days_recorded < TREND_MIN_DAYS_FOR_CONFIDENCE
+        earliest = points[0]["date"] if points else None
+
+        message = (
+            f"Trend tracking started {earliest} — {days_recorded} day"
+            f"{'s' if days_recorded != 1 else ''} of history so far. "
+            f"Check back in a few weeks for a meaningful trend."
+            if insufficient and points else
+            "No accuracy snapshots recorded yet." if insufficient else
+            None
+        )
+
+        return {
+            "status": "ok",
+            "horizon": effective_horizon,
+            "points": points,
+            "history": {
+                "earliest_snapshot_date": earliest,
+                "days_recorded": days_recorded,
+                "insufficient_history": insufficient,
+                "message": message,
+            },
+        }
+
+    except Exception as e:
+        print("[alphaclara-accuracy-trend] error:", e)
         return {"status": "error", "error": str(e)}
 
 
