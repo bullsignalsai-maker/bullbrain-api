@@ -4835,6 +4835,13 @@ def get_alphaclara_accuracy_trend(
     `horizon` (optional, e.g. "5d"): which horizon to chart. Defaults to
     the most recent snapshot's own primary_horizon (the shortest horizon
     with resolved picks at that time).
+
+    Each point also carries `spy_return_pct` -- SPY's 1-day return on that
+    calendar date (market_cron.py's existing _get_quote_change_pct("SPY"),
+    same quote cache the homescreen carousel uses), null on any day the
+    quote was unavailable. It's a daily value, not horizon-matched to the
+    picks side -- callers compound/sum it across points to plot a
+    cumulative S&P curve alongside the picks trend over the same window.
     """
     try:
         effective_since = since or (
@@ -4857,6 +4864,7 @@ def get_alphaclara_accuracy_trend(
                 "n": h.get("n"),
                 "pct_positive": h.get("pct_positive"),
                 "mean_return_pct": h.get("mean_return_pct"),
+                "spy_return_pct": snap.get("spy_return_pct"),
             })
 
         days_recorded = len(points)

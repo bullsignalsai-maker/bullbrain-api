@@ -2185,8 +2185,15 @@ def main():
             raw_docs = get_checked_picks_for_report(get_db())
             report = build_accuracy_report(dedupe_checked_picks(raw_docs))
             snapshot = snapshot_from_report(report, today)
+            # SPY's 1-day return for this date, from the quote cache
+            # quote_worker.py already refreshes every 5 min for the
+            # homescreen carousel — None (not fabricated) if unavailable.
+            snapshot["spy_return_pct"] = _get_quote_change_pct("SPY")
             save_accuracy_snapshot(today, snapshot)
-            log(f"📊 accuracy snapshot recorded | date={today} n={snapshot.get('total_distinct_picks')}")
+            log(
+                f"📊 accuracy snapshot recorded | date={today} "
+                f"n={snapshot.get('total_distinct_picks')} spy_return_pct={snapshot.get('spy_return_pct')}"
+            )
         except Exception as e:
             log_exc("accuracy snapshot persistence failed", e)
 
