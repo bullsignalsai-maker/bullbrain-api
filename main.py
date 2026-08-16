@@ -46,6 +46,11 @@ from backend.pick_accuracy_report import (
     render_markdown_report,
 )
 from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since
+from backend.hypothetical_portfolio import (
+    dedupe_picks_for_valuation,
+    build_hypothetical_portfolio,
+)
+from backend.stock_repo import get_stocks
 
 router = APIRouter()
 app = FastAPI()
@@ -4894,6 +4899,52 @@ def get_alphaclara_accuracy_trend(
 
     except Exception as e:
         print("[alphaclara-accuracy-trend] error:", e)
+        return {"status": "error", "error": str(e)}
+
+
+# Bounds the pick_tracking read for the hypothetical portfolio. Unlike
+# /alphaclara-accuracy-report's DEFAULT_REPORT_LOOKBACK_DAYS=90 (bounded by
+# the 20-trading-day max horizon it reports on), this feature values every
+# pick at TODAY's price regardless of horizon status, so it can use the
+# full window the collection actually retains -- PRUNE_AFTER_DAYS in
+# backend/pick_tracking.py, 180 days -- without truncating real history.
+DEFAULT_PORTFOLIO_LOOKBACK_DAYS = 180
+
+
+@app.get("/alphaclara-hypothetical-portfolio")
+def get_alphaclara_hypothetical_portfolio(since: Optional[str] = None):
+    """
+    Hypothetical illustration: $1,000 split equally across every distinct
+    Alphaclara Pick, bought at its recorded pick_price and valued at each
+    symbol's CURRENT price today -- see backend/hypothetical_portfolio.py's
+    module docstring for why this deliberately does not use horizons/
+    status the way /alphaclara-accuracy-report does. Not a real account,
+    not investment advice -- see the response's `disclaimer`/
+    `long_disclaimer` fields, which MUST be surfaced to the user directly
+    alongside any number from this endpoint, not dropped.
+
+    `since` (optional date, e.g. "2026-03-01"): bounds the Firestore scan.
+    Defaults to the last DEFAULT_PORTFOLIO_LOOKBACK_DAYS days.
+    """
+    try:
+        effective_since = since or (
+            datetime.date.today() - datetime.timedelta(days=DEFAULT_PORTFOLIO_LOOKBACK_DAYS)
+        ).isoformat()
+
+        raw_docs = get_checked_picks_for_report(db, since=effective_since)
+        deduped = dedupe_picks_for_valuation(raw_docs)
+
+        symbols = {p["symbol"] for p in deduped if p.get("symbol")}
+        current_prices = {
+            sym: (stock.get("quote") or {}).get("price")
+            for sym, stock in get_stocks(list(symbols)).items()
+        }
+
+        result = build_hypothetical_portfolio(deduped, current_prices)
+        return {"status": "ok", **result}
+
+    except Exception as e:
+        print("[alphaclara-hypothetical-portfolio] error:", e)
         return {"status": "error", "error": str(e)}
 
 

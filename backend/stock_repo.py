@@ -8,7 +8,7 @@
 # ---------------------------------------------------------
 
 import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from backend.firestore_utils import get_db, utc_now_iso
 
@@ -68,6 +68,32 @@ def save_stock(symbol: str, payload: Dict[str, Any]) -> None:
         .collection(COL_SYMBOLS) \
         .document(symbol) \
         .set(payload, merge=True)
+
+
+def get_stocks(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Batched version of get_stock() for many symbols at once -- one
+    get_all() round-trip instead of one .get() per symbol. Promoted from
+    four independent inline copies of this exact db.get_all(refs) idiom
+    (main.py's get_alphaclara_tracking(), market_cron.py's
+    persist_internal_market_movers() and load_logo_url_map()) into one
+    real, testable helper -- see commit d1142c8 for the original N+1 fix
+    (19.38s -> 3.09s for ~134 symbols) this pattern is based on.
+
+    Path:
+      /bullsignals_ai/stocks/symbols/{SYMBOL}
+    """
+    symbols = list({s.upper() for s in symbols if s})
+    if not symbols:
+        return {}
+
+    collection = get_db().collection(COL_ROOT).document(DOC_STOCKS).collection(COL_SYMBOLS)
+    refs = [collection.document(sym) for sym in symbols]
+
+    return {
+        snap.id: (snap.to_dict() if snap.exists else {})
+        for snap in get_db().get_all(refs)
+    }
 
 
 def is_stock_fresh(doc: Dict[str, Any], max_age_minutes: int = 60) -> bool:
