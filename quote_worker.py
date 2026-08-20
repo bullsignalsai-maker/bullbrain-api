@@ -53,6 +53,8 @@ from backend.quote_repo import (
 # Refresh policies
 # -----------------------------
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
+WATCHLIST_REFRESH_SECONDS = 240     # was inline 90 -- reduces background pre-warm calls ~63%
+MOVERS_REFRESH_SECONDS = 600        # was inline 300 -- reduces background pre-warm calls 50%
 
 LAST_HOME_REFRESH = None
 LAST_ACTIVE_SYMBOLS_REFRESH = None
@@ -801,7 +803,7 @@ def main() -> None:
             # -------------------------------------------------
             watchlisted = set()
 
-            if should_refresh(LAST_WATCHLIST_AGG_REFRESH, 90):
+            if should_refresh(LAST_WATCHLIST_AGG_REFRESH, WATCHLIST_REFRESH_SECONDS):
                 try:
                     w = db.collection("bullsignals_ai").document("watchlist_symbols").get()
 
@@ -867,7 +869,7 @@ def main() -> None:
             # SLOW TIER — every 300 sec
             # Daily movers / momentum universe
             # -------------------------------------------------
-            if should_refresh(LAST_MOVERS_REFRESH, 300):
+            if should_refresh(LAST_MOVERS_REFRESH, MOVERS_REFRESH_SECONDS):
                 daily_movers = collect_daily_movers(db)
                 daily_movers = set(list(daily_movers)[:25])
 
@@ -936,12 +938,15 @@ def main() -> None:
                         time.sleep(per_symbol_delay)
                         continue
 
-                    # Valid quote → persist
+                    # Valid quote → persist. needs_refresh=False set explicitly here
+                    # (matching market_cron.py's/main.py's save_quote() call pattern)
+                    # so save_quote()'s own merge write already clears it -- skips
+                    # the read-before-write fallback inside save_quote() (payload
+                    # already has needs_refresh) and removes the need for a separate
+                    # clear_needs_refresh() write. 1 Firestore round trip instead of 3.
                     quotes[sym] = q
+                    q["needs_refresh"] = False
                     save_quote(sym, q)
-
-                    # clear refresh flag on any successful fetch, regardless of which tier sourced it
-                    clear_needs_refresh(sym)
 
                 except Exception as e:
                     log(f"⚠️ Quote fetch failed for {sym}: {e}")
