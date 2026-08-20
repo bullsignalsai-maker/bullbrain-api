@@ -109,14 +109,19 @@ def save_quote(symbol: str, payload: Dict[str, Any]) -> None:
     sym = symbol.upper().strip()
     doc_ref = _quote_doc(sym)
 
-    # Read existing so we can preserve last known good values
+    # Read existing ONLY when the caller needs the needs_refresh fallback below --
+    # this is the only place `existing` is used in this function. Every current
+    # caller that already knows its own needs_refresh value (market_cron.py,
+    # main.py, quote_worker.py's crypto seed/main equity loop) skips this read
+    # entirely; only the crypto-refresh path (quote_worker.py) still relies on it.
     existing = {}
-    try:
-        doc = doc_ref.get()
-        if doc.exists:
-            existing = doc.to_dict() or {}
-    except Exception:
-        existing = {}
+    if payload.get("needs_refresh") is None:
+        try:
+            doc = doc_ref.get()
+            if doc.exists:
+                existing = doc.to_dict() or {}
+        except Exception:
+            existing = {}
 
     # Incoming fields
     incoming_price = payload.get("price")
