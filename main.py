@@ -4143,10 +4143,20 @@ def get_verified_alpha():
 def get_alphaclara_tracking(
     limit: Optional[int] = None,
     window_days: int = 3,
+    tier: Optional[str] = None,
 ):
     """
     "Alphaclara is Tracking" -- honest, real-time accountability for past
     Alpha Watch picks, sourced from bullsignals_ai/pick_tracking/picks.
+
+    `tier` (optional: "fresh" | "tracking" | "checked") filters server-side,
+    before the per-symbol stock-doc batch fetch and entry-building loop --
+    not a post-hoc filter of the same full payload. A tier-scoped request
+    genuinely reads/returns less: only the matching symbols' stock docs get
+    fetched, and only their entries get built. `tier_counts` in the response
+    always reflects all three tiers regardless of this filter, so a
+    tab-scoped fetch can still power the other tabs' badge counts without a
+    second request.
 
     Design, confirmed before implementation:
     - Deduped by symbol -- the cron records a fresh pick_tracking row every
@@ -4177,6 +4187,37 @@ def get_alphaclara_tracking(
     try:
         now = datetime.datetime.now(datetime.timezone.utc)
         today = now.date()
+
+        # Tier freshness uses the US/Eastern trading day, not naive UTC --
+        # UTC midnight falls mid-evening ET (7-8pm depending on DST), hours
+        # before a US user's own day is over, so a pick made mid-afternoon
+        # ET could already read as "yesterday" once UTC has rolled over,
+        # even though it's still today for anyone watching the market.
+        # Mirrors quote_worker.py's is_market_open()/is_weekend() -- same
+        # ZoneInfo("America/New_York") conversion, same reasoning: the
+        # trading calendar is the one objective "day" here, not wherever
+        # the requesting user happens to be. Scoped to this comparison only
+        # -- today/window_start_date/window_start_dt below stay UTC, since
+        # those bound the Firestore query against UTC-stamped pick_date/
+        # checked_at values and must match that storage convention.
+        # Computed early (not down by the entry-building loop) so the
+        # tier pre-classification pass below can use it too.
+        today_str = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+        def _resolve_horizon(horizons: Dict[str, Any]):
+            # 20d always completes after 5d, so prefer it once resolved --
+            # a more complete signal than freezing on the earlier 5d
+            # checkpoint forever. Falls back to 5d if 20d hasn't resolved
+            # yet (the common case). Shared by the tier pre-classification
+            # pass and the entry-building loop below so both agree on what
+            # "resolved" means -- one definition, no drift.
+            h20 = (horizons or {}).get("20d") or {}
+            h5 = (horizons or {}).get("5d") or {}
+            if h20.get("status") in ("checked", "unavailable"):
+                return h20, "20d"
+            if h5.get("status") in ("checked", "unavailable"):
+                return h5, "5d"
+            return None, None
 
         # Trading-day-based window, not naive calendar days -- "3 days"
         # should mean 3 real market sessions, not 3 calendar days that can
@@ -4294,6 +4335,45 @@ def get_alphaclara_tracking(
                     latest_resolved_by_symbol[symbol] = it
         raw_items = list(latest_by_symbol.values())
 
+        # Tier pre-classification -- uses only pick_tracking data already in
+        # hand (this record's own horizons + earliest_by_symbol's pick_date),
+        # nothing from the stock docs below. Runs BEFORE the stock-doc batch
+        # fetch and entry-building loop so a `?tier=` request filters
+        # `raw_items` down first: only the matching symbols' stock docs get
+        # fetched (smaller db.get_all() call) and only their entries get
+        # built (smaller response), not the full window filtered after the
+        # fact. tier_counts is captured here, pre-filter, so it always
+        # reflects all three tiers even when `tier` narrows `items` below.
+        tier_by_symbol: Dict[str, str] = {}
+        for it in raw_items:
+            symbol = str(it.get("symbol") or "").upper()
+            resolved, _ = _resolve_horizon(it.get("horizons") or {})
+            first_picked_date = (earliest_by_symbol.get(symbol) or {}).get("pick_date")
+            if resolved is not None and resolved.get("status") in ("checked", "unavailable"):
+                tier_by_symbol[symbol] = "checked"
+            elif first_picked_date == today_str:
+                tier_by_symbol[symbol] = "fresh"
+            else:
+                tier_by_symbol[symbol] = "tracking"
+
+        tier_counts = {"fresh": 0, "tracking": 0, "checked": 0}
+        for t in tier_by_symbol.values():
+            tier_counts[t] += 1
+
+        if tier is not None:
+            if tier not in ("fresh", "tracking", "checked"):
+                return {
+                    "status": "error",
+                    "error": f"invalid tier '{tier}', expected one of: fresh, tracking, checked",
+                    "title": "Alphaclara is Tracking",
+                    "items": [],
+                    "counts": {"total": 0, "tracking": 0, "checked": 0, "unavailable": 0},
+                }
+            raw_items = [
+                it for it in raw_items
+                if tier_by_symbol.get(str(it.get("symbol") or "").upper()) == tier
+            ]
+
         symbols_needed = {
             str(it.get("symbol") or "").upper()
             for it in raw_items
@@ -4316,20 +4396,6 @@ def get_alphaclara_tracking(
             for snap in db.get_all(stock_refs):
                 stock_by_symbol[snap.id] = snap.to_dict() if snap.exists else {}
 
-        # Tier freshness uses the US/Eastern trading day, not naive UTC --
-        # UTC midnight falls mid-evening ET (7-8pm depending on DST), hours
-        # before a US user's own day is over, so a pick made mid-afternoon
-        # ET could already read as "yesterday" once UTC has rolled over,
-        # even though it's still today for anyone watching the market.
-        # Mirrors quote_worker.py's is_market_open()/is_weekend() -- same
-        # ZoneInfo("America/New_York") conversion, same reasoning: the
-        # trading calendar is the one objective "day" here, not wherever
-        # the requesting user happens to be. Scoped to this comparison only
-        # -- today/window_start_date/window_start_dt above stay UTC, since
-        # those bound the Firestore query against UTC-stamped pick_date/
-        # checked_at values and must match that storage convention.
-        today_str = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
-
         items = []
         for it in raw_items:
             symbol = str(it.get("symbol") or "").upper()
@@ -4343,21 +4409,10 @@ def get_alphaclara_tracking(
             first_pick = earliest_by_symbol.get(symbol) or {}
             first_picked_price = first_pick.get("pick_price")
             horizons = it.get("horizons") or {}
-            h5 = horizons.get("5d") or {}
-            h20 = horizons.get("20d") or {}
-            # Prefer the most-advanced resolved horizon -- 20d always
-            # completes after 5d, so once it resolves it's a more complete
-            # signal than freezing on the earlier 5d checkpoint forever.
-            # Falls back to 5d if 20d hasn't resolved yet (the common case,
-            # since 5d always resolves first). Previously this only ever
-            # looked at 5d, so a completed 20d horizon was silently never
-            # surfaced at all.
-            if h20.get("status") in ("checked", "unavailable"):
-                resolved, resolved_horizon = h20, "20d"
-            elif h5.get("status") in ("checked", "unavailable"):
-                resolved, resolved_horizon = h5, "5d"
-            else:
-                resolved, resolved_horizon = None, None
+            # Same resolution rule as the tier pre-classification pass
+            # above (20d preferred once resolved, else 5d) -- shared
+            # helper, so this and tier_by_symbol never disagree.
+            resolved, resolved_horizon = _resolve_horizon(horizons)
 
             # Secondary, independent of the primary status above -- a
             # symbol can be BOTH actively "tracking" (fresh latest record)
@@ -4458,13 +4513,11 @@ def get_alphaclara_tracking(
             # "fresh" means genuinely new to the list (first_picked_date is
             # today, no earlier record in the window), not just re-recorded
             # -- distinct from "tracking," which covers every other still-
-            # open pick regardless of how long it's been tracked.
-            if entry["status"] in ("checked", "unavailable"):
-                entry["tier"] = "checked"
-            elif entry.get("first_picked_date") == today_str:
-                entry["tier"] = "fresh"
-            else:
-                entry["tier"] = "tracking"
+            # open pick regardless of how long it's been tracked. Reuses
+            # the tier_by_symbol classification computed above (same
+            # inputs, same rule) instead of recomputing -- one source of
+            # truth between the filter step and this display field.
+            entry["tier"] = tier_by_symbol.get(symbol, "tracking")
 
             items.append(entry)
 
@@ -4479,6 +4532,7 @@ def get_alphaclara_tracking(
             "subtitle": "Real setups Alphaclara flagged, tracked honestly — wins and losses both.",
             "updated_at": now.isoformat().replace("+00:00", "Z"),
             "window_days": WINDOW_DAYS,
+            "tier": tier,
             "items": items,
             "counts": {
                 "total": len(items),
@@ -4486,6 +4540,11 @@ def get_alphaclara_tracking(
                 "checked": sum(1 for i in items if i["status"] == "checked"),
                 "unavailable": sum(1 for i in items if i["status"] == "unavailable"),
             },
+            # Always all three tiers across the full window, regardless of
+            # `tier` filtering `items` above -- lets a tab-scoped fetch
+            # still power the other tabs' badge counts without a second
+            # request.
+            "tier_counts": tier_counts,
         }
 
     except Exception as e:
