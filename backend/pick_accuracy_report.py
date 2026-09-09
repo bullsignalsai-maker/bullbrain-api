@@ -35,6 +35,18 @@ MIN_DISTINCT_SYMBOLS = 10
 MAX_DOMINANT_SYMBOL_SHARE = 0.30
 
 
+def setup_regime_key(setup_label: Optional[str], market_regime: Optional[str]) -> Optional[str]:
+    """
+    Shared key format for the setup_label x market_regime composite
+    breakdown -- used both when building the report (grouping) and by the
+    /alphaclara-historical-edge route (looking up one cell), so the two
+    never drift apart on how the key is joined.
+    """
+    if not setup_label or not market_regime:
+        return None
+    return f"{setup_label}::{market_regime}"
+
+
 def dedupe_checked_picks(raw_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Collapses pick_tracking's one-row-per-cron-cycle write pattern down to
@@ -203,6 +215,9 @@ def _report_for_horizon(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
         "by_pick_source": _subgroup_breakdown(picks, lambda p: p.get("pick_source")),
         "by_setup_label": _subgroup_breakdown(picks, lambda p: p.get("pick_setup_label")),
         "by_market_regime": _subgroup_breakdown(picks, lambda p: p.get("pick_market_regime")),
+        "by_setup_and_regime": _subgroup_breakdown(
+            picks, lambda p: setup_regime_key(p.get("pick_setup_label"), p.get("pick_market_regime"))
+        ),
         "by_model_view_bias": _subgroup_breakdown(
             picks, lambda p: (p.get("pick_model_view") or {}).get("bias")
         ),
@@ -366,6 +381,8 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
         lines += _render_subgroup_breakdown_md("By setup_label", h["by_setup_label"])
         lines.append("")
         lines += _render_subgroup_breakdown_md("By market_regime", h["by_market_regime"])
+        lines.append("")
+        lines += _render_subgroup_breakdown_md("By setup_label x market_regime", h["by_setup_and_regime"])
         lines.append("")
         lines += _render_subgroup_breakdown_md("By model_view.bias", h["by_model_view_bias"])
         lines.append("")

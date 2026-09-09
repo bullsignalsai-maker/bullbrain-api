@@ -44,6 +44,7 @@ from backend.pick_accuracy_report import (
     dedupe_checked_picks,
     build_accuracy_report,
     render_markdown_report,
+    setup_regime_key,
 )
 from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since
 from backend.hypothetical_portfolio import (
@@ -4713,6 +4714,111 @@ def get_alphaclara_accuracy_report(
 
     except Exception as e:
         print("[alphaclara-accuracy-report] error:", e)
+        return {"status": "error", "error": str(e)}
+
+
+# Regime values are internal enum strings (RISK_ON/RISK_OFF/NEUTRAL/
+# HIGH_VOL, see alpha_watch_logic.py's detect_regime()) -- never shown raw
+# to users, matching the signal-wording convention astra_engine.py's
+# sanitize_clara_answer() applies to BUY/SELL/HOLD.
+HISTORICAL_EDGE_REGIME_DISPLAY = {
+    "RISK_ON": "risk-on",
+    "RISK_OFF": "risk-off",
+    "NEUTRAL": "neutral",
+    "HIGH_VOL": "high-volatility",
+}
+
+HISTORICAL_EDGE_DISCLAIMER = (
+    "This is a historical pattern for this type of setup, not a prediction "
+    "for this specific stock."
+)
+
+
+@app.get("/alphaclara-historical-edge")
+def get_alphaclara_historical_edge(
+    setup_label: str,
+    market_regime: str,
+    horizon: str = "5d",
+    since: Optional[str] = None,
+):
+    """
+    "Historical Edge" lookup for PickDetailScreen: the real, tracked win
+    rate/avg return for picks sharing this EXACT (setup_label,
+    market_regime) combination -- a statistic about this TYPE of setup,
+    never a prediction for the specific pick being viewed.
+
+    Deliberately reuses the full /alphaclara-accuracy-report pipeline
+    (get_checked_picks_for_report -> dedupe_checked_picks ->
+    build_accuracy_report) rather than a second stats implementation, so
+    this can never silently disagree with the audited report -- see
+    backend/pick_accuracy_report.py's setup_regime_key() for the shared
+    key format both sides use.
+
+    Always returns `disclaimer` plus `insufficient_data`/`low_confidence`
+    flags; callers must gate display on those rather than showing
+    `stats.pct_positive` unconditionally. The same confounding guard
+    (distinct_symbols < 10 or one symbol > 30% of the subgroup) that
+    caught the fake PANW/Neutral pattern in the 2026-07-31 post-mortem
+    applies here -- and composite cells are thinner than either
+    single-dimension breakdown by construction, so low_confidence is
+    expected to be the common case early on, not a rare edge case.
+    """
+    try:
+        key = setup_regime_key(setup_label, market_regime)
+        if key is None:
+            return {"status": "error", "error": "setup_label and market_regime are required"}
+
+        raw_docs = get_checked_picks_for_report(db, since=since)
+        deduped = dedupe_checked_picks(raw_docs)
+        report = build_accuracy_report(deduped)
+
+        horizon_report = (report.get("horizons") or {}).get(horizon)
+        breakdown = (horizon_report or {}).get("by_setup_and_regime") or {}
+        cell = (breakdown.get("groups") or {}).get(key)
+
+        base = {
+            "status": "ok",
+            "setup_label": setup_label,
+            "market_regime": market_regime,
+            "regime_display": HISTORICAL_EDGE_REGIME_DISPLAY.get(market_regime, market_regime),
+            "horizon": horizon,
+            "disclaimer": HISTORICAL_EDGE_DISCLAIMER,
+        }
+
+        if not horizon_report or breakdown.get("insufficient_data") or cell is None:
+            return {
+                **base,
+                "insufficient_data": True,
+                "low_confidence": True,
+                "stats": None,
+                "confounding_guard": None,
+                "pick_date_range": None,
+            }
+
+        return {
+            **base,
+            "insufficient_data": False,
+            "low_confidence": cell.get("low_confidence", False),
+            "stats": {
+                "n": cell.get("n"),
+                "positive": cell.get("positive"),
+                "negative": cell.get("negative"),
+                "zero": cell.get("zero"),
+                "pct_positive": cell.get("pct_positive"),
+                "mean_return_pct": cell.get("mean_return_pct"),
+                "median_return_pct": cell.get("median_return_pct"),
+            },
+            "confounding_guard": {
+                "distinct_symbols": cell.get("distinct_symbols"),
+                "distinct_pick_dates": cell.get("distinct_pick_dates"),
+                "dominant_symbol": cell.get("dominant_symbol"),
+                "dominant_symbol_share": cell.get("dominant_symbol_share"),
+            },
+            "pick_date_range": horizon_report.get("pick_date_range"),
+        }
+
+    except Exception as e:
+        print("[alphaclara-historical-edge] error:", e)
         return {"status": "error", "error": str(e)}
 
 
