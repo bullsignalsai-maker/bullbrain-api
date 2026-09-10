@@ -50,6 +50,8 @@ from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since
 from backend.hypothetical_portfolio import (
     dedupe_picks_for_valuation,
     build_hypothetical_portfolio,
+    DEFAULT_PORTFOLIO_LOOKBACK_DAYS,
+    STARTING_AMOUNT as HYPOTHETICAL_STARTING_AMOUNT,
 )
 from backend.stock_repo import get_stocks
 
@@ -4854,9 +4856,27 @@ def get_alphaclara_accuracy_trend(
     Each point also carries `spy_return_pct` -- SPY's 1-day return on that
     calendar date (market_cron.py's existing _get_quote_change_pct("SPY"),
     same quote cache the homescreen carousel uses), null on any day the
-    quote was unavailable. It's a daily value, not horizon-matched to the
-    picks side -- callers compound/sum it across points to plot a
-    cumulative S&P curve alongside the picks trend over the same window.
+    quote was unavailable.
+
+    `hypothetical_value`/`hypothetical_total_return_pct` are the SAME
+    $1,000-equal-split illustration as /alphaclara-hypothetical-portfolio,
+    historized once/day by market_cron.py's final_close_intelligence gate
+    -- null on any day before that recording started (no backfill; see
+    that route's own docstring for why a past value can't be
+    reconstructed after the fact).
+
+    `spy_hypothetical_value` is a PARALLEL $1,000 compounded forward from
+    `spy_return_pct`, one point at a time -- not stored, derived here on
+    every read so a later correction to a stored spy_return_pct is
+    reflected immediately. Starts at $1,000 on the first point with a
+    non-null spy_return_pct (which is NOT necessarily this response's
+    first point -- spy_return_pct recording started later than the
+    snapshot collection itself; early points are honestly null, never
+    backfilled or assumed flat). A null spy_return_pct on any later date
+    (a quote outage) is skipped in the compounding chain -- that date's
+    spy_hypothetical_value is null too, and the curve resumes from its
+    last known value on the next date that has data, rather than
+    fabricating a flat or interpolated day.
     """
     try:
         effective_since = since or (
@@ -4880,7 +4900,27 @@ def get_alphaclara_accuracy_trend(
                 "pct_positive": h.get("pct_positive"),
                 "mean_return_pct": h.get("mean_return_pct"),
                 "spy_return_pct": snap.get("spy_return_pct"),
+                "hypothetical_value": snap.get("hypothetical_current_value"),
+                "hypothetical_total_return_pct": snap.get("hypothetical_total_return_pct"),
             })
+
+        # Compound spy_return_pct forward into a parallel $1,000 curve --
+        # derived on every read (not stored) so it can never go stale
+        # relative to the raw spy_return_pct values it's built from. See
+        # the docstring above for the exact null-handling rule: a gap
+        # neither backfills nor breaks the chain, it's just skipped.
+        spy_value = None
+        for p in points:
+            r = p["spy_return_pct"]
+            if r is None:
+                p["spy_hypothetical_value"] = None
+                continue
+            spy_value = (
+                HYPOTHETICAL_STARTING_AMOUNT * (1 + r / 100.0)
+                if spy_value is None
+                else spy_value * (1 + r / 100.0)
+            )
+            p["spy_hypothetical_value"] = round(spy_value, 2)
 
         days_recorded = len(points)
         insufficient = days_recorded < TREND_MIN_DAYS_FOR_CONFIDENCE
@@ -4910,15 +4950,6 @@ def get_alphaclara_accuracy_trend(
     except Exception as e:
         print("[alphaclara-accuracy-trend] error:", e)
         return {"status": "error", "error": str(e)}
-
-
-# Bounds the pick_tracking read for the hypothetical portfolio. Unlike
-# /alphaclara-accuracy-report's DEFAULT_REPORT_LOOKBACK_DAYS=90 (bounded by
-# the 20-trading-day max horizon it reports on), this feature values every
-# pick at TODAY's price regardless of horizon status, so it can use the
-# full window the collection actually retains -- PRUNE_AFTER_DAYS in
-# backend/pick_tracking.py, 180 days -- without truncating real history.
-DEFAULT_PORTFOLIO_LOOKBACK_DAYS = 180
 
 
 @app.get("/alphaclara-hypothetical-portfolio")
