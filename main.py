@@ -46,7 +46,7 @@ from backend.pick_accuracy_report import (
     render_markdown_report,
     setup_regime_key,
 )
-from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since
+from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since, get_latest_accuracy_snapshot
 from backend.hypothetical_portfolio import (
     dedupe_picks_for_valuation,
     build_hypothetical_portfolio,
@@ -4727,6 +4727,52 @@ def get_alphaclara_pick_history(symbol: str, window_days: int = 30):
         }
 
 
+# Both /alphaclara-accuracy-report and /alphaclara-historical-edge read
+# through this one function when possible, instead of each recomputing
+# build_accuracy_report() live (measured 7.6-8.0s -- the same ~90-day
+# pick_tracking scan cost fixed for /alphaclara-tracking, see that fix's
+# PR for the root cause). One function so the two routes' cache/
+# staleness/fallback behavior can never drift apart from each other --
+# same principle as setup_regime_key() being shared rather than
+# re-derived per route.
+#
+# Only used when `since` is the default (None); an explicit `since` means
+# the caller wants a custom window, which the once/day snapshot (always
+# built with the report's own default lookback) can't serve -- falls
+# through to a live recompute for that case, same as a stale/missing
+# snapshot. Safe to serve a snapshot up to a few days old at all only
+# because both routes exclusively aggregate CHECKED picks, which change
+# by construction exactly once/day (check_pending_picks(), same cron gate
+# that writes this snapshot) -- a fresher live recompute would return the
+# identical numbers, not more current ones.
+ACCURACY_REPORT_SNAPSHOT_MAX_STALENESS_DAYS = 3
+
+
+def _get_cached_full_accuracy_report(since: Optional[str]) -> Optional[Dict[str, Any]]:
+    if since is not None:
+        return None
+    try:
+        snap = get_latest_accuracy_snapshot(db)
+    except Exception as e:
+        print("[accuracy-report-cache] lookup failed:", e)
+        return None
+
+    if not snap or not snap.get("full_report"):
+        return None
+
+    snap_date = snap.get("date")
+    if not snap_date:
+        return None
+    try:
+        age_days = (datetime.date.today() - datetime.date.fromisoformat(snap_date)).days
+    except Exception:
+        return None
+    if age_days > ACCURACY_REPORT_SNAPSHOT_MAX_STALENESS_DAYS:
+        return None
+
+    return snap["full_report"]
+
+
 @app.get("/alphaclara-accuracy-report")
 def get_alphaclara_accuracy_report(
     since: Optional[str] = None,
@@ -4748,11 +4794,17 @@ def get_alphaclara_accuracy_report(
     "markdown" for a quick human-readable read (matches how this was
     manually reviewed today, minus re-deriving the dedup/confounding logic
     each time).
+
+    Serves the daily precomputed snapshot (see
+    _get_cached_full_accuracy_report()) when `since` is omitted and a
+    fresh-enough one exists; otherwise recomputes live, same as before.
     """
     try:
-        raw_docs = get_checked_picks_for_report(db, since=since)
-        deduped = dedupe_checked_picks(raw_docs)
-        report = build_accuracy_report(deduped)
+        report = _get_cached_full_accuracy_report(since)
+        if report is None:
+            raw_docs = get_checked_picks_for_report(db, since=since)
+            deduped = dedupe_checked_picks(raw_docs)
+            report = build_accuracy_report(deduped)
 
         if format == "markdown":
             return PlainTextResponse(render_markdown_report(report))
@@ -4796,10 +4848,11 @@ def get_alphaclara_historical_edge(
 
     Deliberately reuses the full /alphaclara-accuracy-report pipeline
     (get_checked_picks_for_report -> dedupe_checked_picks ->
-    build_accuracy_report) rather than a second stats implementation, so
-    this can never silently disagree with the audited report -- see
-    backend/pick_accuracy_report.py's setup_regime_key() for the shared
-    key format both sides use.
+    build_accuracy_report), same _get_cached_full_accuracy_report() as
+    that route -- both now read the SAME precomputed snapshot when one's
+    available, not just the same code path, so they can never disagree.
+    See backend/pick_accuracy_report.py's setup_regime_key() for the
+    shared key format both sides use.
 
     Always returns `disclaimer` plus `insufficient_data`/`low_confidence`
     flags; callers must gate display on those rather than showing
@@ -4815,9 +4868,11 @@ def get_alphaclara_historical_edge(
         if key is None:
             return {"status": "error", "error": "setup_label and market_regime are required"}
 
-        raw_docs = get_checked_picks_for_report(db, since=since)
-        deduped = dedupe_checked_picks(raw_docs)
-        report = build_accuracy_report(deduped)
+        report = _get_cached_full_accuracy_report(since)
+        if report is None:
+            raw_docs = get_checked_picks_for_report(db, since=since)
+            deduped = dedupe_checked_picks(raw_docs)
+            report = build_accuracy_report(deduped)
 
         horizon_report = (report.get("horizons") or {}).get(horizon)
         breakdown = (horizon_report or {}).get("by_setup_and_regime") or {}
@@ -4997,6 +5052,26 @@ def get_alphaclara_accuracy_trend(
         return {"status": "error", "error": str(e)}
 
 
+# Caches only dedupe_picks_for_valuation()'s output (which distinct picks
+# exist + their pick_price) -- the ~180-day pick_tracking scan measured at
+# 8.8-9.5s live, same root cause as /alphaclara-tracking's fixed window
+# scan (pick_tracking writes a fresh row per symbol every ~15min cycle).
+# Deliberately NOT a once/day snapshot like _get_cached_full_accuracy_
+# report() above: this endpoint's entire point is valuing every pick at
+# CURRENT price, "today" -- a once/day snapshot would silently turn that
+# into "value as of last night's close" without anyone deciding that on
+# purpose. get_stocks() (fast -- a single batched get_all(), not a scan)
+# and build_hypothetical_portfolio() still run fresh on every request, so
+# prices stay genuinely live even on a cache hit. Keyed by the resolved
+# effective_since (not the raw `since` param) so the common no-`since`
+# case shares one entry, while an explicit custom `since` still gets its
+# own independent, correctly-scoped entry. Same 180s TTL as /alphaclara-
+# tracking's cache, for the same reason: well under the cron's own ~15min
+# write cadence.
+HYPOTHETICAL_PORTFOLIO_DEDUPED_CACHE: Dict[str, Dict[str, Any]] = {}
+HYPOTHETICAL_PORTFOLIO_DEDUPED_CACHE_TTL_SECONDS = 180
+
+
 @app.get("/alphaclara-hypothetical-portfolio")
 def get_alphaclara_hypothetical_portfolio(since: Optional[str] = None):
     """
@@ -5017,8 +5092,21 @@ def get_alphaclara_hypothetical_portfolio(since: Optional[str] = None):
             datetime.date.today() - datetime.timedelta(days=DEFAULT_PORTFOLIO_LOOKBACK_DAYS)
         ).isoformat()
 
-        raw_docs = get_checked_picks_for_report(db, since=effective_since)
-        deduped = dedupe_picks_for_valuation(raw_docs)
+        cached = HYPOTHETICAL_PORTFOLIO_DEDUPED_CACHE.get(effective_since)
+        cache_fresh = (
+            cached is not None
+            and (time.time() - cached["ts"]) < HYPOTHETICAL_PORTFOLIO_DEDUPED_CACHE_TTL_SECONDS
+        )
+
+        if cache_fresh:
+            deduped = cached["deduped"]
+        else:
+            raw_docs = get_checked_picks_for_report(db, since=effective_since)
+            deduped = dedupe_picks_for_valuation(raw_docs)
+            HYPOTHETICAL_PORTFOLIO_DEDUPED_CACHE[effective_since] = {
+                "ts": time.time(),
+                "deduped": deduped,
+            }
 
         symbols = {p["symbol"] for p in deduped if p.get("symbol")}
         current_prices = {
