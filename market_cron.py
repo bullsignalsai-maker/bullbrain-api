@@ -2189,6 +2189,18 @@ def main():
             # quote_worker.py already refreshes every 5 min for the
             # homescreen carousel — None (not fabricated) if unavailable.
             snapshot["spy_return_pct"] = _get_quote_change_pct("SPY")
+            # The full report was already computed above for the thin
+            # rollup -- storing it too costs zero extra Firestore reads or
+            # CPU. Lets /alphaclara-accuracy-report and /alphaclara-
+            # historical-edge serve this precomputed copy (measured
+            # 7.6-8.0s live vs a cheap doc read) instead of re-running the
+            # same ~90-day pick_tracking scan on every request. Safe
+            # because both routes only aggregate CHECKED picks, which by
+            # construction only change once/day (check_pending_picks()
+            # above, same gate) -- this can never be staler than a live
+            # recompute would have been. Measured 31.2KB, well under
+            # Firestore's 1MiB/doc limit.
+            snapshot["full_report"] = report
             save_accuracy_snapshot(today, snapshot)
             log(
                 f"📊 accuracy snapshot recorded | date={today} "
