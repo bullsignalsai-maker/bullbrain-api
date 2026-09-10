@@ -2392,6 +2392,29 @@ def root():
     }
 
 
+@app.get("/version")
+def version():
+    """
+    Which commit the RUNNING process was actually built from -- added
+    2026-09-11 after a real deploy-vs-dashboard confusion: Render's
+    dashboard "Latest Commit" can reflect GitHub's current HEAD even with
+    Auto-Deploy off, which is NOT the same thing as what the live process
+    was built from (that's the "Deploys" history list's own per-entry
+    commit, distinct from the summary field). RENDER_GIT_COMMIT/
+    RENDER_GIT_BRANCH/RENDER_SERVICE_ID/RENDER_INSTANCE_ID are Render's
+    own auto-injected env vars (https://render.com/docs/environment-
+    variables) -- not custom, nothing to configure. All null when run
+    locally (these vars don't exist off-Render), which itself is a
+    useful signal, not a bug.
+    """
+    return {
+        "git_commit": os.getenv("RENDER_GIT_COMMIT"),
+        "git_branch": os.getenv("RENDER_GIT_BRANCH"),
+        "service_id": os.getenv("RENDER_SERVICE_ID"),
+        "instance_id": os.getenv("RENDER_INSTANCE_ID"),
+    }
+
+
 @app.get("/candles/{symbol}")
 def candles_endpoint(symbol: str, limit: int = 252):
     """
