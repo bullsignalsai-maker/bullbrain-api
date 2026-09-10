@@ -25,6 +25,17 @@ from typing import Any, Dict, List, Optional
 
 STARTING_AMOUNT = 1000.0
 
+# Bounds the pick_tracking read for both the live route and the daily cron
+# snapshot below -- unlike pick_accuracy_report.py's
+# DEFAULT_REPORT_LOOKBACK_DAYS=90 (bounded by the 20-trading-day max
+# horizon it reports on), this feature values every pick at a CURRENT
+# price regardless of horizon status, so it can use the full window the
+# collection actually retains -- PRUNE_AFTER_DAYS in
+# backend/pick_tracking.py, 180 days -- without truncating real history.
+# Owned here (not main.py) so market_cron.py's snapshot job and the
+# FastAPI route share one definition instead of two copies drifting apart.
+DEFAULT_PORTFOLIO_LOOKBACK_DAYS = 180
+
 METHODOLOGY_VERSION = "hypothetical_portfolio_v1"
 
 SHORT_DISCLAIMER = (

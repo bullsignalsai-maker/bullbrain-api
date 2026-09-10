@@ -2197,6 +2197,65 @@ def main():
         except Exception as e:
             log_exc("accuracy snapshot persistence failed", e)
 
+        # Hypothetical portfolio value snapshot -- same once/day gate, own
+        # try/except (isolated from the accuracy snapshot above so a
+        # failure here never blocks that write, and vice versa). Persists
+        # today's $1,000-equal-split valuation onto the SAME
+        # accuracy_snapshots/{date} doc via save_accuracy_snapshot()'s
+        # merge=True, so this only adds fields -- never touches the
+        # win-rate fields written above.
+        #
+        # This is deliberately NOT derived from the accuracy snapshot just
+        # written: that's an aggregate of fixed-horizon (5d/20d) returns
+        # across a rotating set of picks, not a continuously-held
+        # portfolio's value, so there is no valid transform from one to
+        # the other. It reuses build_hypothetical_portfolio() -- the exact
+        # same function and lookback the live /alphaclara-hypothetical-
+        # portfolio route uses -- so a historized point always matches
+        # what that route would have returned on the day it was recorded.
+        # Like the win-rate trend, this can only track forward from
+        # whichever day this first runs -- no retroactive backfill is
+        # possible (see the feature's plan doc for why: the live
+        # endpoint's own "every distinct pick, valued at CURRENT price"
+        # definition has no honest meaning applied to a past date).
+        try:
+            from backend.hypothetical_portfolio import (
+                dedupe_picks_for_valuation,
+                build_hypothetical_portfolio,
+                DEFAULT_PORTFOLIO_LOOKBACK_DAYS,
+            )
+            from backend.stock_repo import get_stocks
+            from backend.pick_tracking import get_checked_picks_for_report
+            from backend.accuracy_snapshot_repo import save_accuracy_snapshot
+
+            today = datetime.datetime.utcnow().date().isoformat()
+            portfolio_since = (
+                datetime.date.today() - datetime.timedelta(days=DEFAULT_PORTFOLIO_LOOKBACK_DAYS)
+            ).isoformat()
+            portfolio_raw_docs = get_checked_picks_for_report(get_db(), since=portfolio_since)
+            portfolio_deduped = dedupe_picks_for_valuation(portfolio_raw_docs)
+
+            portfolio_symbols = {p["symbol"] for p in portfolio_deduped if p.get("symbol")}
+            portfolio_current_prices = {
+                sym: (stock.get("quote") or {}).get("price")
+                for sym, stock in get_stocks(list(portfolio_symbols)).items()
+            }
+
+            portfolio_result = build_hypothetical_portfolio(portfolio_deduped, portfolio_current_prices)
+            save_accuracy_snapshot(today, {
+                "hypothetical_current_value": portfolio_result.get("hypothetical_current_value"),
+                "hypothetical_total_return_pct": portfolio_result.get("hypothetical_total_return_pct"),
+                "hypothetical_n_included": portfolio_result.get("n_included"),
+                "hypothetical_n_excluded": portfolio_result.get("n_excluded"),
+            })
+            log(
+                f"💰 hypothetical portfolio snapshot recorded | date={today} "
+                f"value={portfolio_result.get('hypothetical_current_value')} "
+                f"n_included={portfolio_result.get('n_included')}"
+            )
+        except Exception as e:
+            log_exc("hypothetical portfolio snapshot persistence failed", e)
+
     # ---------------------------------------------------------
     # MARKET MOMENTUM SCREEN CACHE
     # Builds Firestore-first UI-ready data for Momentum Movers screen
