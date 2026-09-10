@@ -4142,6 +4142,28 @@ def get_verified_alpha():
         }
 
 
+# Caches the expensive part of /alphaclara-tracking only: the raw
+# pick_tracking Firestore scan + symbol-level dedup + tier classification,
+# keyed by WINDOW_DAYS. Measured live 2026-09-10: window_days=30 scans
+# 13,627 raw docs (vs 776 at window_days=3) because pick_tracking writes a
+# fresh row per symbol every ~15min cron cycle, so a wider window means
+# reading many more cycles' worth of rows before collapsing them down to
+# one row per symbol -- 12-14s per request, identical for every caller
+# hitting "More" (AllPicksScreen's WINDOW_DAYS=30), so one shared cache
+# entry serves all of them instead of every request re-paying that scan.
+# Does NOT cache current_price/quote data -- that's fetched fresh from
+# get_stocks() after this cache, on every request, so live prices are
+# never stale even when the window classification is served from cache.
+# TTL chosen well under the ~15min cron write cadence so cached data is
+# never more stale than the cron's own natural granularity already is.
+# No lock/single-flight guard on a miss -- a human tapping "More"
+# occasionally is the real usage pattern here, not a high-concurrency hot
+# path, so a rare concurrent double-miss paying the scan twice is an
+# acceptable, simple tradeoff over the added complexity of a proper lock.
+TRACKING_WINDOW_CACHE: Dict[int, Dict[str, Any]] = {}
+TRACKING_WINDOW_CACHE_TTL_SECONDS = 180
+
+
 @app.get("/alphaclara-tracking")
 def get_alphaclara_tracking(
     limit: Optional[int] = None,
@@ -4249,119 +4271,142 @@ def get_alphaclara_tracking(
             ).isoformat().replace("+00:00", "Z")
         )
 
-        picks_col = (
-            db.collection("bullsignals_ai")
-            .document("pick_tracking")
-            .collection("picks")
+        cached_window = TRACKING_WINDOW_CACHE.get(WINDOW_DAYS)
+        cache_fresh = (
+            cached_window is not None
+            and (time.time() - cached_window["ts"]) < TRACKING_WINDOW_CACHE_TTL_SECONDS
         )
 
-        # Firestore's raw dotted-string field-path parser chokes on a
-        # segment starting with a digit ("5d") -- needs the escaped API
-        # representation (backtick-quoted), not a plain "horizons.5d.
-        # checked_at" string. Confirmed by reproducing the parser error
-        # directly before fixing.
-        from google.cloud.firestore_v1.field_path import FieldPath
-        checked_at_path = FieldPath("horizons", "5d", "checked_at").to_api_repr()
-
-        recent_docs = list(picks_col.where("pick_date", ">=", window_start_date).stream())
-        graduated_docs = list(
-            picks_col.where(checked_at_path, ">=", window_start_dt).stream()
-        )
-
-        seen_ids = set()
-        raw_items = []
-        for doc in recent_docs + graduated_docs:
-            if doc.id in seen_ids:
-                continue
-            seen_ids.add(doc.id)
-            raw_items.append(doc.to_dict() or {})
-
-        # Dedupe by symbol -- keep only the most recently recorded pick per
-        # symbol within the window. The cron re-records every symbol still
-        # in alpha_watch each cycle, so without this a single symbol can
-        # show dozens of near-identical cards. Full history is untouched
-        # in pick_tracking; this only trims what this endpoint displays.
-        #
-        # The kept record's own pick_date/pick_price are always recent
-        # (it's the latest recorded row), which silently hides both a real
-        # multi-day streak and its true starting price -- a symbol picked
-        # continuously since day 1 of the window looks exactly like one
-        # picked for the first time today, AND its "since picked" price
-        # keeps sliding forward every cron cycle instead of anchoring to
-        # when it actually first qualified. earliest_by_symbol fixes both:
-        # the full earliest-recorded row per symbol (by recorded_at, not by
-        # pick_date string -- multiple rows can share the same pick_date,
-        # and Firestore's stream() order isn't guaranteed, so recorded_at
-        # is the only reliable tiebreak) across all raw (pre-dedupe) rows
-        # in this same window, tracked in the same pass before the rest of
-        # the rows are discarded -- no second lookup. Bounded by
-        # window_days like everything else here -- a streak longer than
-        # the requested window will show the window's own start, not the
-        # true all-time first pick (that would need an unbounded scan).
-        latest_by_symbol: Dict[str, Dict[str, Any]] = {}
-        earliest_by_symbol: Dict[str, Dict[str, Any]] = {}
-        latest_resolved_by_symbol: Dict[str, Dict[str, Any]] = {}
-        pick_count_by_symbol: Dict[str, int] = {}
-        for it in raw_items:
-            symbol = str(it.get("symbol") or "").upper()
-            if not symbol:
-                continue
-            existing_latest = latest_by_symbol.get(symbol)
-            if existing_latest is None or (it.get("recorded_at") or "") > (existing_latest.get("recorded_at") or ""):
-                latest_by_symbol[symbol] = it
-
-            existing_earliest = earliest_by_symbol.get(symbol)
-            if existing_earliest is None or (it.get("recorded_at") or "") < (existing_earliest.get("recorded_at") or ""):
-                earliest_by_symbol[symbol] = it
-
-            # Real recurrence count -- free in this same pass, no new
-            # Firestore reads. How many times this symbol was actually
-            # re-recorded within the window (e.g. ABT: 328, HIMS: 1).
-            pick_count_by_symbol[symbol] = pick_count_by_symbol.get(symbol, 0) + 1
-
-            # A symbol still actively re-picked has its checked outcome
-            # buried under newer "tracking" records with fresh, reset-to-
-            # pending horizons (confirmed on real data: ABT has a real
-            # resolved 5d result from an earlier record, invisible via the
-            # primary status because it's still being re-picked). Track
-            # the most-recently-recorded row with ANY resolved horizon
-            # separately from the overall latest row, same pass, no
-            # second lookup.
-            it_horizons = it.get("horizons") or {}
-            it_has_resolved = any(
-                (it_horizons.get(h) or {}).get("status") in ("checked", "unavailable")
-                for h in ("5d", "20d")
+        if cache_fresh:
+            latest_by_symbol = cached_window["latest_by_symbol"]
+            earliest_by_symbol = cached_window["earliest_by_symbol"]
+            latest_resolved_by_symbol = cached_window["latest_resolved_by_symbol"]
+            pick_count_by_symbol = cached_window["pick_count_by_symbol"]
+            tier_by_symbol = cached_window["tier_by_symbol"]
+            tier_counts = cached_window["tier_counts"]
+        else:
+            picks_col = (
+                db.collection("bullsignals_ai")
+                .document("pick_tracking")
+                .collection("picks")
             )
-            if it_has_resolved:
-                existing_resolved = latest_resolved_by_symbol.get(symbol)
-                if existing_resolved is None or (it.get("recorded_at") or "") > (existing_resolved.get("recorded_at") or ""):
-                    latest_resolved_by_symbol[symbol] = it
+
+            # Firestore's raw dotted-string field-path parser chokes on a
+            # segment starting with a digit ("5d") -- needs the escaped API
+            # representation (backtick-quoted), not a plain "horizons.5d.
+            # checked_at" string. Confirmed by reproducing the parser error
+            # directly before fixing.
+            from google.cloud.firestore_v1.field_path import FieldPath
+            checked_at_path = FieldPath("horizons", "5d", "checked_at").to_api_repr()
+
+            recent_docs = list(picks_col.where("pick_date", ">=", window_start_date).stream())
+            graduated_docs = list(
+                picks_col.where(checked_at_path, ">=", window_start_dt).stream()
+            )
+
+            seen_ids = set()
+            raw_items = []
+            for doc in recent_docs + graduated_docs:
+                if doc.id in seen_ids:
+                    continue
+                seen_ids.add(doc.id)
+                raw_items.append(doc.to_dict() or {})
+
+            # Dedupe by symbol -- keep only the most recently recorded pick per
+            # symbol within the window. The cron re-records every symbol still
+            # in alpha_watch each cycle, so without this a single symbol can
+            # show dozens of near-identical cards. Full history is untouched
+            # in pick_tracking; this only trims what this endpoint displays.
+            #
+            # The kept record's own pick_date/pick_price are always recent
+            # (it's the latest recorded row), which silently hides both a real
+            # multi-day streak and its true starting price -- a symbol picked
+            # continuously since day 1 of the window looks exactly like one
+            # picked for the first time today, AND its "since picked" price
+            # keeps sliding forward every cron cycle instead of anchoring to
+            # when it actually first qualified. earliest_by_symbol fixes both:
+            # the full earliest-recorded row per symbol (by recorded_at, not by
+            # pick_date string -- multiple rows can share the same pick_date,
+            # and Firestore's stream() order isn't guaranteed, so recorded_at
+            # is the only reliable tiebreak) across all raw (pre-dedupe) rows
+            # in this same window, tracked in the same pass before the rest of
+            # the rows are discarded -- no second lookup. Bounded by
+            # window_days like everything else here -- a streak longer than
+            # the requested window will show the window's own start, not the
+            # true all-time first pick (that would need an unbounded scan).
+            latest_by_symbol: Dict[str, Dict[str, Any]] = {}
+            earliest_by_symbol: Dict[str, Dict[str, Any]] = {}
+            latest_resolved_by_symbol: Dict[str, Dict[str, Any]] = {}
+            pick_count_by_symbol: Dict[str, int] = {}
+            for it in raw_items:
+                symbol = str(it.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                existing_latest = latest_by_symbol.get(symbol)
+                if existing_latest is None or (it.get("recorded_at") or "") > (existing_latest.get("recorded_at") or ""):
+                    latest_by_symbol[symbol] = it
+
+                existing_earliest = earliest_by_symbol.get(symbol)
+                if existing_earliest is None or (it.get("recorded_at") or "") < (existing_earliest.get("recorded_at") or ""):
+                    earliest_by_symbol[symbol] = it
+
+                # Real recurrence count -- free in this same pass, no new
+                # Firestore reads. How many times this symbol was actually
+                # re-recorded within the window (e.g. ABT: 328, HIMS: 1).
+                pick_count_by_symbol[symbol] = pick_count_by_symbol.get(symbol, 0) + 1
+
+                # A symbol still actively re-picked has its checked outcome
+                # buried under newer "tracking" records with fresh, reset-to-
+                # pending horizons (confirmed on real data: ABT has a real
+                # resolved 5d result from an earlier record, invisible via the
+                # primary status because it's still being re-picked). Track
+                # the most-recently-recorded row with ANY resolved horizon
+                # separately from the overall latest row, same pass, no
+                # second lookup.
+                it_horizons = it.get("horizons") or {}
+                it_has_resolved = any(
+                    (it_horizons.get(h) or {}).get("status") in ("checked", "unavailable")
+                    for h in ("5d", "20d")
+                )
+                if it_has_resolved:
+                    existing_resolved = latest_resolved_by_symbol.get(symbol)
+                    if existing_resolved is None or (it.get("recorded_at") or "") > (existing_resolved.get("recorded_at") or ""):
+                        latest_resolved_by_symbol[symbol] = it
+
+            # Tier pre-classification -- uses only pick_tracking data already
+            # in hand (this record's own horizons + earliest_by_symbol's
+            # pick_date), nothing from the stock docs below. tier_counts
+            # always reflects all three tiers regardless of the `tier` param
+            # (that filter is applied further down, after this cached block).
+            tier_by_symbol: Dict[str, str] = {}
+            for it in latest_by_symbol.values():
+                symbol = str(it.get("symbol") or "").upper()
+                resolved, _ = _resolve_horizon(it.get("horizons") or {})
+                first_picked_date = (earliest_by_symbol.get(symbol) or {}).get("pick_date")
+                if resolved is not None and resolved.get("status") in ("checked", "unavailable"):
+                    tier_by_symbol[symbol] = "checked"
+                elif first_picked_date == today_str:
+                    tier_by_symbol[symbol] = "fresh"
+                else:
+                    tier_by_symbol[symbol] = "tracking"
+
+            tier_counts = {"fresh": 0, "tracking": 0, "checked": 0}
+            for t in tier_by_symbol.values():
+                tier_counts[t] += 1
+
+            TRACKING_WINDOW_CACHE[WINDOW_DAYS] = {
+                "ts": time.time(),
+                "latest_by_symbol": latest_by_symbol,
+                "earliest_by_symbol": earliest_by_symbol,
+                "latest_resolved_by_symbol": latest_resolved_by_symbol,
+                "pick_count_by_symbol": pick_count_by_symbol,
+                "tier_by_symbol": tier_by_symbol,
+                "tier_counts": tier_counts,
+            }
+
+        # raw_items is the deduped (one row per symbol) view, whether just
+        # computed above or served from TRACKING_WINDOW_CACHE.
         raw_items = list(latest_by_symbol.values())
-
-        # Tier pre-classification -- uses only pick_tracking data already in
-        # hand (this record's own horizons + earliest_by_symbol's pick_date),
-        # nothing from the stock docs below. Runs BEFORE the stock-doc batch
-        # fetch and entry-building loop so a `?tier=` request filters
-        # `raw_items` down first: only the matching symbols' stock docs get
-        # fetched (smaller db.get_all() call) and only their entries get
-        # built (smaller response), not the full window filtered after the
-        # fact. tier_counts is captured here, pre-filter, so it always
-        # reflects all three tiers even when `tier` narrows `items` below.
-        tier_by_symbol: Dict[str, str] = {}
-        for it in raw_items:
-            symbol = str(it.get("symbol") or "").upper()
-            resolved, _ = _resolve_horizon(it.get("horizons") or {})
-            first_picked_date = (earliest_by_symbol.get(symbol) or {}).get("pick_date")
-            if resolved is not None and resolved.get("status") in ("checked", "unavailable"):
-                tier_by_symbol[symbol] = "checked"
-            elif first_picked_date == today_str:
-                tier_by_symbol[symbol] = "fresh"
-            else:
-                tier_by_symbol[symbol] = "tracking"
-
-        tier_counts = {"fresh": 0, "tracking": 0, "checked": 0}
-        for t in tier_by_symbol.values():
-            tier_counts[t] += 1
 
         if tier is not None:
             if tier not in ("fresh", "tracking", "checked"):
