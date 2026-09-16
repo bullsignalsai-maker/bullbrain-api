@@ -146,3 +146,39 @@ def fetch_crypto_simple_snapshot() -> Dict[str, Dict[str, Optional[float]]]:
         return {}
 
 
+# ---------------------------------------------------------
+# SECTOR SNAPSHOT (ETF proxies)
+# ---------------------------------------------------------
+def fetch_sector_snapshot() -> Dict[str, Optional[float]]:
+    """
+    Returns:
+      {
+        "Technology": +x.xx,
+        "Financials": +x.xx,
+        ...
+      }
+
+    Restored 2026-09-16 -- removed in commit 7180212 (2026-06-02) as
+    "unused" because its only caller in quote_worker.py had already been
+    permanently short-circuited by a stray `if True: skip` guard. The
+    guard was the actual bug; this function was working code. Deleting it
+    left the homescreen carousel's "Top Sectors" card frozen at its last
+    real value (2026-06-02) for 3.5+ months, confirmed live via
+    GET /homescreen-context. Uses the same fetch_equity_quote() Finnhub
+    path already proven healthy for every other carousel card.
+    """
+    sectors = {
+        "Technology": "XLK",
+        "Financials": "XLF",
+        "Energy": "XLE",
+        "Healthcare": "XLV",
+        "Consumer": "XLY",
+    }
+
+    out: Dict[str, Optional[float]] = {}
+    for name, etf in sectors.items():
+        q = fetch_equity_quote(etf)
+        chg = q.get("changePct")
+        out[name] = chg if isinstance(chg, (int, float)) else None
+
+    return out

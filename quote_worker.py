@@ -39,7 +39,7 @@ except Exception:
 from quote_provider import (
     fetch_equity_quote,
     fetch_crypto_simple_snapshot,
-    
+    fetch_sector_snapshot,
 )
 from backend.quote_repo import (
     get_pending_quotes,
@@ -53,6 +53,7 @@ from backend.quote_repo import (
 # Refresh policies
 # -----------------------------
 CRYPTO_MIN_REFRESH_SECONDS = 1800   # 30 minutes
+SECTOR_MIN_REFRESH_SECONDS = 300    # 5 minutes (market hours only)
 WATCHLIST_REFRESH_SECONDS = 240     # was inline 90 -- reduces background pre-warm calls ~63%
 MOVERS_REFRESH_SECONDS = 600        # was inline 300 -- reduces background pre-warm calls 50%
 
@@ -668,12 +669,49 @@ def update_market_overview(db) -> None:
                 card["items"] = [{"label": "Mood", "value": f"{label} ({value})"}]
                 card["updated_at"] = now_iso
 
-    
+    # -----------------------------
+    # 3) Top Sectors update (MARKET HOURS ONLY)
+    # -----------------------------
+    # Restored 2026-09-16 -- see fetch_sector_snapshot()'s docstring in
+    # quote_provider.py for why this was gone since 2026-06-02. The real
+    # bug was this gate: it used to be a hardcoded `if True: skip`,
+    # unconditionally always true, which is what made the block look
+    # "unused" and got it deleted. is_market_open(now_utc) is the actual
+    # fix -- same function this file already uses for the badge logic
+    # right below, just computed here first so both share one call.
+    market_open = is_market_open(now_utc)
+
+    if not market_open:
+        log("⏸️ Market closed — skipping sector refresh")
+    else:
+        sectors = fetch_sector_snapshot()
+
+        has_valid_sectors = any(
+            isinstance(v, (int, float)) for v in sectors.values()
+        )
+
+        if not has_valid_sectors:
+            log("⚠️ Sector snapshot empty — preserving existing carousel values")
+        else:
+            for card in carousel:
+                if isinstance(card, dict) and card.get("id") == "sectors":
+                    items = []
+                    for name in ["Technology", "Financials", "Energy", "Healthcare", "Consumer"]:
+                        chg = sectors.get(name)
+                        items.append(
+                            {
+                                "label": name,
+                                "value": f"{chg:+.2f}%" if isinstance(chg, (int, float)) else "--",
+                                "quote_updated_at": now_iso,
+                            }
+                        )
+
+                    card["items"] = items
+                    card["updated_at"] = now_iso
+
     # -----------------------------
     # 4) Market Closed badge on us_market card
     # -----------------------------
-    market_open = is_market_open(now_utc)
-
     for card in carousel:
         if isinstance(card, dict) and card.get("id") == "us_market":
             if market_open:
