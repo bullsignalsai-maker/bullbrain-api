@@ -151,6 +151,110 @@ def _confounding_guard(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+# Probability-calibration check: does BullBrain's raw prob_up/prob_down
+# mean what it claims -- among picks the model called Bullish/Bearish with
+# X% confidence, did the actual positive/negative rate come out near X%?
+# Bucket edges start at 50% (anything closer to 50/50 is Neutral, not a
+# directional call -- see pick_model_view.bias, computed by the same
+# +-5pt band as stock_display_intelligence.py's _MODEL_VIEW_NEUTRAL_BAND)
+# and run to 100% for headroom. Real data check (2026-09-21, 1455 deduped
+# checked picks) never exceeded ~66% confidence -- the model rarely states
+# strong conviction on this feature set -- so the upper buckets are
+# expected to come out empty rather than needing a second constant to
+# maintain; _subgroup_breakdown-style output only includes buckets that
+# actually have data. That same check found the well-populated 50-65%
+# buckets overconfident (actual hit rate 13-21pp below stated confidence,
+# worse the higher the stated confidence) -- see
+# bullbrain_calibration_check memory for the full finding.
+MODEL_VIEW_CALIBRATION_BUCKETS = [
+    (0.50, 0.55), (0.55, 0.60), (0.60, 0.65), (0.65, 0.70), (0.70, 0.75),
+    (0.75, 0.80), (0.80, 0.85), (0.85, 0.90), (0.90, 0.95), (0.95, 1.00),
+]
+
+
+def _calibration_bucket_label(lo: float, hi: float) -> str:
+    return f"{int(round(lo * 100))}-{int(round(hi * 100))}%"
+
+
+def _calibration_bucket(confidence: float) -> Optional[str]:
+    for lo, hi in MODEL_VIEW_CALIBRATION_BUCKETS:
+        if lo <= confidence < hi or (hi == 1.00 and confidence == 1.00):
+            return _calibration_bucket_label(lo, hi)
+    return None
+
+
+def _model_view_calibration(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Reliability check for BullBrain's raw prob_up/prob_down. Grades only
+    picks the model gave a directional call (pick_model_view.bias ==
+    Bullish or Bearish -- Neutral is deliberately excluded, since it isn't
+    a prediction to grade), bucketed by the model's own stated confidence
+    in that direction (up for Bullish, down for Bearish -- these are the
+    same value since down == 1-up, this just orients it around the call
+    actually made) and compared against the REAL outcome (positive return
+    for Bullish, negative for Bearish). Same confounding guard as every
+    other breakdown in this report -- a bucket can look miscalibrated
+    purely because it's thin or one symbol dominates it.
+    """
+    directional = []
+    missing = 0
+
+    for p in picks:
+        mv = p.get("pick_model_view")
+        ret = p.get("checked_return_pct")
+        if not isinstance(mv, dict) or not isinstance(ret, (int, float)):
+            missing += 1
+            continue
+
+        bias = mv.get("bias")
+        up = mv.get("up")
+        down = mv.get("down")
+
+        if bias == "Bullish" and isinstance(up, (int, float)):
+            confidence, correct = up, ret > 0
+        elif bias == "Bearish" and isinstance(down, (int, float)):
+            confidence, correct = down, ret < 0
+        else:
+            missing += 1  # Neutral, Unknown, or malformed -- no call to grade
+            continue
+
+        directional.append({**p, "_confidence": confidence, "_correct": correct})
+
+    total = len(picks)
+    if total and missing == total:
+        return {
+            "insufficient_data": True,
+            "reason": "no directional (Bullish/Bearish) model view on any checked pick in this window",
+            "directional_n": 0,
+            "excluded_neutral_or_missing": missing,
+            "buckets": {},
+        }
+
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for p in directional:
+        label = _calibration_bucket(p["_confidence"])
+        if label:
+            grouped[label].append(p)
+
+    buckets = {}
+    for label, group in grouped.items():
+        n = len(group)
+        hits = sum(1 for p in group if p["_correct"])
+        buckets[label] = {
+            "n": n,
+            "mean_predicted_confidence_pct": round(100 * sum(p["_confidence"] for p in group) / n, 1),
+            "actual_hit_rate_pct": round(100 * hits / n, 1),
+            **_confounding_guard(group),
+        }
+
+    return {
+        "insufficient_data": False,
+        "directional_n": len(directional),
+        "excluded_neutral_or_missing": missing,
+        "buckets": buckets,
+    }
+
+
 def _subgroup_breakdown(picks: List[Dict[str, Any]], key_fn) -> Dict[str, Any]:
     groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
     missing = 0
@@ -221,6 +325,7 @@ def _report_for_horizon(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
         "by_model_view_bias": _subgroup_breakdown(
             picks, lambda p: (p.get("pick_model_view") or {}).get("bias")
         ),
+        "by_model_view_calibration": _model_view_calibration(picks),
         "factor_scores_winners_vs_losers": _factor_score_comparison(winners, losers),
         "pick_date_range": {
             "min": min((p["pick_date"] for p in picks if p.get("pick_date")), default=None),
@@ -348,6 +453,42 @@ def _render_subgroup_breakdown_md(title: str, breakdown: Dict[str, Any]) -> List
     return lines
 
 
+def _render_calibration_md(breakdown: Dict[str, Any]) -> List[str]:
+    lines = ["### Model view calibration (prob_up/prob_down reliability)"]
+
+    if breakdown.get("insufficient_data"):
+        lines.append(f"_Insufficient data: {breakdown.get('reason')}_")
+        return lines
+
+    buckets = breakdown.get("buckets") or {}
+    lines.append(
+        f"_{breakdown.get('directional_n', 0)} directional (Bullish/Bearish) picks graded, "
+        f"{breakdown.get('excluded_neutral_or_missing', 0)} excluded (Neutral or missing)._"
+    )
+    if not buckets:
+        lines.append("_No buckets._")
+        return lines
+
+    # Ascending by bucket lower bound -- reads as a calibration curve
+    # (stated confidence climbing) rather than by n like other breakdowns.
+    for label, b in sorted(buckets.items(), key=lambda kv: float(kv[0].split("-")[0])):
+        flag = " ⚠️ LOW CONFIDENCE" if b.get("low_confidence") else ""
+        gap = round(b["actual_hit_rate_pct"] - b["mean_predicted_confidence_pct"], 1)
+        lines.append(
+            f"- **{label}**: n={b['n']}, stated confidence={b['mean_predicted_confidence_pct']}%, "
+            f"actual hit rate={b['actual_hit_rate_pct']}% (gap={gap:+}pp)"
+            f" — {b['distinct_symbols']} distinct symbols, {b['distinct_pick_dates']} distinct days"
+            f"{flag}"
+        )
+        if b.get("dominant_symbol"):
+            lines.append(
+                f"  - dominant symbol: {b['dominant_symbol']} "
+                f"({round(b['dominant_symbol_share']*100)}% of this bucket)"
+            )
+
+    return lines
+
+
 def render_markdown_report(report: Dict[str, Any]) -> str:
     """
     Human-readable rendering of build_accuracy_report()'s output, for quick
@@ -385,6 +526,8 @@ def render_markdown_report(report: Dict[str, Any]) -> str:
         lines += _render_subgroup_breakdown_md("By setup_label x market_regime", h["by_setup_and_regime"])
         lines.append("")
         lines += _render_subgroup_breakdown_md("By model_view.bias", h["by_model_view_bias"])
+        lines.append("")
+        lines += _render_calibration_md(h["by_model_view_calibration"])
         lines.append("")
 
         lines.append("### Factor scores — winners vs. losers (mean)")
