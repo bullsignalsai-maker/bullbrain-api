@@ -12,7 +12,7 @@
 #
 # Deliberately decoupled from Alpha Watch's opinionated score_stock()
 # composite: the primary recorded signal is the neutral raw model view
-# (BullBrain's own prob_up/prob_down, via the same _model_view() helper
+# (BullBrain's own prob_up/prob_down, via the same model_view() helper
 # stock_display_intelligence.py uses) and detect_regime()'s per-symbol
 # classification -- both derived from run_bullbrain_from_inputs(), the
 # same canonical "single authority" pipeline every other path in this app
@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 import main as backend
 from backend.candle_store import get_candles
 from backend.stock_bootstrap import ensure_bullbrain_loaded
-from backend.stock_display_intelligence import _model_view
+from backend.stock_display_intelligence import model_view
 from backend.alpha_watch_logic import (
     detect_regime,
     score_momentum,
@@ -150,7 +150,7 @@ def build_snapshot(symbol: str, date_key: str) -> Optional[Dict[str, Any]]:
         "date": date_key,
         "recorded_at": _now_iso(),
         "snapshot_price": float(snapshot_price) if isinstance(snapshot_price, (int, float)) else None,
-        "model_view": _model_view(
+        "model_view": model_view(
             float(up) if isinstance(up, (int, float)) else None,
             float(down) if isinstance(down, (int, float)) else None,
         ),
