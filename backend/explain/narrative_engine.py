@@ -165,6 +165,52 @@ def build_summary_narrative(
     return " ".join(lines[:max_sentences])
 
 
+def build_reconciliation_narrative(
+    *,
+    indicator_states: Dict[str, str],
+    seed: Optional[int] = None
+) -> Optional[str]:
+    """
+    Unlike build_summary_narrative() above (which silently DROPS a
+    sentence that conflicts with the authoritative tone), this
+    explicitly surfaces the conflict when it exists -- built for the
+    Area C display-label fix (bullbrain_output_quality_area_c /
+    bullbrain_area_c_fix_scoping memories): the blended score-based
+    label (_score_label() in stock_display_intelligence.py) is driven
+    largely by same-day price momentum, not the model's own forward
+    probability, so it can say "Bullish"-flavored things while
+    BullBrain's own view leans the opposite way -- confirmed on real
+    data at a 95-100% contradiction rate for the bullish-flavored
+    labels specifically. probability_composite is authoritative (same
+    ordering as _TONE_AUTHORITY above): when it disagrees with
+    momentum_composite, the sentence is framed as momentum's read
+    followed by the model's own contradicting view, not the reverse.
+
+    Returns None when there's nothing to reconcile -- states agree, or
+    either is missing/UNKNOWN/untoned (e.g. PROB_BALANCED,
+    MOMENTUM_MIXED) -- which confirmed real data shows is the case for
+    every Neutral/Caution-labeled symbol today.
+    """
+    prob_state = indicator_states.get("probability_composite")
+    mom_state = indicator_states.get("momentum_composite")
+
+    if not prob_state or prob_state == "UNKNOWN" or not mom_state or mom_state == "UNKNOWN":
+        return None
+
+    prob_tone = _indicator_tone("probability_composite", prob_state)
+    mom_tone = _indicator_tone("momentum_composite", mom_state)
+
+    if not prob_tone or not mom_tone or prob_tone == mom_tone:
+        return None
+
+    mom_text = narrate_indicator("momentum_composite", mom_state, seed=seed)
+    prob_text = narrate_indicator("probability_composite", prob_state, seed=seed)
+    if not mom_text or not prob_text:
+        return None
+
+    return f"{mom_text} However, the model's own forward view leans {prob_tone}: {prob_text}"
+
+
 # ================================================================
 # Other Functions (Kept + Minor Polish)
 # ================================================================
@@ -262,6 +308,10 @@ def build_full_narrative_bundle(
             seed=seed
         ),
         "pattern": build_pattern_narrative(
+            indicator_states=indicator_states,
+            seed=seed
+        ),
+        "reconciliation": build_reconciliation_narrative(
             indicator_states=indicator_states,
             seed=seed
         ),

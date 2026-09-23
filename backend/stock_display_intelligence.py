@@ -213,6 +213,7 @@ def build_display_intelligence(
     symbol: str,
     stock: Dict[str, Any],
     spreadsheet_meta: Dict[str, Any] | None = None,
+    narratives: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     spreadsheet_meta = spreadsheet_meta or {}
@@ -420,8 +421,21 @@ def build_display_intelligence(
             "technical": bool(technical),
             "marketTheme": bool(dominant_theme or market_sentiment),
         },
-        # Prototype additive fields (2026-07-17) — see modelView/marketContext
-        # section above. Not consumed anywhere yet.
+        # Additive fields (2026-07-17) — see modelView/marketContext section
+        # above. Already shipped to Home/Watchlist's response payload (both
+        # embed this whole displayIntelligence dict), just under-surfaced
+        # there (info-modal only, not the primary card) until the Area C
+        # frontend fix lands.
         "modelView": model_view,
         "marketContext": market_context,
+        # Area C fix (bullbrain_area_c_fix_scoping memory): explicit
+        # reconciling sentence for when the blended label above (driven
+        # largely by same-day price momentum, see _score_label()) disagrees
+        # with modelView's own forward probability. None when there's
+        # nothing to reconcile (see narrative_engine.build_reconciliation_
+        # narrative()'s own docstring for exactly when that is) -- narratives
+        # is optional/backward-compatible since not every caller of this
+        # function has a narrative bundle to pass (e.g. stock_bootstrap.py's
+        # lightweight on-demand path never computes one).
+        "reconciliationNote": narratives.get("reconciliation") if narratives else None,
     }
