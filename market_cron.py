@@ -2326,6 +2326,34 @@ def main():
         log(f"🪙 crypto market alerts checked | {crypto_alert_result}")
     except Exception as e:
         log_exc("crypto market alerts failed", e)
+
+    # Unbiased, broad-universe outcome tracking -- deliberately placed
+    # LAST, after every push-alert check above, not inside the
+    # final_close_intelligence block those alerts share with pick-
+    # tracking/retention/snapshots. This is a ~546-symbol pass (all of
+    # REAL_TICKERS, not just the ~150-symbol scan_symbols universe) and
+    # can run several minutes on a day with many stale symbols; placing
+    # it before the alert checks would delay real user-facing
+    # notifications once a day. See ml_training_data_readiness_audit
+    # memory for the full scoping. Own internal once/day guard (separate
+    # state doc from pick_tracking's), so this is safe even if
+    # final_close_intelligence's 15-minute window sees more than one
+    # cron invocation.
+    if mode == "final_close_intelligence":
+        try:
+            from backend.universe_outcome_tracking import (
+                record_daily_universe_snapshot,
+                check_pending_universe_snapshots,
+            )
+
+            universe_checker_stats = check_pending_universe_snapshots(get_db())
+            log(f"🌐 universe outcome checker | {universe_checker_stats}")
+
+            universe_snapshot_stats = record_daily_universe_snapshot(get_db())
+            log(f"🌐 universe outcome snapshot | {universe_snapshot_stats}")
+        except Exception as e:
+            log_exc("universe outcome tracking failed", e)
+
     log("🏁 cron done")
 
 # =========================================================
