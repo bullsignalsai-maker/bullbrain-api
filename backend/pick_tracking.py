@@ -16,7 +16,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from backend.market_calendar import load_recent_trading_days, trading_days_elapsed
-from backend.stock_repo import get_stock
+from backend.quote_repo import get_quote_safe
 from backend.pick_accuracy_report import dedupe_checked_picks
 
 COL_ROOT = "bullsignals_ai"
@@ -240,10 +240,14 @@ def _mark_checker_ran(db, date_key: str, stats: Dict[str, Any]) -> None:
 
 
 def _lookup_current_price(symbol: str) -> Optional[float]:
-    stock = get_stock(symbol)
-    if not stock:
-        return None
-    price = (stock.get("quote") or {}).get("price")
+    # quote_repo's cache (30s TTL) instead of the full stock_repo doc --
+    # this checker only ever needs the price, and reading the whole
+    # canonical stock doc for that got flagged as unnecessary cost during
+    # the universe_outcome_tracking scoping (see ml_training_data_
+    # readiness_audit memory). Same fix applied to universe_outcome_
+    # tracking.py's own _lookup_current_price() from day one.
+    quote = get_quote_safe(symbol)
+    price = (quote or {}).get("price")
     return float(price) if isinstance(price, (int, float)) else None
 
 
