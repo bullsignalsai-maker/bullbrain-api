@@ -24,6 +24,23 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 # ---------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------
+# MAX_DAYS_BACK only bounds the INITIAL full fetch for a symbol seen for
+# the first time. It does not cap how much history accumulates after
+# that: every delta fetch (get_candles()'s cache-stale path below) does
+# candles[k].extend(norm_delta...) and saves the whole array back,
+# forever -- nothing ever trims the front. This is now a deliberate
+# retention decision, not an oversight: raw daily OHLCV is the one place
+# in this app with real long-horizon history for regime analysis (see
+# bullbrain_calibration_check memory's infra audit), and a symbol's doc
+# stays trivially small even after years of daily bars (~12KB/year across
+# all 6 fields), so there's no cost pressure to ever trim it. Confirmed
+# live 2026-09-22: AAPL/MSFT/NVDA already carry 439 daily candles back to
+# 2024-12-18, well past this constant's 370-day window, proving the
+# accumulate-forever behavior is real in production, not just a code
+# reading. If a future cost-cutting pass ever adds pruning here (mirroring
+# pick_tracking.py's prune_resolved_picks()), it needs its own explicit
+# decision -- unlike pick_tracking, there's no archive path that would
+# make deleting old candles safe for training/regime-analysis use cases.
 MAX_DAYS_BACK = 370          # fetch ~1 year initially
 CANDLE_TTL_HOURS = 24        # candles considered fresh for 24h
 MIN_POINTS_DEFAULT = 120     # minimum candles required
@@ -272,6 +289,8 @@ def get_candles(
                         flush=True,
                     )
                     norm_delta = _normalize_polygon_results(delta)
+                    # Unbounded growth, on purpose -- see MAX_DAYS_BACK's
+                    # comment above. Never trim this.
                     for k in candles:
                         candles[k].extend(norm_delta.get(k, []))
                 else:

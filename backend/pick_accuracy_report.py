@@ -87,6 +87,12 @@ def dedupe_checked_picks(raw_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 "pick_factor_scores": doc.get("pick_factor_scores"),
                 "pick_setup_label": doc.get("pick_setup_label"),
                 "pick_score": doc.get("pick_score"),
+                # Which deploy produced this pick -- see pick_tracking.py's
+                # _build_pick_record(). Included here (not just on the raw
+                # doc) because prune_resolved_picks() archives picks through
+                # this exact function before deleting the raw rows; without
+                # it, provenance would be silently dropped at archive time.
+                "pick_code_version": doc.get("pick_code_version"),
             }
 
     return list(seen.values())
