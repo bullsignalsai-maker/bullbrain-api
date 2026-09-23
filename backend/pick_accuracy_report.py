@@ -182,7 +182,13 @@ def _calibration_bucket_label(lo: float, hi: float) -> str:
     return f"{int(round(lo * 100))}-{int(round(hi * 100))}%"
 
 
-def _calibration_bucket(confidence: float) -> Optional[str]:
+def calibration_bucket(confidence: float) -> Optional[str]:
+    """
+    Public (not _-prefixed) so /alphaclara-calibration can bucket a live
+    confidence value the exact same way this report already does for
+    checked picks -- same "shared key format both sides use" reasoning as
+    setup_regime_key() above, not a coincidence of naming.
+    """
     for lo, hi in MODEL_VIEW_CALIBRATION_BUCKETS:
         if lo <= confidence < hi or (hi == 1.00 and confidence == 1.00):
             return _calibration_bucket_label(lo, hi)
@@ -238,7 +244,7 @@ def _model_view_calibration(picks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for p in directional:
-        label = _calibration_bucket(p["_confidence"])
+        label = calibration_bucket(p["_confidence"])
         if label:
             grouped[label].append(p)
 

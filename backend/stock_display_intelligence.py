@@ -102,21 +102,21 @@ def _reason_direction_conflicts(reason: str, change_pct: float | None) -> bool:
     return False
 
 
-# Prototype (2026-07-17): additive modelView/marketContext fields, see
-# bullbrain_area_c_fix_scoping memory. Neither field is read by any existing
-# consumer yet — both are purely new sibling keys on the returned dict.
+# Additive modelView/marketContext fields, shipped 2026-07-17, see
+# bullbrain_area_c_fix_scoping memory.
 
-# Same ±5pt threshold as ui_stock_builder.py's _probability_bias(), which
-# these fields are meant to generalize onto the canonical persisted doc
-# instead of being computed ad hoc for Stock Detail only. Duplicated here
-# rather than imported to avoid a cross-module dependency for one constant;
-# if this prototype ships, ui_stock_builder.py should import from here
-# instead of keeping its own copy (same "same logic, two places" risk class
-# documented throughout bullbrain_gate_ladder_audit).
-_MODEL_VIEW_NEUTRAL_BAND = 0.05
+# Same ±5pt threshold as ui_stock_builder.py's _probability_bias() (still
+# its own separate copy there -- not consolidated in this change, but
+# flagged the same as always). Public (not _-prefixed): main.py's
+# /alphaclara-calibration route needs the same neutral-band check this
+# function already does, on a raw up/down pair it wasn't given as part of
+# a full stock doc -- reusing this directly avoids a third copy of the
+# same ±5pt threshold in the codebase (same "same logic, two places" risk
+# class documented throughout bullbrain_gate_ladder_audit).
+MODEL_VIEW_NEUTRAL_BAND = 0.05
 
 
-def _model_view(up, down) -> Dict[str, Any]:
+def model_view(up, down) -> Dict[str, Any]:
     """
     The model's raw probability-implied bias, bypassing the 12-gate decision
     ladder entirely — unlike `signal` (gated, HOLD for the large majority of
@@ -136,7 +136,7 @@ def _model_view(up, down) -> Dict[str, Any]:
     diff = up - down
     strength_pct = round(abs(diff) * 100, 1)
 
-    if abs(diff) < _MODEL_VIEW_NEUTRAL_BAND:
+    if abs(diff) < MODEL_VIEW_NEUTRAL_BAND:
         bias, label = "Neutral", "Model view is balanced"
     elif diff > 0:
         bias, label = "Bullish", "Model view leans bullish"
@@ -372,7 +372,11 @@ def build_display_intelligence(
 
     signal, label, tone = _score_label(score, change_pct, risk_level)
 
-    model_view = _model_view(prob_up, _num(raw_probs.get("prob_down")))
+    # Named mv_result, not model_view -- that name is now the public
+    # function itself (main.py's /alphaclara-calibration route imports
+    # it), so a same-named local here would shadow it for the rest of
+    # this function's scope.
+    mv_result = model_view(prob_up, _num(raw_probs.get("prob_down")))
     market_context = _market_context(factors, change_pct)
 
     why_now: List[str] = []
@@ -448,7 +452,7 @@ def build_display_intelligence(
         # embed this whole displayIntelligence dict), just under-surfaced
         # there (info-modal only, not the primary card) until the Area C
         # frontend fix lands.
-        "modelView": model_view,
+        "modelView": mv_result,
         "marketContext": market_context,
         # Area C fix (bullbrain_area_c_fix_scoping memory): explicit
         # reconciling sentence for when the blended label above (driven
