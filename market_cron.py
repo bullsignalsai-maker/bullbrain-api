@@ -1256,6 +1256,13 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
             "marketAwareness": market_awareness,
         },
         spreadsheet_meta=sheet_meta,
+        # Area C fix: `narratives` (built above at 4.2, already includes
+        # "reconciliation") wasn't being threaded through here -- without
+        # this, displayIntelligence.reconciliationNote would stay None
+        # forever in production regardless of the narrative_engine/
+        # stock_display_intelligence changes, since this is the one real
+        # call site that feeds Home/Watchlist/Stock Detail's actual data.
+        narratives=narratives,
     )
     # ---------------------------------------------------------
     # 9) Build doc (everything your Firestore-only stockdetail needs)

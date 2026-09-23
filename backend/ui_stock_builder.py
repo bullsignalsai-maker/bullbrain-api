@@ -204,21 +204,33 @@ def build_probability_block(stock: Dict[str, Any]) -> Dict[str, Any]:
     diff = abs(up - down)
     bias = _probability_bias(up, down)
 
-    expl = []
-    if narratives.get("probability"):
-        expl.append(narratives["probability"])
+    # Area C fix: when the blended signal/label (built elsewhere from this
+    # same stock doc) disagrees with this probability's own bias, explain
+    # that explicitly instead of just restating the up/down split as if
+    # nothing else on screen might contradict it. narrative_engine.build_
+    # reconciliation_narrative() only ever returns a value when there's a
+    # real conflict to explain (see its docstring) -- every agreeing symbol
+    # falls through to the generic explanation below, unchanged.
+    reconciliation = narratives.get("reconciliation")
+    if reconciliation:
+        explanation = reconciliation
+    else:
+        expl = []
+        if narratives.get("probability"):
+            expl.append(narratives["probability"])
 
-    expl.append(
-        f"Upside probability is approximately {up*100:.0f}%, while downside probability is around {down*100:.0f}%, "
-        f"indicating a {bias.lower()} bias."
-    )
+        expl.append(
+            f"Upside probability is approximately {up*100:.0f}%, while downside probability is around {down*100:.0f}%, "
+            f"indicating a {bias.lower()} bias."
+        )
+        explanation = _sentences(expl, 2)
 
     return {
         "up": round(up, 4),
         "down": round(down, 4),
         "bias": bias,
         "strengthPct": round(diff * 100, 1),
-        "explanation": _sentences(expl, 2),
+        "explanation": explanation,
     }
 
 
