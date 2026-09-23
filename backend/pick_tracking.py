@@ -12,10 +12,12 @@
 # =========================================================
 
 import datetime
+import os
 from typing import Any, Dict, List, Optional
 
 from backend.market_calendar import load_recent_trading_days, trading_days_elapsed
 from backend.stock_repo import get_stock
+from backend.pick_accuracy_report import dedupe_checked_picks
 
 COL_ROOT = "bullsignals_ai"
 PICK_TRACKING_COLLECTION = "pick_tracking"
@@ -138,6 +140,17 @@ def _build_pick_record(
         "pick_expected_move_5d": expected_move_5d,
         "pick_source": pick_source,
         "pick_decision_reasons": decision_reasons,
+        # Which deploy produced this pick -- scoring formulas (score_bullbrain,
+        # MIN_FINAL_SCORE, gate-ladder thresholds, etc.) have changed multiple
+        # times across this collection's life with no way to tell which
+        # version produced a given pick_score/pick_decision_reasons/
+        # pick_setup_label after the fact (see bullbrain_calibration_check
+        # memory's infra audit). RENDER_GIT_COMMIT is Render's own
+        # auto-injected env var (https://render.com/docs/environment-
+        # variables), same one /version already reads -- null when run
+        # locally (no such var off-Render), which is itself honest: "this
+        # pick predates version tagging" rather than a guess.
+        "pick_code_version": os.getenv("RENDER_GIT_COMMIT"),
         "pick_pattern_stats": {
             "pattern": pattern_history.get("pattern"),
             "winRate": days5.get("winRate"),
@@ -349,6 +362,67 @@ PRUNE_AFTER_DAYS = 180
 # Firestore batch writes cap at 500 operations.
 _PRUNE_BATCH_SIZE = 400
 
+# Permanent home for the (features-at-pick-time, real outcome) pairs a
+# future training pipeline needs, written right before prune_resolved_
+# picks() deletes the raw rows they came from -- see bullbrain_
+# calibration_check memory's infra audit: the original design ("no
+# separate archive step") only reasoned about *aggregate report* value
+# surviving past the read window, not raw row-level training data, which
+# this collection is now the one place that keeps. Nothing in the live
+# read path (get_checked_picks_for_report, the accuracy report route)
+# ever queries this collection, so archiving here doesn't reintroduce the
+# unbounded-read-cost problem prune_resolved_picks() was built to fix.
+ARCHIVE_COLLECTION_DOC = "pick_training_archive"
+_ARCHIVE_BATCH_SIZE = 400
+
+
+def _archive_key(symbol: str, pick_date: str, horizon: str) -> str:
+    return f"{symbol}_{pick_date}_{horizon}"
+
+
+def _archive_deduped_records(db, raw_docs_data: List[Dict[str, Any]]) -> int:
+    """
+    Writes the deduped (symbol, pick_date, horizon) representation of
+    raw_docs_data into the permanent training archive. Reuses
+    dedupe_checked_picks() (backend/pick_accuracy_report.py) rather than
+    archiving raw rows 1:1 -- a symbol/pick_date/horizon can have dozens
+    of near-identical raw duplicates (one per cron cycle it appeared in a
+    ranked list; dedupe_checked_picks()'s own docstring cites a real
+    example counted 96 times), and dedup already collapses those down to
+    the one real event, same as every other consumer of this collection.
+    Doc ID is the dedup key itself, so re-archiving the same picks (a
+    retried prune run, or two runs whose windows overlap) safely
+    overwrites with identical data instead of duplicating.
+    """
+    deduped = dedupe_checked_picks(raw_docs_data)
+    if not deduped:
+        return 0
+
+    collection = (
+        db.collection(COL_ROOT)
+          .document(ARCHIVE_COLLECTION_DOC)
+          .collection("records")
+    )
+
+    written = 0
+    batch = db.batch()
+    batch_count = 0
+    for record in deduped:
+        key = _archive_key(record["symbol"], record["pick_date"], record["horizon"])
+        batch.set(collection.document(key), record, merge=True)
+        batch_count += 1
+        written += 1
+
+        if batch_count >= _ARCHIVE_BATCH_SIZE:
+            batch.commit()
+            batch = db.batch()
+            batch_count = 0
+
+    if batch_count:
+        batch.commit()
+
+    return written
+
 
 def prune_resolved_picks(db) -> Dict[str, Any]:
     """
@@ -360,14 +434,12 @@ def prune_resolved_picks(db) -> Dict[str, Any]:
     nothing still due for a real outcome is ever lost; it just waits for
     a later prune run once check_pending_picks() resolves it.
 
-    No separate archive step: dedupe_checked_picks() already collapses
-    every raw row sharing a (symbol, pick_date, horizon) key down to one
-    representative record, and duplicate rows share the same
-    checked_return_pct by construction (same real-world outcome, per
-    dedupe_checked_picks()'s own docstring) -- so by the time a row ages
-    past the report's 90-day read window, its raw duplicates carry no
-    analysis value that isn't already fully captured in any report
-    computed while it was still in-window.
+    Archives before deleting: each deletion chunk is run through
+    _archive_deduped_records() first, and only committed to the training
+    archive BEFORE that chunk's delete batch is committed -- so a crash
+    between the two calls can only leave a chunk archived-but-not-yet-
+    deleted (harmless; the next run just deletes it), never deleted-but-
+    unarchived.
 
     Safe to call more than once on the same UTC calendar day -- guarded
     via the same state doc check_pending_picks() uses, under a
@@ -391,9 +463,11 @@ def prune_resolved_picks(db) -> Dict[str, Any]:
 
     scanned = 0
     deleted = 0
+    archived = 0
     skipped_still_pending = 0
-    batch = db.batch()
-    batch_count = 0
+    delete_batch = db.batch()
+    delete_batch_count = 0
+    pending_archive_data: List[Dict[str, Any]] = []
 
     for doc in query.stream():
         scanned += 1
@@ -409,21 +483,26 @@ def prune_resolved_picks(db) -> Dict[str, Any]:
             skipped_still_pending += 1
             continue
 
-        batch.delete(doc.reference)
-        batch_count += 1
+        pending_archive_data.append(data)
+        delete_batch.delete(doc.reference)
+        delete_batch_count += 1
         deleted += 1
 
-        if batch_count >= _PRUNE_BATCH_SIZE:
-            batch.commit()
-            batch = db.batch()
-            batch_count = 0
+        if delete_batch_count >= _PRUNE_BATCH_SIZE:
+            archived += _archive_deduped_records(db, pending_archive_data)
+            delete_batch.commit()
+            delete_batch = db.batch()
+            delete_batch_count = 0
+            pending_archive_data = []
 
-    if batch_count:
-        batch.commit()
+    if delete_batch_count:
+        archived += _archive_deduped_records(db, pending_archive_data)
+        delete_batch.commit()
 
     stats = {
         "scanned": scanned,
         "deleted": deleted,
+        "archived": archived,
         "skipped_still_pending": skipped_still_pending,
         "cutoff": cutoff,
     }

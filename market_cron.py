@@ -2268,6 +2268,28 @@ def main():
         except Exception as e:
             log_exc("hypothetical portfolio snapshot persistence failed", e)
 
+        # Independent market-wide regime snapshot -- same once/day gate,
+        # own try/except. Unlike detect_regime()'s per-symbol classification
+        # (and the daily Alpha Watch payload's derived mode-of-selected-
+        # picks market_regime), this doesn't depend on which symbols got
+        # picked or scored well that day -- SPY close/change + VIX, logged
+        # regardless. See backend/market_regime_history.py's module
+        # docstring and bullbrain_calibration_check memory's infra audit
+        # (finding 5) for why this was missing entirely until now.
+        try:
+            from backend.market_regime_history import record_daily_market_regime
+
+            today = datetime.datetime.utcnow().date().isoformat()
+            regime_snapshot = record_daily_market_regime(get_db(), today)
+            log(
+                f"🌎 market regime snapshot recorded | date={today} "
+                f"spy_close={regime_snapshot.get('spy_close')} "
+                f"vix_close={regime_snapshot.get('vix_close')} "
+                f"spy_realized_vol_20d_pct={regime_snapshot.get('spy_realized_vol_20d_pct')}"
+            )
+        except Exception as e:
+            log_exc("market regime snapshot persistence failed", e)
+
     # ---------------------------------------------------------
     # MARKET MOMENTUM SCREEN CACHE
     # Builds Firestore-first UI-ready data for Momentum Movers screen
