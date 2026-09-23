@@ -46,7 +46,9 @@ from backend.pick_accuracy_report import (
     build_accuracy_report,
     render_markdown_report,
     setup_regime_key,
+    calibration_bucket,
 )
+from backend.stock_display_intelligence import model_view as compute_model_view
 from backend.accuracy_snapshot_repo import get_accuracy_snapshots_since, get_latest_accuracy_snapshot
 from backend.hypothetical_portfolio import (
     dedupe_picks_for_valuation,
@@ -4987,6 +4989,146 @@ def get_alphaclara_historical_edge(
 
     except Exception as e:
         print("[alphaclara-historical-edge] error:", e)
+        return {"status": "error", "error": str(e)}
+
+
+# Same wording convention as HISTORICAL_EDGE_DISCLAIMER above -- this
+# reflects tracked history across ALL picks, never a guarantee for the
+# specific stock/pick being viewed.
+CALIBRATION_DISCLAIMER = (
+    "This reflects the tracked historical accuracy of similar-confidence "
+    "predictions across all picks, not a guarantee for this specific stock."
+)
+
+# How far below stated confidence the real hit rate has to fall before the
+# candid caveat line is shown. Real data check (2026-09-23, see
+# bullbrain_calibration_check memory) found every well-populated bucket at
+# both 5d and 20d already sits well past this (gaps of 6-21pp) -- this is
+# the expected common case today, not a rare edge case being guarded
+# against.
+CALIBRATION_CAVEAT_GAP_PCT = 8.0
+
+
+def _calibration_headline(stated_pct: float, actual_pct: float) -> str:
+    return (
+        f"BullBrain stated {stated_pct:.0f}% confidence here. Historically, "
+        f"similar-confidence calls have been right {actual_pct:.0f}% of the time."
+    )
+
+
+def _calibration_caveat(stated_pct: float, actual_pct: float) -> Optional[str]:
+    if stated_pct - actual_pct > CALIBRATION_CAVEAT_GAP_PCT:
+        return "That's below the stated confidence — treat this number as directional, not a probability."
+    return None
+
+
+@app.get("/alphaclara-calibration")
+def get_alphaclara_calibration(
+    up: float,
+    down: float,
+    horizon: str = "5d",
+    since: Optional[str] = None,
+):
+    """
+    "Is this confidence number trustworthy" lookup for PickDetailScreen/
+    Stock Detail: given a live displayIntelligence.modelView.up/down pair
+    (or a tracked pick's pick_model_view.up/down -- identical shape),
+    returns the REAL historical hit rate for checked picks that fell in
+    the same confidence bucket. Takes up/down directly, not a pre-resolved
+    bias or confidence percentage, so the caller does zero computation --
+    this route derives bias/bucket itself, reusing the exact same
+    functions the report already computes with (compute_model_view(),
+    calibration_bucket()), so this can never disagree with the report
+    about which bucket a given up/down pair belongs to.
+
+    Neutral (bias == "Neutral", the same +-5pt band used everywhere else
+    in this app) returns insufficient_data=True -- there's no directional
+    call to grade, same as how by_model_view_calibration excludes Neutral
+    picks from the report itself.
+
+    Always returns `disclaimer` plus `insufficient_data`/`low_confidence`
+    flags; callers must gate display on those rather than showing
+    `actual_hit_rate_pct` unconditionally -- same discipline as
+    /alphaclara-historical-edge. Also returns ready-to-render `headline`/
+    `caveat` copy (server-generated, not raw stats for the client to
+    template into a sentence) -- same convention as narrative_engine.py's
+    pre-built sentences elsewhere in this app.
+    """
+    try:
+        mv = compute_model_view(up, down)
+        bias = mv.get("bias")
+
+        base = {
+            "status": "ok",
+            "horizon": horizon,
+            "bias": bias,
+            "disclaimer": CALIBRATION_DISCLAIMER,
+        }
+
+        if bias not in ("Bullish", "Bearish"):
+            return {
+                **base,
+                "insufficient_data": True,
+                "low_confidence": True,
+                "bucket": None,
+                "stated_confidence_pct": None,
+                "actual_hit_rate_pct": None,
+                "n": None,
+                "confounding_guard": None,
+                "headline": None,
+                "caveat": None,
+            }
+
+        confidence = up if bias == "Bullish" else down
+        bucket = calibration_bucket(confidence)
+
+        report = _get_cached_full_accuracy_report(since)
+        if report is None:
+            raw_docs = get_checked_picks_for_report(db, since=since)
+            deduped = dedupe_checked_picks(raw_docs)
+            report = build_accuracy_report(deduped)
+
+        horizon_report = (report.get("horizons") or {}).get(horizon)
+        calib = (horizon_report or {}).get("by_model_view_calibration") or {}
+        cell = (calib.get("buckets") or {}).get(bucket) if bucket else None
+
+        if not horizon_report or calib.get("insufficient_data") or cell is None:
+            return {
+                **base,
+                "insufficient_data": True,
+                "low_confidence": True,
+                "bucket": bucket,
+                "stated_confidence_pct": round(confidence * 100, 1),
+                "actual_hit_rate_pct": None,
+                "n": None,
+                "confounding_guard": None,
+                "headline": None,
+                "caveat": None,
+            }
+
+        stated_pct = cell.get("mean_predicted_confidence_pct")
+        actual_pct = cell.get("actual_hit_rate_pct")
+
+        return {
+            **base,
+            "insufficient_data": False,
+            "low_confidence": cell.get("low_confidence", False),
+            "bucket": bucket,
+            "stated_confidence_pct": stated_pct,
+            "actual_hit_rate_pct": actual_pct,
+            "n": cell.get("n"),
+            "confounding_guard": {
+                "distinct_symbols": cell.get("distinct_symbols"),
+                "distinct_pick_dates": cell.get("distinct_pick_dates"),
+                "dominant_symbol": cell.get("dominant_symbol"),
+                "dominant_symbol_share": cell.get("dominant_symbol_share"),
+            },
+            "headline": _calibration_headline(stated_pct, actual_pct) if not cell.get("low_confidence") else None,
+            "caveat": _calibration_caveat(stated_pct, actual_pct) if not cell.get("low_confidence") else None,
+        }
+
+    except Exception as e:
+        print("[alphaclara-calibration] error:", e)
         return {"status": "error", "error": str(e)}
 
 
