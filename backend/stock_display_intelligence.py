@@ -242,6 +242,11 @@ def build_display_intelligence(
         50,
     )
 
+    # Pulled up from where model_view is built below -- prob_up is needed
+    # here now too, for factors["confidence"].
+    raw_probs = bull.get("raw") or {}
+    prob_up = _num(raw_probs.get("prob_up"), None)
+
     change_pct = _num(quote.get("changePct"), 0)
     price = _num(quote.get("price"), None)
 
@@ -284,7 +289,25 @@ def build_display_intelligence(
         factors["baseSignal"] = 0
     score += factors["baseSignal"]
 
-    factors["confidence"] = max(-8, min(10, (base_conf - 50) / 5))
+    # FIXED 2026-09-23 (found while investigating Area C -- see
+    # bullbrain_area_c_fix_scoping memory): base_conf ("confidence") is
+    # max(prob_up, 1-prob_up)*100, which by construction is always >= 50
+    # regardless of direction -- so the old (base_conf-50)/5 term was
+    # always >= 0, i.e. a one-sided bonus that pushed every score UP
+    # toward a bullish-flavored label even when the model's own view was
+    # strongly BEARISH (confirmed on real data: EA at 98.6% down
+    # probability got a near-maximum +9.7 push from this alone). Same bug
+    # class as score_bullbrain()'s already-fixed algebraic-cancellation
+    # issue in alpha_watch_logic.py -- replaced with a signed term built
+    # directly from prob_up, symmetric around 0.5, same +-10 peak
+    # magnitude as the old one-sided max. Verified on real data before
+    # shipping: 50.2% -> 26.8% contradiction rate against modelView.bias,
+    # zero regressions (no symbol that was already agreeing started
+    # disagreeing).
+    if prob_up is not None:
+        factors["confidence"] = max(-10, min(10, (prob_up - 0.5) * 20))
+    else:
+        factors["confidence"] = 0
     score += factors["confidence"]
 
     if change_pct >= 6:
@@ -349,8 +372,7 @@ def build_display_intelligence(
 
     signal, label, tone = _score_label(score, change_pct, risk_level)
 
-    raw_probs = bull.get("raw") or {}
-    model_view = _model_view(_num(raw_probs.get("prob_up")), _num(raw_probs.get("prob_down")))
+    model_view = _model_view(prob_up, _num(raw_probs.get("prob_down")))
     market_context = _market_context(factors, change_pct)
 
     why_now: List[str] = []
