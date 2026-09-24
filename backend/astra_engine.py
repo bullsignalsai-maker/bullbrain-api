@@ -623,7 +623,6 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
         momentum = context.get("momentum") or {}
         selected = momentum.get("selectedMover") or {}
         movers = momentum.get("movers") or []
-        ai_setups = momentum.get("aiSetups") or []
 
         symbol = selected.get("symbol") or first_symbol or "this mover"
 
@@ -640,7 +639,17 @@ def build_suggested_followups(context: Dict[str, Any]) -> list[str]:
             f"Can {symbol}'s momentum continue?",
             f"Compare {symbol} with {compare_symbol}" if compare_symbol else "Compare top movers",
             "Which mover has the strongest momentum?",
-            "Which AI setup looks strongest?",
+            # "Which AI setup looks strongest?" removed -- confirmed the
+            # engine can never actually answer it: run_astra() always
+            # builds momentum_movers answers from build_fast_astra_answer()
+            # ("Facts:") describing only the selected mover, and even the
+            # LLM rewrite is explicitly told not to invent facts beyond
+            # that -- momentum.aiSetups never reaches the facts/prompt at
+            # all, it was only ever read here (into a since-removed unused
+            # `ai_setups` var) for this one follow-up string. Replaced with
+            # a question the facts paragraph genuinely covers instead
+            # (appearances/lookback snapshots).
+            "How consistent has this move been?",
             "What is the market momentum theme?",
         ]
 
