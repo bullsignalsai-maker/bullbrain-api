@@ -79,8 +79,25 @@ def normalize_polygon_symbol(symbol: str) -> str:
 # ---------------------------------------------------------
 # POLYGON FETCHERS
 # ---------------------------------------------------------
+def _polygon_error_reason(resp) -> str:
+    """Short, key-free reason string from a Polygon response body."""
+    try:
+        data = resp.json()
+        reason = data.get("error") or data.get("message") or data.get("status") or ""
+    except Exception:
+        reason = resp.text or ""
+    reason = str(reason)
+    if POLYGON_KEY:
+        reason = reason.replace(POLYGON_KEY, "<redacted>")
+    return reason[:160]
+
+
 def _polygon_fetch(symbol: str, start_ts: int, end_ts: int) -> Optional[list]:
+    # Each None-returning branch logs its own distinct reason -- callers
+    # (FULL-FETCH empty / delta-empty) can't tell these apart on their own,
+    # which once hid a rate-limit failure behind a generic "empty" line.
     if not POLYGON_KEY:
+        print(f"[candles] {symbol} | polygon-skip | reason=POLYGON_API_KEY not set", flush=True)
         return None
 
     poly_symbol = normalize_polygon_symbol(symbol)
@@ -94,13 +111,28 @@ def _polygon_fetch(symbol: str, start_ts: int, end_ts: int) -> Optional[list]:
     resp = requests.get(url, timeout=12)
 
     if resp.status_code == 429:
+        print(
+            f"[candles] {symbol} | polygon-http-429 | reason={_polygon_error_reason(resp)}",
+            flush=True,
+        )
         raise RuntimeError("429 rate limit")
 
     if not resp.ok:
+        print(
+            f"[candles] {symbol} | polygon-http-{resp.status_code} | reason={_polygon_error_reason(resp)}",
+            flush=True,
+        )
         return None
 
     data = resp.json()
-    return data.get("results")
+    results = data.get("results")
+    if not results:
+        print(
+            f"[candles] {symbol} | polygon-http-200-no-results | "
+            f"status={data.get('status')} resultsCount={data.get('resultsCount')}",
+            flush=True,
+        )
+    return results
 
 
 def fetch_full_history(symbol: str) -> Optional[list]:
@@ -335,8 +367,13 @@ def get_candles(
     # 2️⃣ Full Polygon fetch
     # =====================================================
     if not _polygon_available():
+        # A symbol with no cached doc has nothing stale to fall back on
+        # here, so this returns None outright -- see market_regime_history's
+        # SPY realized-vol fallback for why that matters.
         print(
-            f"[candles] {symbol} | polygon-disabled → skip-full-fetch",
+            f"[candles] {symbol} | polygon-disabled → skip-full-fetch | "
+            f"cooldown_remaining={int(_POLYGON_COOLDOWN_UNTIL - time.time())}s "
+            f"(tripped by an earlier 429 in this process)",
             flush=True,
         )
         return None

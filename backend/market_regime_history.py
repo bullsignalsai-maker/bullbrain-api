@@ -25,7 +25,7 @@
 # =========================================================
 
 import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -70,23 +70,13 @@ def _fetch_vix_close() -> Optional[float]:
         return None
 
 
-def _spy_realized_vol_20d_pct() -> Optional[float]:
-    """
-    Backward-looking companion to VIX's options-implied measure -- always
-    computed, not just an emergency substitute when the VIX fetch fails,
-    since it's a genuinely different signal (no options-market
-    expectation baked in). Same daily_ret.rolling(20).std()*100
-    convention as features_meta.volatility_20d elsewhere in this app
-    (main.py), so it's directly comparable to existing per-symbol feature
-    values. Sourced from candle_store.get_candles() -- Polygon-backed,
-    already accumulating indefinite history (see candle_store.py's
-    MAX_DAYS_BACK comment), so no new external dependency here either.
-    """
-    candles = get_candles("SPY", min_points=21)
-    if not candles:
-        return None
+_SPY_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/SPY"
 
-    closes = candles.get("close") or []
+
+def _realized_vol_from_closes(closes: List[float]) -> Optional[float]:
+    """Same daily_ret.rolling(20).std()*100 convention as
+    features_meta.volatility_20d elsewhere in this app (main.py) and
+    scripts/backfill_market_regime_history.py's _realized_vol_20d()."""
     if len(closes) < 21:
         return None
 
@@ -104,12 +94,107 @@ def _spy_realized_vol_20d_pct() -> Optional[float]:
     return round(variance ** 0.5, 3)
 
 
+def _spy_closes_from_candle_store(date_key: str) -> Optional[List[float]]:
+    """
+    Polygon-backed candle_store closes, accepted only when the last bar IS
+    date_key's -- a stale cached series (served silently during a Polygon
+    429 cooldown) would otherwise yield yesterday's vol stamped as today's.
+    """
+    candles = get_candles("SPY", min_points=21)
+    if not candles:
+        return None
+
+    closes = candles.get("close") or []
+    stamps = candles.get("timestamp") or []
+    if len(closes) < 21 or not stamps:
+        return None
+
+    last_date = datetime.datetime.utcfromtimestamp(stamps[-1] / 1000).date().isoformat()
+    if last_date != date_key:
+        print(
+            f"[regime] SPY candle_store last bar={last_date} != {date_key} → yahoo fallback",
+            flush=True,
+        )
+        return None
+    return closes
+
+
+def _spy_closes_from_yahoo(date_key: str) -> Optional[List[float]]:
+    """
+    Same unauthenticated Yahoo chart source as _fetch_vix_close() and the
+    9/21-9/22 backfill. Needs no Polygon quota -- the Polygon key's plan is
+    capped at 5 requests/min (confirmed 2026-09-25: 6th request -> 429),
+    which final_close_intelligence routinely exhausts before this runs.
+    Uses meta.regularMarketPrice for the latest bar when Yahoo's close
+    array has a null there (same observed quirk the backfill handles).
+    """
+    try:
+        resp = requests.get(
+            _SPY_CHART_URL,
+            params={"range": "3mo", "interval": "1d"},
+            timeout=_VIX_FETCH_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        result = ((resp.json().get("chart") or {}).get("result") or [{}])[0]
+    except Exception as e:
+        print(f"[regime] SPY yahoo fetch failed | {e}", flush=True)
+        return None
+
+    timestamps = result.get("timestamp") or []
+    raw_closes = (result.get("indicators") or {}).get("quote", [{}])[0].get("close") or []
+    meta = result.get("meta") or {}
+    meta_price = meta.get("regularMarketPrice")
+    meta_time = meta.get("regularMarketTime")
+    meta_date = (
+        datetime.datetime.utcfromtimestamp(meta_time).date().isoformat()
+        if isinstance(meta_time, (int, float)) else None
+    )
+
+    by_date: Dict[str, float] = {}
+    for ts, close in zip(timestamps, raw_closes):
+        d = datetime.datetime.utcfromtimestamp(ts).date().isoformat()
+        if close is None and d == meta_date and isinstance(meta_price, (int, float)):
+            close = meta_price
+        if close is not None and d <= date_key:
+            by_date[d] = float(close)
+
+    if date_key not in by_date:
+        print(f"[regime] SPY yahoo series has no bar for {date_key}", flush=True)
+        return None
+    return [by_date[d] for d in sorted(by_date)]
+
+
+def _spy_realized_vol_20d_pct(date_key: str) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Backward-looking companion to VIX's options-implied measure -- always
+    computed, not just an emergency substitute when the VIX fetch fails,
+    since it's a genuinely different signal (no options-market
+    expectation baked in). Returns (value, source).
+
+    Polygon candle_store first (so SPY is cached like every other
+    symbol), Yahoo as fallback. Before this fallback existed the field
+    was null on every live write: SPY had no cached candle doc, and the
+    Polygon 429 cooldown tripped earlier in final_close_intelligence made
+    candle_store skip the first-ever full fetch outright.
+    """
+    closes = _spy_closes_from_candle_store(date_key)
+    if closes:
+        return _realized_vol_from_closes(closes), "polygon_candle_store"
+
+    closes = _spy_closes_from_yahoo(date_key)
+    if closes:
+        return _realized_vol_from_closes(closes), "yahoo_chart_api"
+
+    return None, None
+
+
 def build_market_regime_snapshot(date_key: str) -> Dict[str, Any]:
     spy_quote = get_quote_safe("SPY") or {}
     spy_close = spy_quote.get("price")
     spy_change_pct = spy_quote.get("changePct")
 
     vix_close = _fetch_vix_close()
+    realized_vol, realized_vol_source = _spy_realized_vol_20d_pct(date_key)
 
     return {
         "date": date_key,
@@ -118,7 +203,8 @@ def build_market_regime_snapshot(date_key: str) -> Dict[str, Any]:
         "spy_change_pct": float(spy_change_pct) if isinstance(spy_change_pct, (int, float)) else None,
         "vix_close": vix_close,
         "vix_source": "yahoo_chart_api" if vix_close is not None else None,
-        "spy_realized_vol_20d_pct": _spy_realized_vol_20d_pct(),
+        "spy_realized_vol_20d_pct": realized_vol,
+        "spy_realized_vol_source": realized_vol_source,
         "schema_version": "market_regime_history_v1",
     }
 
