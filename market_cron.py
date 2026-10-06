@@ -58,6 +58,7 @@ import main as backend
 from symbols_clean import COMPANY_NAMES, REAL_TICKERS
 from backend.market_momentum import save_market_momentum_screen
 from backend.candle_store import get_candles
+from backend.candle_freshness import candle_freshness
 from backend.explain.indicator_states import compute_indicator_states
 from backend.explain.narrative_engine import build_full_narrative_bundle
 from backend.push_alerts import (
@@ -1286,6 +1287,9 @@ def compute_symbol(symbol: str) -> Dict[str, Any] | None:
         "narratives": narratives,   
         "marketAwareness": market_awareness,
         "displayIntelligence": display_intelligence,
+        # Newest-bar freshness of the candles this doc was computed from --
+        # pick_tracking reads it off the doc instead of reloading candles.
+        "candle_freshness": candle_freshness(candles_arrays),
         "computed_at": utc_now_iso(),
         "schema_version": "v2",
     }

@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional
 
 import main as backend
 from backend.candle_store import get_candles
+from backend.candle_freshness import candle_freshness
 from backend.stock_bootstrap import ensure_bullbrain_loaded
 from backend.stock_display_intelligence import model_view
 from backend.alpha_watch_logic import (
@@ -164,6 +165,8 @@ def build_snapshot(symbol: str, date_key: str) -> Optional[Dict[str, Any]]:
         # tagging as pick_tracking.py's pick_code_version, applied here
         # from day one rather than bolted on later.
         "pick_code_version": os.getenv("RENDER_GIT_COMMIT"),
+        # Derived from the candles loaded above -- no extra fetch.
+        **candle_freshness(candles),
         "horizons": {
             f"{h}d": {
                 "trading_days": h,

@@ -151,6 +151,10 @@ def _build_pick_record(
         # locally (no such var off-Render), which is itself honest: "this
         # pick predates version tagging" rather than a guess.
         "pick_code_version": os.getenv("RENDER_GIT_COMMIT"),
+        # Candle freshness at compute time, read off the stock doc
+        # (compute_symbol attaches it). Null for docs written by paths that
+        # don't attach it, e.g. stock_bootstrap -- honest "unknown".
+        **_candle_freshness_fields(stock),
         "pick_pattern_stats": {
             "pattern": pattern_history.get("pattern"),
             "winRate": days5.get("winRate"),
@@ -170,6 +174,15 @@ def _build_pick_record(
         },
 
         "schema_version": "pick_tracking_v1",
+    }
+
+
+def _candle_freshness_fields(stock: Dict[str, Any]) -> Dict[str, Any]:
+    fresh = (stock or {}).get("candle_freshness") or {}
+    return {
+        "candle_last_bar_date": fresh.get("candle_last_bar_date"),
+        "candle_age_trading_days": fresh.get("candle_age_trading_days"),
+        "candle_stale": fresh.get("candle_stale"),
     }
 
 

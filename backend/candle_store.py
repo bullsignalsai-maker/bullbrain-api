@@ -227,6 +227,17 @@ def _trip_polygon_cooldown(reason: str):
         flush=True,
     )
 
+def _stale_age_desc(candles: dict, meta: dict) -> str:
+    """Newest bar date + calendar age, for the cooldown stale-serve log line."""
+    try:
+        ts = candles["ts"][-1]
+        bar = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).date()
+        age_days = (utc_now().date() - bar).days
+        return f"newest_bar={bar.isoformat()} age_days={age_days}"
+    except Exception:
+        return "newest_bar=unknown"
+
+
 # ---------------------------------------------------------
 # PUBLIC API — SINGLE ENTRY POINT
 # ---------------------------------------------------------
@@ -309,6 +320,11 @@ def get_candles(
                     f"[candles] {symbol} | polygon-disabled → serve-stale",
                     flush=True,
                 )
+                print(
+                    f"[candles] ⚠️ STALE-SERVED {symbol} | reason=polygon-cooldown | "
+                    f"{_stale_age_desc(candles, meta)}",
+                    flush=True,
+                )
                 return normalized
 
             try:
@@ -347,6 +363,11 @@ def get_candles(
                     _trip_polygon_cooldown("delta-429")
                     print(
                         f"[candles] {symbol} | 429 → serve-stale",
+                        flush=True,
+                    )
+                    print(
+                        f"[candles] ⚠️ STALE-SERVED {symbol} | reason=polygon-429-trip | "
+                        f"{_stale_age_desc(candles, meta)}",
                         flush=True,
                     )
                     return normalized
