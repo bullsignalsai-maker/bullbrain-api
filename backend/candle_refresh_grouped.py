@@ -11,6 +11,7 @@
 # day until after the close ("today's data before end of day").
 #
 # Strategy per symbol, from its last stored bar date L to `through`:
+#   (unverified overlap -> splits-endpoint check -> append, or full refetch)
 #   current      L >= through                       no call
 #   grouped      gap <= max_grouped_days weekdays   shares one grouped call
 #                                                   per date across symbols
@@ -64,6 +65,7 @@ from symbols_clean import REAL_TICKERS
 _ET = pytz.timezone("America/New_York")
 
 GROUPED_URL = "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}"
+SPLITS_URL = "https://api.polygon.io/v3/reference/splits"
 PACE_SECONDS = 12.5            # 4.8 calls/min, under the 5/min cap
 RATE_LIMIT_BACKOFF_SECONDS = 65
 OVERLAP_TOLERANCE = 0.001      # 0.1%
@@ -368,6 +370,44 @@ def _per_symbol_call(client: GroupedClient, fn, *args):
         raise
 
 
+def _splits_since(client: GroupedClient, poly_symbol: str, since: datetime.date) -> Optional[list]:
+    """
+    Splits for one symbol executing on/after `since`. [] = verified none;
+    None = the check itself failed (caller must NOT treat that as "no split").
+    Counts against the call budget and pacing like every other call.
+    """
+    key = os.getenv("POLYGON_API_KEY")
+    if not key:
+        return None
+    for attempt in (1, 2):
+        if not client.budget_left():
+            raise PolygonStop("max_calls reached")
+        client.pace()
+        client.calls += 1
+        try:
+            resp = requests.get(
+                SPLITS_URL,
+                params={"ticker": poly_symbol, "execution_date.gte": since.isoformat(),
+                        "limit": 100, "apiKey": key},
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            log(f"{poly_symbol} | splits check ERROR | {type(e).__name__}")
+            return None
+        if resp.status_code == 429 and attempt == 1:
+            log(f"{poly_symbol} | splits check RATE-LIMITED | backing off {RATE_LIMIT_BACKOFF_SECONDS}s")
+            time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+            continue
+        break
+    if resp.status_code == 429:
+        raise PolygonStop("splits check RATE-LIMITED twice")
+    if resp.status_code != 200:
+        log(f"{poly_symbol} | splits check HTTP-{resp.status_code}")
+        return None
+    results = resp.json().get("results")
+    return results if isinstance(results, list) else None
+
+
 def _full_refetch(client: GroupedClient, symbol: str, through: datetime.date, reason: str) -> bool:
     results = _per_symbol_call(client, fetch_full_history, symbol)
     if not results:
@@ -391,6 +431,7 @@ def apply_plan(
     closed_days: Set[datetime.date],
 ) -> Dict[str, Any]:
     stats = {"appended_symbols": 0, "bars_added": 0, "flagged": [], "full": 0, "skipped_no_data": [],
+             "unverified_clean": 0, "unverified_refetched": 0, "unverified_failed": [],
              "stopped": None}
     kinds = plan["kinds"]
     try:
@@ -446,14 +487,31 @@ def apply_plan(
             if not new_bars:
                 stats["skipped_no_data"].append(s)
                 continue
+
+            unverified = overlap is None
+            if unverified:
+                # Overlap couldn't run (no bar at `last`). Never append blind:
+                # confirm no split since the last stored bar, else refetch.
+                splits = _splits_since(client, poly, last)
+                if splits is None or splits:
+                    why = "splits check failed" if splits is None else f"split since {last}"
+                    log(f"{s} | overlap UNVERIFIED + {why} -> full refetch instead of append")
+                    if _full_refetch(client, s, through, f"unverified overlap, {why}"):
+                        stats["full"] += 1
+                        stats["unverified_refetched"] += 1
+                    else:
+                        stats["unverified_failed"].append(s)
+                    continue
+
             added = append_bars(candles, new_bars)
             if added:
                 meta = _finish_meta(doc.get("meta"), candles, through)
                 _save_firestore_candles(s, {"candles": candles, "meta": meta})
                 stats["appended_symbols"] += 1
                 stats["bars_added"] += added
-                if overlap is None:
-                    log(f"{s} | appended {added} bar(s) | overlap UNVERIFIED (no bar at {last})")
+                if unverified:
+                    stats["unverified_clean"] += 1
+                    log(f"{s} | appended {added} bar(s) | overlap unverified, splits check clean")
     except PolygonStop as e:
         stats["stopped"] = str(e)
         log(f"STOPPED: {e} | re-run to resume (cached grouped days and already-appended dates are skipped)")
