@@ -2,3 +2,5 @@
 backend/credentials/
 serviceAccountKey.json
 .env
+
+.candle_refresh_cache/

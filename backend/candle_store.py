@@ -74,7 +74,11 @@ def rate_limit_sleep():
     time.sleep(random.uniform(RATE_SLEEP_MIN, RATE_SLEEP_MAX))
 
 def normalize_polygon_symbol(symbol: str) -> str:
-    return symbol.replace(".", "-")
+    # Polygon lists share classes with a DOT (BRK.B, BF.B). The old
+    # "."->"-" rewrite made /v2/aggs return 0 bars for both (verified
+    # 2026-10-05: BRK-B/BF-B -> 0 results, BRK.B/BF.B -> 5), so neither
+    # ever got a candle doc.
+    return symbol.upper()
 
 # ---------------------------------------------------------
 # POLYGON FETCHERS
